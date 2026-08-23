@@ -1,0 +1,104 @@
+@if (loading()) {
+  <main class="center-state"><span class="rift-mark">R</span><p>Opening repository...</p></main>
+} @else if (!repository()) {
+  <main class="center-state">
+    <span class="rift-mark">R</span>
+    <h1>Open a Git repository</h1>
+    <p>{{ error() || "Launch Rift from a repository or choose one here." }}</p>
+    <button class="primary-button" (click)="chooseRepository()">Choose repository</button>
+  </main>
+} @else {
+  <main class="app-shell">
+    <header class="topbar">
+      <div class="brand"><span class="brand-cut">R</span><strong>Rift</strong></div>
+      <button class="repository-switcher" (click)="chooseRepository()" [title]="repository()!.root">
+        <span>{{ repository()!.name }}</span>
+        <span class="comparison">{{ repository()!.comparisonLabel }}</span>
+      </button>
+      <button class="cli-install" (click)="installCli()">{{ cliMessage() || "Install CLI" }}</button>
+    </header>
+
+    <section class="workspace">
+      <aside class="changes-panel">
+        <div class="panel-title"><span>Changes</span><span class="count">{{ repository()!.files.length }}</span></div>
+        <div class="file-list">
+          @for (file of repository()!.files; track file.path) {
+            <button
+              class="file-row"
+              [class.selected]="file.path === selectedPath()"
+              (click)="selectFile(file.path)"
+              [title]="file.path"
+            >
+              <span class="status status-{{ file.status }}">{{ statusLabel(file) }}</span>
+              <span class="file-name"><strong>{{ shortName(file.path) }}</strong><small>{{ directory(file.path) }}</small></span>
+              <span class="file-stat"><i>+{{ file.additions }}</i><b>-{{ file.deletions }}</b></span>
+            </button>
+          } @empty {
+            <p class="empty-copy">No changes in this comparison.</p>
+          }
+        </div>
+      </aside>
+
+      <section class="diff-panel">
+        <div class="diff-toolbar">
+          <div>
+            <strong>{{ selectedFile() ? shortName(selectedFile()!.path) : "No file selected" }}</strong>
+            @if (selectedFile()) { <span>{{ selectedFile()!.path }}</span> }
+          </div>
+          <span class="mode-pill">Unified</span>
+        </div>
+        <div class="diff-scroll">
+          @if (patch()?.binary) {
+            <p class="empty-copy">Binary file cannot be displayed.</p>
+          } @else {
+            @for (row of rows(); track $index) {
+              <div
+                class="diff-row {{ row.kind }}"
+                [class.line-selected]="isSelectable(row) && lineFor(row) === selectedLine()"
+                (click)="selectLine(row)"
+              >
+                <span class="line-number">{{ row.oldLine ?? "" }}</span>
+                <span class="line-number">{{ row.newLine ?? "" }}</span>
+                <span class="line-prefix">{{ row.kind === "addition" ? "+" : row.kind === "deletion" ? "-" : " " }}</span>
+                <code>{{ row.content || " " }}</code>
+              </div>
+            }
+          }
+          @if (selectedFile() && !patch()) { <p class="empty-copy">Loading patch...</p> }
+        </div>
+      </section>
+
+      <aside class="review-panel">
+        <div class="panel-title"><span>Review</span><span class="review-state">Local</span></div>
+        <div class="review-content">
+          <p class="eyebrow">Selected context</p>
+          @if (selectedPath()) {
+            <div class="context-card">
+              <strong>{{ shortName(selectedPath()!) }}</strong>
+              <span>{{ selectedLine() ? "Line " + selectedLine() : "Select a changed line" }}</span>
+            </div>
+          } @else {
+            <p class="muted">Choose a changed file to begin.</p>
+          }
+          <div class="review-actions">
+            <button [disabled]="!selectedLine()">Explain selection</button>
+            <button [disabled]="!selectedLine()">Critical review</button>
+          </div>
+          <div class="coming-next">
+            <span>Next slice</span>
+            <h2>Ask the code, not a chat box.</h2>
+            <p>The selected patch and exact line will become the context sent to the active coding agent.</p>
+          </div>
+        </div>
+      </aside>
+    </section>
+
+    <footer class="statusbar">
+      <span>{{ repository()!.files.length }} files changed</span>
+      <span class="positive">+{{ repository()!.additions }}</span>
+      <span class="negative">-{{ repository()!.deletions }}</span>
+      <span class="status-spacer"></span>
+      <span>Watching repository</span>
+    </footer>
+  </main>
+}
