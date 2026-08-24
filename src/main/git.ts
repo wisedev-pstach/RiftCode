@@ -1,12 +1,26 @@
 import { execFile } from "node:child_process";
 import { readFile, stat } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
-import type { ChangedFile, ChangeStatus, FilePatch, RepositorySnapshot } from "../shared/contracts";
+import type {
+  ChangedFile,
+  ChangeStatus,
+  ComparisonOption,
+  FilePatch,
+  RepositorySnapshot
+} from "../shared/contracts";
+
+const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 interface GitResult {
   stdout: string;
   stderr: string;
   code: number;
+}
+
+interface ComparisonDefinition extends ComparisonOption {
+  startRevision: string;
+  endRevision: string | null;
+  includeUntracked: boolean;
 }
 
 function run(command: string, args: string[], cwd: string, acceptedCodes = [0]): Promise<GitResult> {
@@ -51,6 +65,54 @@ async function detectBase(root: string, branch: string): Promise<{ label: string
   }
 
   return { label: null, ref: "HEAD" };
+}
+
+async function comparisonDefinitions(
+  root: string,
+  branch: string,
+  base: { label: string | null; ref: string }
+): Promise<ComparisonDefinition[]> {
+  const comparisons: ComparisonDefinition[] = [
+    {
+      id: "working-tree",
+      kind: "working-tree",
+      label: "Uncommitted changes",
+      detail: `Working tree against ${branch}`,
+      startRevision: "HEAD",
+      endRevision: null,
+      includeUntracked: true
+    }
+  ];
+
+  if (base.label) {
+    const mergeBase = (await git(root, ["merge-base", "HEAD", base.ref])).stdout.trim();
+    comparisons.push({
+      id: "current-branch",
+      kind: "branch",
+      label: "Current branch changes",
+      detail: `${branch} against ${base.label}`,
+      startRevision: mergeBase,
+      endRevision: "HEAD",
+      includeUntracked: false
+    });
+  }
+
+  const log = await git(root, ["log", "-40", "--format=%H%x09%h%x09%P%x09%s"]);
+  for (const line of log.stdout.split("\n").filter(Boolean)) {
+    const [sha, shortSha, parents, ...subjectParts] = line.split("\t");
+    const subject = subjectParts.join(" ").trim() || "Untitled commit";
+    comparisons.push({
+      id: `commit:${sha}`,
+      kind: "commit",
+      label: `${shortSha} ${subject}`,
+      detail: "Commit against its parent",
+      startRevision: parents.split(" ")[0] || EMPTY_TREE,
+      endRevision: sha,
+      includeUntracked: false
+    });
+  }
+
+  return comparisons;
 }
 
 function statusFromCode(code: string): ChangeStatus {
@@ -100,21 +162,25 @@ async function untrackedStats(root: string, path: string): Promise<number> {
   }
 }
 
-export async function loadRepository(requestedPath: string): Promise<RepositorySnapshot> {
+export async function loadRepository(requestedPath: string, comparisonId = "working-tree"): Promise<RepositorySnapshot> {
   const candidate = resolve(requestedPath);
   const rootResult = await git(candidate, ["rev-parse", "--show-toplevel"]);
   const root = rootResult.stdout.trim();
   const branchResult = await git(root, ["branch", "--show-current"]);
   const branch = branchResult.stdout.trim() || "HEAD";
   const base = await detectBase(root, branch);
-  const mergeBase = base.label
-    ? (await git(root, ["merge-base", "HEAD", base.ref])).stdout.trim()
-    : "HEAD";
+  const comparisons = await comparisonDefinitions(root, branch, base);
+  const comparison = comparisons.find((entry) => entry.id === comparisonId) ?? comparisons[0];
+  const revisions = comparison.endRevision
+    ? [comparison.startRevision, comparison.endRevision]
+    : [comparison.startRevision];
 
   const [names, stats, untracked] = await Promise.all([
-    git(root, ["diff", "--name-status", "--find-renames", mergeBase, "--"]),
-    git(root, ["diff", "--numstat", "--find-renames", mergeBase, "--"]),
-    git(root, ["ls-files", "--others", "--exclude-standard"])
+    git(root, ["diff", "--name-status", "--find-renames", ...revisions, "--"]),
+    git(root, ["diff", "--numstat", "--find-renames", ...revisions, "--"]),
+    comparison.includeUntracked
+      ? git(root, ["ls-files", "--others", "--exclude-standard"])
+      : Promise.resolve({ stdout: "", stderr: "", code: 0 })
   ]);
 
   const files = parseChangedFiles(names.stdout);
@@ -138,8 +204,12 @@ export async function loadRepository(requestedPath: string): Promise<RepositoryS
     name: basename(root),
     branch,
     baseBranch: base.label,
-    comparisonLabel: base.label ? `${branch} → ${base.label}` : `Working tree → ${branch}`,
-    startRevision: mergeBase,
+    comparisonId: comparison.id,
+    comparisonLabel: comparison.detail,
+    startRevision: comparison.startRevision,
+    endRevision: comparison.endRevision,
+    includeUntracked: comparison.includeUntracked,
+    comparisons: comparisons.map(({ id, kind, label, detail }) => ({ id, kind, label, detail })),
     files,
     additions,
     deletions,
@@ -159,15 +229,21 @@ export async function loadFilePatch(snapshot: RepositorySnapshot, path: string):
       [0, 1]
     );
   } else {
+    const revisions = snapshot.endRevision
+      ? [snapshot.startRevision, snapshot.endRevision]
+      : [snapshot.startRevision];
+    const paths = file.status === "renamed" && file.previousPath
+      ? [file.previousPath, path]
+      : [path];
     result = await git(snapshot.root, [
       "diff",
       "--no-ext-diff",
       "--no-color",
       "--find-renames",
       "--unified=4",
-      snapshot.startRevision,
+      ...revisions,
       "--",
-      path
+      ...paths
     ]);
   }
 

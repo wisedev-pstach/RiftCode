@@ -6,7 +6,7 @@ Rift is a local desktop workspace for reviewing the complete diff between a Git 
 
 Requirements:
 
-- macOS
+- macOS or Windows
 - Node.js 24 or newer
 - Git
 
@@ -24,22 +24,32 @@ rift /path/to/repository
 
 ## Install
 
-Build the macOS installer:
+Rift is installed directly from source. The scripts build an unpacked application and copy it into a per-user application directory; they do not create DMGs, MSIs, or other installer packages.
+
+On macOS:
 
 ```bash
-npm run dist:mac
+sh ./install.sh
 ```
 
-Open `dist/Rift-0.1.0-arm64.dmg` and drag Rift into Applications. Launch Rift once, then use **Install CLI** in its title bar to install `rift` into `~/.local/bin`.
+This installs Rift to `~/Applications/Rift.app` and the CLI to `~/.local/bin/rift`. Ensure `~/.local/bin` is on `PATH`.
 
-Ensure `~/.local/bin` is on `PATH`, then open any repository with:
+On Windows, from PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+This installs Rift to `%LOCALAPPDATA%\Programs\Rift` and adds its script-only CLI directory to the user `PATH`. Open a new PowerShell terminal after installation.
+
+Open any repository with:
 
 ```bash
 cd /path/to/repository
 rift
 ```
 
-The local development build is not code-signed or notarized. Public distribution will require an Apple Developer ID certificate and notarization credentials.
+These local builds are not code-signed or notarized.
 
 ## Checks
 

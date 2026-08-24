@@ -1,8 +1,7 @@
-import { app, BrowserWindow, dialog, ipcMain } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu } from "electron";
 import chokidar, { type FSWatcher } from "chokidar";
 import { existsSync } from "node:fs";
-import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { loadFilePatch, loadRepository } from "./git";
 import type { RepositorySnapshot } from "../shared/contracts";
 
@@ -10,6 +9,10 @@ let mainWindow: BrowserWindow | null = null;
 let snapshot: RepositorySnapshot | null = null;
 let watcher: FSWatcher | null = null;
 let refreshTimer: NodeJS.Timeout | null = null;
+let activeComparisonId = "working-tree";
+let repositoryLoadQueue = Promise.resolve();
+let repositoryGeneration = 0;
+let currentRepositoryPath: string | null = null;
 const initialRepository = repositoryArgument(process.argv);
 
 function repositoryArgument(argv: string[]): string | undefined {
@@ -24,7 +27,7 @@ async function watchRepository(root: string): Promise<void> {
     ignoreInitial: true,
     ignored: (path) => {
       const relative = path.slice(root.length);
-      return /\/(node_modules|out|dist|\.git\/objects)(\/|$)/.test(relative);
+      return /[\\/](node_modules|out|dist|\.git[\\/]objects)([\\/]|$)/.test(relative);
     }
   });
 
@@ -34,10 +37,40 @@ async function watchRepository(root: string): Promise<void> {
   });
 }
 
+function queueRepositoryLoad(path: string, comparisonId: string, generation: number): Promise<RepositorySnapshot> {
+  const load = repositoryLoadQueue.then(() => loadRepository(path, comparisonId));
+  repositoryLoadQueue = load.then(() => undefined, () => undefined);
+  return load.then((loaded) => {
+    if (repositoryGeneration === generation) {
+      snapshot = loaded;
+      currentRepositoryPath = loaded.root;
+      if (activeComparisonId === comparisonId) activeComparisonId = loaded.comparisonId;
+    }
+    return loaded;
+  });
+}
+
 async function openRepository(path: string): Promise<RepositorySnapshot> {
-  snapshot = await loadRepository(path);
-  await watchRepository(snapshot.root);
-  return snapshot;
+  const previousPath = currentRepositoryPath;
+  const previousComparisonId = activeComparisonId;
+  const generation = ++repositoryGeneration;
+  currentRepositoryPath = path;
+  activeComparisonId = "working-tree";
+  try {
+    const loaded = await queueRepositoryLoad(path, activeComparisonId, generation);
+    if (repositoryGeneration === generation) {
+      if (refreshTimer) clearTimeout(refreshTimer);
+      refreshTimer = null;
+      await watchRepository(loaded.root);
+    }
+    return loaded;
+  } catch (error) {
+    if (repositoryGeneration === generation) {
+      currentRepositoryPath = previousPath;
+      activeComparisonId = previousComparisonId;
+    }
+    throw error;
+  }
 }
 
 function registerIpc(): void {
@@ -46,9 +79,14 @@ function registerIpc(): void {
   });
 
   ipcMain.handle("repository:refresh", async () => {
-    if (!snapshot) throw new Error("No repository is open.");
-    snapshot = await loadRepository(snapshot.root);
-    return snapshot;
+    if (!currentRepositoryPath) throw new Error("No repository is open.");
+    return queueRepositoryLoad(currentRepositoryPath, activeComparisonId, repositoryGeneration);
+  });
+
+  ipcMain.handle("repository:compare", async (_event, comparisonId: string) => {
+    if (!currentRepositoryPath) throw new Error("No repository is open.");
+    activeComparisonId = comparisonId;
+    return queueRepositoryLoad(currentRepositoryPath, comparisonId, repositoryGeneration);
   });
 
   ipcMain.handle("repository:patch", async (_event, path: string) => {
@@ -65,27 +103,6 @@ function registerIpc(): void {
     return openRepository(result.filePaths[0]);
   });
 
-  ipcMain.handle("app:install-cli", async () => {
-    const destination = join(app.getPath("home"), ".local", "bin", "rift");
-    const script = app.isPackaged
-      ? packagedCliScript()
-      : `#!/bin/sh\n# Rift CLI launcher\nexec node '${join(app.getAppPath(), "bin", "rift.cjs").replaceAll("'", "'\\''")}' "$@"\n`;
-    if (existsSync(destination)) {
-      const existing = await readFile(destination, "utf8");
-      if (!existing.includes("# Rift CLI launcher")) {
-        throw new Error(`${destination} already exists and was not created by Rift.`);
-      }
-    }
-    await mkdir(dirname(destination), { recursive: true });
-    await writeFile(destination, script, "utf8");
-    await chmod(destination, 0o755);
-    return destination;
-  });
-}
-
-function packagedCliScript(): string {
-  const appBundle = resolve(dirname(process.execPath), "../..").replaceAll("'", "'\\''");
-  return `#!/bin/sh\n# Rift CLI launcher\nREPOSITORY="\${1:-$PWD}"\nopen -a '${appBundle}' --args "--repository=$REPOSITORY"\n`;
 }
 
 function createWindow(): void {
@@ -95,7 +112,11 @@ function createWindow(): void {
     minWidth: 940,
     minHeight: 600,
     backgroundColor: "#0b0d10",
-    titleBarStyle: "hiddenInset",
+    autoHideMenuBar: true,
+    titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "hidden",
+    titleBarOverlay: process.platform === "win32"
+      ? { color: "#0f1216", symbolColor: "#d9dde5", height: 44 }
+      : false,
     trafficLightPosition: { x: 18, y: 18 },
     webPreferences: {
       preload: join(__dirname, "../preload/index.cjs"),
@@ -104,6 +125,7 @@ function createWindow(): void {
       sandbox: true
     }
   });
+  mainWindow.setMenuBarVisibility(false);
 
   if (process.env.ELECTRON_RENDERER_URL) {
     void mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL);
@@ -128,6 +150,9 @@ if (!hasLock) {
   });
 
   app.whenReady().then(() => {
+    Menu.setApplicationMenu(process.platform === "darwin"
+      ? Menu.buildFromTemplate([{ role: "appMenu" }, { role: "editMenu" }, { role: "windowMenu" }])
+      : null);
     registerIpc();
     createWindow();
 
