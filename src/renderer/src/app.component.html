@@ -8,14 +8,28 @@
     <button class="primary-button" (click)="chooseRepository()">Choose repository</button>
   </main>
 } @else {
-  <main class="app-shell">
+  <main class="app-shell" [class.platform-windows]="platform === 'win32'">
     <header class="topbar">
       <div class="brand"><span class="brand-cut">R</span><strong>Rift</strong></div>
-      <button class="repository-switcher" (click)="chooseRepository()" [title]="repository()!.root">
-        <span>{{ repository()!.name }}</span>
-        <span class="comparison">{{ repository()!.comparisonLabel }}</span>
-      </button>
-      <button class="cli-install" (click)="installCli()">{{ cliMessage() || "Install CLI" }}</button>
+      <div class="comparison-picker">
+        <button class="repository-switcher" (click)="chooseRepository()" [title]="repository()!.root">
+          {{ repository()!.name }}
+        </button>
+        <span class="comparison-arrow">/</span>
+        <label>
+          <span class="visually-hidden">Select comparison</span>
+          <select
+            [value]="repository()!.comparisonId"
+            [disabled]="comparisonChanging()"
+            (change)="selectComparison($event)"
+            title="Choose what to review"
+          >
+            @for (option of repository()!.comparisons; track option.id) {
+              <option [value]="option.id">{{ option.label }} - {{ option.detail }}</option>
+            }
+          </select>
+        </label>
+      </div>
     </header>
 
     <section class="workspace">
@@ -45,24 +59,116 @@
             <strong>{{ selectedFile() ? shortName(selectedFile()!.path) : "No file selected" }}</strong>
             @if (selectedFile()) { <span>{{ selectedFile()!.path }}</span> }
           </div>
-          <span class="mode-pill">Unified</span>
+          <div class="diff-options">
+            <span class="language-pill">{{ detectedLanguage().label }}</span>
+            <label class="mode-picker">
+              <span class="visually-hidden">Diff layout</span>
+              <select [value]="diffMode()" (change)="selectDiffMode($event)" title="Diff layout">
+                <option value="unified">Unified</option>
+                <option value="split">Side by side</option>
+              </select>
+            </label>
+          </div>
         </div>
-        <div class="diff-scroll">
+        <div #diffScroll class="diff-scroll" role="listbox" aria-multiselectable="true" aria-label="Changed lines">
           @if (patch()?.binary) {
             <p class="empty-copy">Binary file cannot be displayed.</p>
-          } @else {
+          } @else if (diffMode() === "unified") {
             @for (row of rows(); track $index) {
               <div
                 class="diff-row {{ row.kind }}"
-                [class.line-selected]="isSelectable(row) && lineFor(row) === selectedLine()"
-                (click)="selectLine(row)"
+                [class.line-selected]="isRowSelected($index, row)"
+                [attr.tabindex]="isSelectable(row) ? 0 : -1"
+                [attr.role]="isSelectable(row) ? 'option' : null"
+                [attr.aria-selected]="isSelectable(row) ? isRowSelected($index, row) : null"
+                (pointerdown)="beginSelection($index, row, $event)"
+                (pointerenter)="extendSelection($index, $event)"
+                (keydown)="selectWithKeyboard($index, row, $event)"
               >
                 <span class="line-number">{{ row.oldLine ?? "" }}</span>
                 <span class="line-number">{{ row.newLine ?? "" }}</span>
                 <span class="line-prefix">{{ row.kind === "addition" ? "+" : row.kind === "deletion" ? "-" : " " }}</span>
-                <code>{{ row.content || " " }}</code>
+                @if (row.highlighted) {
+                  <code [innerHTML]="row.highlighted"></code>
+                } @else {
+                  <code>{{ row.content || " " }}</code>
+                }
               </div>
             }
+          } @else {
+            <div class="split-diff">
+              <div class="split-head" aria-hidden="true">
+                <span>Before</span>
+                <span>After</span>
+              </div>
+              @for (pair of splitRows(); track $index) {
+                @if (pair.spanning; as entry) {
+                  <div class="split-spanning">
+                    <div class="diff-row {{ entry.row.kind }}">
+                      <span class="line-number"></span>
+                      <span class="line-number"></span>
+                      <span class="line-prefix"></span>
+                      <code [attr.title]="entry.row.content || null">{{ entry.row.content || " " }}</code>
+                    </div>
+                  </div>
+                } @else {
+                  <div class="split-content-row">
+                    @if (pair.left; as left) {
+                      <div
+                        class="split-side left {{ left.row.kind }}"
+                        [class.line-selected]="isRowSelected(left.index, left.row)"
+                        tabindex="0"
+                        role="option"
+                        [attr.aria-selected]="isRowSelected(left.index, left.row)"
+                        (pointerdown)="beginSelection(left.index, left.row, $event)"
+                        (pointerenter)="extendSelection(left.index, $event)"
+                        (keydown)="selectWithKeyboard(left.index, left.row, $event)"
+                      >
+                        <span class="line-number">{{ left.row.oldLine ?? "" }}</span>
+                        <span class="line-prefix">{{ left.row.kind === "deletion" ? "-" : " " }}</span>
+                        @if (left.row.oldHighlighted) {
+                          <code [attr.title]="left.row.content || null" [innerHTML]="left.row.oldHighlighted"></code>
+                        } @else {
+                          <code [attr.title]="left.row.content || null">{{ left.row.content || " " }}</code>
+                        }
+                      </div>
+                    } @else {
+                      <div
+                        class="split-side empty"
+                        aria-hidden="true"
+                        (pointerenter)="extendSelection(pair.right!.index, $event)"
+                      ></div>
+                    }
+                    @if (pair.right; as right) {
+                      <div
+                        class="split-side right {{ right.row.kind }}"
+                        [class.line-selected]="isRowSelected(right.index, right.row)"
+                        [attr.tabindex]="pair.left?.index === right.index ? -1 : 0"
+                        [attr.role]="pair.left?.index === right.index ? null : 'option'"
+                        [attr.aria-selected]="pair.left?.index === right.index ? null : isRowSelected(right.index, right.row)"
+                        (pointerdown)="beginSelection(right.index, right.row, $event)"
+                        (pointerenter)="extendSelection(right.index, $event)"
+                        (keydown)="selectWithKeyboard(right.index, right.row, $event)"
+                      >
+                        <span class="line-number">{{ right.row.newLine ?? "" }}</span>
+                        <span class="line-prefix">{{ right.row.kind === "addition" ? "+" : " " }}</span>
+                        @if (right.row.newHighlighted) {
+                          <code [attr.title]="right.row.content || null" [innerHTML]="right.row.newHighlighted"></code>
+                        } @else {
+                          <code [attr.title]="right.row.content || null">{{ right.row.content || " " }}</code>
+                        }
+                      </div>
+                    } @else {
+                      <div
+                        class="split-side empty right"
+                        aria-hidden="true"
+                        (pointerenter)="extendSelection(pair.left!.index, $event)"
+                      ></div>
+                    }
+                  </div>
+                }
+              }
+            </div>
           }
           @if (selectedFile() && !patch()) { <p class="empty-copy">Loading patch...</p> }
         </div>
@@ -75,19 +181,19 @@
           @if (selectedPath()) {
             <div class="context-card">
               <strong>{{ shortName(selectedPath()!) }}</strong>
-              <span>{{ selectedLine() ? "Line " + selectedLine() : "Select a changed line" }}</span>
+              <span>{{ selectionLabel() }}</span>
             </div>
           } @else {
             <p class="muted">Choose a changed file to begin.</p>
           }
           <div class="review-actions">
-            <button [disabled]="!selectedLine()">Explain selection</button>
-            <button [disabled]="!selectedLine()">Critical review</button>
+            <button [disabled]="selectedLineCount() === 0">Explain selection</button>
+            <button [disabled]="selectedLineCount() === 0">Critical review</button>
           </div>
           <div class="coming-next">
             <span>Next slice</span>
             <h2>Ask the code, not a chat box.</h2>
-            <p>The selected patch and exact line will become the context sent to the active coding agent.</p>
+            <p>The selected patch and line range will become the context sent to the active coding agent.</p>
           </div>
         </div>
       </aside>

@@ -2,11 +2,12 @@ import { contextBridge, ipcRenderer } from "electron";
 import type { RiftApi } from "../shared/contracts";
 
 const api: RiftApi = {
+  platform: process.platform as RiftApi["platform"],
   openRepository: (path) => ipcRenderer.invoke("repository:open", path),
   refreshRepository: () => ipcRenderer.invoke("repository:refresh"),
   getFilePatch: (path) => ipcRenderer.invoke("repository:patch", path),
   chooseRepository: () => ipcRenderer.invoke("repository:choose"),
-  installCli: () => ipcRenderer.invoke("app:install-cli"),
+  selectComparison: (id) => ipcRenderer.invoke("repository:compare", id),
   onRepositoryChanged: (listener) => {
     const handler = (): void => listener();
     ipcRenderer.on("repository:changed", handler);

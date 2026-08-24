@@ -12,8 +12,9 @@
     "build": "npm run typecheck && electron-vite build",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json && ngc -p src/renderer/tsconfig.app.json --noEmit",
     "preview": "electron-vite preview",
-    "dist": "npm run build && electron-builder",
-    "dist:mac": "npm run build && electron-builder --mac"
+    "package": "npm run build && electron-builder --dir",
+    "package:mac": "npm run build && electron-builder --mac --dir",
+    "package:win": "npm run build && electron-builder --win --dir"
   },
   "build": {
     "appId": "dev.wise.rift",
@@ -23,23 +24,13 @@
       "out/**/*",
       "package.json"
     ],
-    "extraResources": [
-      {
-        "from": "bin/rift.cjs",
-        "to": "bin/rift.cjs"
-      }
-    ],
     "mac": {
       "category": "public.app-category.developer-tools",
       "icon": "build/icon.icns",
-      "target": [
-        "dmg",
-        "zip"
-      ]
+      "target": "dir"
     },
-    "dmg": {
-      "title": "Rift ${version}",
-      "artifactName": "Rift-${version}-${arch}.${ext}"
+    "win": {
+      "target": "dir"
     },
     "artifactName": "Rift-${version}-${arch}.${ext}"
   },
@@ -49,6 +40,7 @@
     "@angular/core": "^21.2.21",
     "@angular/platform-browser": "^21.2.21",
     "chokidar": "^4.0.3",
+    "highlight.js": "^11.12.0",
     "rxjs": "^7.8.2",
     "tslib": "^2.8.1",
     "zone.js": "^0.15.1"
