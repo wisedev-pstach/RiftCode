@@ -39,6 +39,17 @@ export interface FilePatch {
   binary: boolean;
 }
 
+export type AgentId = "opencode" | "claude";
+
+export interface AgentOption {
+  id: AgentId;
+  label: string;
+}
+
+export interface AgentRunResult {
+  output: string;
+}
+
 export interface RiftApi {
   platform: "darwin" | "linux" | "win32";
   openRepository(path?: string): Promise<RepositorySnapshot>;
@@ -46,5 +57,9 @@ export interface RiftApi {
   getFilePatch(path: string): Promise<FilePatch>;
   chooseRepository(): Promise<RepositorySnapshot | null>;
   selectComparison(id: string): Promise<RepositorySnapshot>;
+  listAgents(): Promise<AgentOption[]>;
+  runAgent(id: AgentId, prompt: string): Promise<AgentRunResult>;
+  cancelAgent(): Promise<void>;
+  copyText(text: string): Promise<void>;
   onRepositoryChanged(listener: () => void): () => void;
 }
