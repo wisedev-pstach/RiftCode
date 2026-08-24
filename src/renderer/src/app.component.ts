@@ -11,7 +11,7 @@ import {
 } from "@angular/core";
 import hljs from "highlight.js/lib/common";
 import powershell from "highlight.js/lib/languages/powershell";
-import type { ChangedFile, FilePatch, RepositorySnapshot } from "../../shared/contracts";
+import type { AgentId, AgentOption, ChangedFile, FilePatch, RepositorySnapshot } from "../../shared/contracts";
 
 type DiffKind = "header" | "hunk" | "context" | "addition" | "deletion" | "meta";
 type DiffMode = "unified" | "split";
@@ -94,6 +94,41 @@ interface SplitDiffRow {
   left?: IndexedDiffRow;
   right?: IndexedDiffRow;
   spanning?: IndexedDiffRow;
+}
+
+interface ReviewNote {
+  id: string;
+  comparisonId: string;
+  filePath: string;
+  startIndex: number;
+  endIndex: number;
+  startLine: number;
+  endLine: number;
+  content: string;
+  diff: string;
+  createdAt: number;
+}
+
+interface ToolsMenu {
+  x: number;
+  y: number;
+}
+
+function isReviewNote(value: unknown): value is ReviewNote {
+  if (!value || typeof value !== "object") return false;
+  const note = value as Record<string, unknown>;
+  return typeof note.id === "string"
+    && typeof note.comparisonId === "string"
+    && typeof note.filePath === "string"
+    && typeof note.content === "string"
+    && note.content.length <= 20_000
+    && typeof note.diff === "string"
+    && note.diff.length <= 200_000
+    && typeof note.startIndex === "number" && Number.isFinite(note.startIndex)
+    && typeof note.endIndex === "number" && Number.isFinite(note.endIndex)
+    && typeof note.startLine === "number" && Number.isFinite(note.startLine)
+    && typeof note.endLine === "number" && Number.isFinite(note.endLine)
+    && typeof note.createdAt === "number" && Number.isFinite(note.createdAt);
 }
 
 function parsePatch(patch: string): DiffRow[] {
@@ -256,6 +291,16 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly loading = signal(true);
   readonly comparisonChanging = signal(false);
   readonly error = signal<string | null>(null);
+  readonly reviewSidebarOpen = signal(false);
+  readonly toolsMenu = signal<ToolsMenu | null>(null);
+  readonly noteComposerOpen = signal(false);
+  readonly noteDraft = signal("");
+  readonly notes = signal<ReviewNote[]>([]);
+  readonly agents = signal<AgentOption[]>([]);
+  readonly selectedAgent = signal<AgentId | null>(null);
+  readonly agentRunning = signal(false);
+  readonly agentResponse = signal<string | null>(null);
+  readonly reviewMessage = signal<string | null>(null);
   readonly selectedFile = computed(() => this.repository()?.files.find((file) => file.path === this.selectedPath()));
   readonly detectedLanguage = computed(() => detectLanguage(this.selectedPath()));
   readonly rows = computed(() => highlightRows(parsePatch(this.patch()?.patch ?? ""), this.detectedLanguage()));
@@ -299,6 +344,10 @@ export class AppComponent implements OnInit, OnDestroy {
       .finally(() => this.loading.set(false));
 
     this.removeRepositoryListener = window.rift.onRepositoryChanged(() => void this.refreshRepository());
+    void window.rift.listAgents().then((agents) => {
+      this.agents.set(agents);
+      this.selectedAgent.set(agents[0]?.id ?? null);
+    });
   }
 
   ngOnDestroy(): void {
@@ -343,6 +392,12 @@ export class AppComponent implements OnInit, OnDestroy {
     }
   }
 
+  selectAgent(event: Event): void {
+    if (event.target instanceof HTMLSelectElement) {
+      this.selectedAgent.set(event.target.value as AgentId);
+    }
+  }
+
   selectFile(path: string): void {
     if (path === this.selectedPath()) return;
     this.selectedPath.set(path);
@@ -359,6 +414,175 @@ export class AppComponent implements OnInit, OnDestroy {
     const anchor = event.shiftKey && current ? current.anchor : index;
     this.selectedRange.set({ anchor, focus: index });
     this.selecting = true;
+  }
+
+  openTools(index: number, row: DiffRow, event: MouseEvent): void {
+    if (!this.isSelectable(row)) return;
+    event.preventDefault();
+    this.showTools(index, row, event.clientX, event.clientY);
+  }
+
+  openToolsFromKeyboard(index: number, row: DiffRow, event: KeyboardEvent): void {
+    if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
+    event.preventDefault();
+    const bounds = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    this.showTools(index, row, bounds.left + 24, bounds.top + 18);
+  }
+
+  private showTools(index: number, row: DiffRow, x: number, y: number): void {
+    if (!this.isSelectable(row)) return;
+    if (!this.isRowSelected(index, row)) this.selectedRange.set({ anchor: index, focus: index });
+    this.noteComposerOpen.set(false);
+    this.noteDraft.set("");
+    this.toolsMenu.set({
+      x: Math.max(6, Math.min(x, window.innerWidth - 250)),
+      y: Math.max(6, Math.min(y, window.innerHeight - 230))
+    });
+  }
+
+  startNote(): void {
+    this.noteComposerOpen.set(true);
+  }
+
+  saveNote(): void {
+    const repository = this.repository();
+    const context = this.selectedContext();
+    const content = this.noteDraft().trim();
+    if (!repository || !context || !content) return;
+    const note: ReviewNote = {
+      id: crypto.randomUUID(),
+      comparisonId: repository.comparisonId,
+      filePath: this.selectedPath()!,
+      startIndex: context.startIndex,
+      endIndex: context.endIndex,
+      startLine: context.startLine,
+      endLine: context.endLine,
+      content,
+      diff: context.diff,
+      createdAt: Date.now()
+    };
+    this.notes.update((notes) => [...notes, note]);
+    this.persistNotes();
+    this.toolsMenu.set(null);
+    this.noteComposerOpen.set(false);
+    this.noteDraft.set("");
+    this.reviewSidebarOpen.set(true);
+    this.reviewMessage.set("Note added");
+  }
+
+  cancelNote(): void {
+    this.noteComposerOpen.set(false);
+    this.noteDraft.set("");
+  }
+
+  deleteNote(id: string): void {
+    this.notes.update((notes) => notes.filter((note) => note.id !== id));
+    this.persistNotes();
+  }
+
+  async navigateToNote(note: ReviewNote): Promise<void> {
+    if (!this.repository()?.files.some((file) => file.path === note.filePath)) {
+      this.reviewMessage.set("File is no longer in this comparison");
+      return;
+    }
+    if (this.selectedPath() !== note.filePath) {
+      this.selectedPath.set(note.filePath);
+      await this.loadPatch(note.filePath);
+    }
+    const rows = this.rows();
+    const firstDiffLine = note.diff.split("\n")[0] ?? "";
+    const expectedKind = firstDiffLine.startsWith("+")
+      ? "addition"
+      : firstDiffLine.startsWith("-") ? "deletion" : "context";
+    const expectedContent = firstDiffLine.slice(1);
+    const resolvedStart = rows.findIndex((row) => (
+      row.kind === expectedKind && this.lineFor(row) === note.startLine && row.content === expectedContent
+    ));
+    if (resolvedStart < 0) {
+      this.selectedRange.set(null);
+      this.reviewMessage.set("Note anchor is outdated");
+      return;
+    }
+    const start = resolvedStart;
+    let end = start;
+    let cursor = start;
+    for (const diffLine of note.diff.split("\n").slice(1)) {
+      const kind = diffLine.startsWith("+") ? "addition" : diffLine.startsWith("-") ? "deletion" : "context";
+      const next = rows.findIndex((row, index) => index > cursor && row.kind === kind && row.content === diffLine.slice(1));
+      if (next < 0) break;
+      cursor = next;
+      end = next;
+    }
+    this.selectedRange.set({ anchor: start, focus: end });
+    requestAnimationFrame(() => {
+      this.diffScroll()?.nativeElement.querySelector(".line-selected")?.scrollIntoView({ block: "center" });
+    });
+  }
+
+  async copyNotes(): Promise<void> {
+    if (this.notes().length === 0) return;
+    try {
+      await window.rift.copyText(this.formatNotes());
+      this.reviewMessage.set("Copied agent-ready notes");
+    } catch (reason) {
+      this.reviewMessage.set(reason instanceof Error ? reason.message : String(reason));
+    }
+  }
+
+  async explainSelection(): Promise<void> {
+    const context = this.selectedContext();
+    const repository = this.repository();
+    const agent = this.selectedAgent();
+    if (!context || !repository || !agent || this.agentRunning()) return;
+    const prompt = [
+      "You are in read-only review mode. Do not edit files or run mutating commands.",
+      "Respond with analysis only.",
+      "Explain the selected code change.",
+      `Repository: ${repository.name}`,
+      `Comparison: ${repository.comparisonLabel}`,
+      `Location: ${this.selectedPath()}:${context.startLine}-${context.endLine}`,
+      "Selected diff:",
+      "```diff",
+      context.diff,
+      "```",
+      "Explain intent, behavior, and any non-obvious implications concisely."
+    ].join("\n");
+    this.toolsMenu.set(null);
+    this.reviewSidebarOpen.set(true);
+    await this.sendToAgent(agent, prompt);
+  }
+
+  async sendNotesToAgent(): Promise<void> {
+    const agent = this.selectedAgent();
+    if (!agent || this.notes().length === 0 || this.agentRunning()) return;
+    const prompt = [
+      "You are in read-only review mode. Do not edit files or run mutating commands.",
+      "Respond with analysis only.",
+      "Review these code-anchored notes.",
+      "Inspect the referenced code and respond with concrete recommendations for each note.",
+      "",
+      this.formatNotes()
+    ].join("\n");
+    await this.sendToAgent(agent, prompt);
+  }
+
+  async cancelAgent(): Promise<void> {
+    if (!this.agentRunning()) return;
+    this.reviewMessage.set("Cancelling agent request");
+    await window.rift.cancelAgent();
+  }
+
+  @HostListener("document:pointerdown", ["$event"])
+  dismissTools(event: PointerEvent): void {
+    if (!this.toolsMenu()) return;
+    const target = event.target;
+    if (target instanceof Element && !target.closest(".selection-tools")) this.toolsMenu.set(null);
+  }
+
+  @HostListener("document:keydown.escape")
+  closeTools(): void {
+    if (this.noteComposerOpen()) this.cancelNote();
+    else this.toolsMenu.set(null);
   }
 
   extendSelection(index: number, event: PointerEvent): void {
@@ -391,6 +615,11 @@ export class AppComponent implements OnInit, OnDestroy {
     });
   }
 
+  handleRowKeydown(index: number, row: DiffRow, event: KeyboardEvent): void {
+    this.selectWithKeyboard(index, row, event);
+    this.openToolsFromKeyboard(index, row, event);
+  }
+
   isSelectable(row: DiffRow): boolean {
     return row.kind === "addition" || row.kind === "deletion" || row.kind === "context";
   }
@@ -414,7 +643,9 @@ export class AppComponent implements OnInit, OnDestroy {
   private acceptRepository(repository: RepositorySnapshot, preserveSelection = false): void {
     const previousPath = this.selectedPath();
     const previousComparison = this.repository()?.comparisonId;
+    const previousRoot = this.repository()?.root;
     this.repository.set(repository);
+    if (previousRoot !== repository.root || previousComparison !== repository.comparisonId) this.loadNotes();
     this.error.set(null);
     const current = this.selectedPath();
     const nextPath = repository.files.some((file) => file.path === current) ? current : repository.files[0]?.path ?? null;
@@ -476,5 +707,93 @@ export class AppComponent implements OnInit, OnDestroy {
       const element = this.diffScroll()?.nativeElement;
       if (element) element.scrollLeft = 0;
     });
+  }
+
+  private selectedContext(): {
+    startIndex: number;
+    endIndex: number;
+    startLine: number;
+    endLine: number;
+    diff: string;
+  } | null {
+    const range = this.selectedRange();
+    if (!range) return null;
+    const startIndex = Math.min(range.anchor, range.focus);
+    const endIndex = Math.max(range.anchor, range.focus);
+    const selectedRows = this.rows().slice(startIndex, endIndex + 1).filter((row) => this.isSelectable(row));
+    const lines = selectedRows.map((row) => this.lineFor(row)).filter((line): line is number => line !== undefined);
+    if (selectedRows.length === 0 || lines.length === 0) return null;
+    return {
+      startIndex,
+      endIndex,
+      startLine: Math.min(...lines),
+      endLine: Math.max(...lines),
+      diff: selectedRows.map((row) => {
+        const prefix = row.kind === "addition" ? "+" : row.kind === "deletion" ? "-" : " ";
+        return `${prefix}${row.content}`;
+      }).join("\n")
+    };
+  }
+
+  private notesStorageKey(): string | null {
+    const repository = this.repository();
+    return repository ? `rift:notes:${repository.root}:${repository.comparisonId}` : null;
+  }
+
+  private loadNotes(): void {
+    const key = this.notesStorageKey();
+    if (!key) return;
+    try {
+      const stored = JSON.parse(localStorage.getItem(key) ?? "[]");
+      this.notes.set(Array.isArray(stored) ? stored.filter(isReviewNote).slice(0, 500) : []);
+    } catch {
+      this.notes.set([]);
+    }
+  }
+
+  private persistNotes(): void {
+    const key = this.notesStorageKey();
+    if (!key) return;
+    try {
+      localStorage.setItem(key, JSON.stringify(this.notes()));
+    } catch {
+      this.reviewMessage.set("Could not persist review notes");
+    }
+  }
+
+  private formatNotes(): string {
+    const repository = this.repository()!;
+    const sections = this.notes().map((note, index) => [
+      `## ${index + 1}. ${note.filePath}:${note.startLine}-${note.endLine}`,
+      note.content,
+      "",
+      "Selected diff:",
+      "```diff",
+      note.diff,
+      "```"
+    ].join("\n"));
+    return [
+      "# Rift review notes",
+      `Repository: ${repository.name}`,
+      `Comparison: ${repository.comparisonLabel}`,
+      "",
+      ...sections
+    ].join("\n\n");
+  }
+
+  private async sendToAgent(agent: AgentId, prompt: string): Promise<void> {
+    this.agentRunning.set(true);
+    this.agentResponse.set(null);
+    this.reviewMessage.set(`Waiting for ${this.agents().find((option) => option.id === agent)?.label ?? agent}`);
+    try {
+      const result = await window.rift.runAgent(agent, prompt);
+      this.agentResponse.set(result.output || "The agent completed without a text response.");
+      this.reviewMessage.set("Agent response ready");
+    } catch (reason) {
+      this.agentResponse.set(reason instanceof Error ? reason.message : String(reason));
+      this.reviewMessage.set("Agent request failed");
+    } finally {
+      this.agentRunning.set(false);
+    }
   }
 }

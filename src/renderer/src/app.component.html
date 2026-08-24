@@ -32,7 +32,7 @@
       </div>
     </header>
 
-    <section class="workspace">
+    <section class="workspace" [class.review-open]="reviewSidebarOpen()">
       <aside class="changes-panel">
         <div class="panel-title"><span>Changes</span><span class="count">{{ repository()!.files.length }}</span></div>
         <div class="file-list">
@@ -83,7 +83,8 @@
                 [attr.aria-selected]="isSelectable(row) ? isRowSelected($index, row) : null"
                 (pointerdown)="beginSelection($index, row, $event)"
                 (pointerenter)="extendSelection($index, $event)"
-                (keydown)="selectWithKeyboard($index, row, $event)"
+                (keydown)="handleRowKeydown($index, row, $event)"
+                (contextmenu)="openTools($index, row, $event)"
               >
                 <span class="line-number">{{ row.oldLine ?? "" }}</span>
                 <span class="line-number">{{ row.newLine ?? "" }}</span>
@@ -122,7 +123,8 @@
                         [attr.aria-selected]="isRowSelected(left.index, left.row)"
                         (pointerdown)="beginSelection(left.index, left.row, $event)"
                         (pointerenter)="extendSelection(left.index, $event)"
-                        (keydown)="selectWithKeyboard(left.index, left.row, $event)"
+                        (keydown)="handleRowKeydown(left.index, left.row, $event)"
+                        (contextmenu)="openTools(left.index, left.row, $event)"
                       >
                         <span class="line-number">{{ left.row.oldLine ?? "" }}</span>
                         <span class="line-prefix">{{ left.row.kind === "deletion" ? "-" : " " }}</span>
@@ -148,7 +150,8 @@
                         [attr.aria-selected]="pair.left?.index === right.index ? null : isRowSelected(right.index, right.row)"
                         (pointerdown)="beginSelection(right.index, right.row, $event)"
                         (pointerenter)="extendSelection(right.index, $event)"
-                        (keydown)="selectWithKeyboard(right.index, right.row, $event)"
+                        (keydown)="handleRowKeydown(right.index, right.row, $event)"
+                        (contextmenu)="openTools(right.index, right.row, $event)"
                       >
                         <span class="line-number">{{ right.row.newLine ?? "" }}</span>
                         <span class="line-prefix">{{ right.row.kind === "addition" ? "+" : " " }}</span>
@@ -175,34 +178,121 @@
       </section>
 
       <aside class="review-panel">
-        <div class="panel-title"><span>Review</span><span class="review-state">Local</span></div>
-        <div class="review-content">
-          <p class="eyebrow">Selected context</p>
-          @if (selectedPath()) {
-            <div class="context-card">
-              <strong>{{ shortName(selectedPath()!) }}</strong>
-              <span>{{ selectionLabel() }}</span>
+        @if (!reviewSidebarOpen()) {
+          <button
+            class="review-rail"
+            (click)="reviewSidebarOpen.set(true)"
+            title="Open review notes"
+            aria-label="Open review notes"
+            aria-expanded="false"
+          >
+            <span class="note-icon">N</span>
+            @if (notes().length > 0) { <b>{{ notes().length }}</b> }
+            <small>Notes</small>
+          </button>
+        } @else {
+          <div class="panel-title review-header">
+            <span>Review notes</span>
+            <button (click)="reviewSidebarOpen.set(false)" title="Collapse review sidebar" aria-label="Collapse review notes">×</button>
+          </div>
+          <div class="review-content">
+            <div class="agent-control">
+              <label for="review-agent">Code agent</label>
+              @if (agents().length > 0) {
+                <select id="review-agent" [value]="selectedAgent()" (change)="selectAgent($event)">
+                  @for (agent of agents(); track agent.id) {
+                    <option [value]="agent.id">{{ agent.label }}</option>
+                  }
+                </select>
+              } @else {
+                <span>No supported agent detected</span>
+              }
             </div>
-          } @else {
-            <p class="muted">Choose a changed file to begin.</p>
-          }
-          <div class="review-actions">
-            <button [disabled]="selectedLineCount() === 0">Explain selection</button>
-            <button [disabled]="selectedLineCount() === 0">Critical review</button>
+
+            <div class="notes-heading">
+              <span>{{ notes().length }} {{ notes().length === 1 ? "note" : "notes" }}</span>
+              @if (reviewMessage()) { <small>{{ reviewMessage() }}</small> }
+            </div>
+
+            <div class="notes-list">
+              @for (note of notes(); track note.id) {
+                <article class="review-note">
+                  <button class="note-location" (click)="navigateToNote(note)">
+                    <strong>{{ shortName(note.filePath) }}</strong>
+                    <span>Lines {{ note.startLine }}{{ note.endLine !== note.startLine ? "-" + note.endLine : "" }}</span>
+                  </button>
+                  <p>{{ note.content }}</p>
+                  <button class="note-delete" (click)="deleteNote(note.id)" title="Delete note" aria-label="Delete note">×</button>
+                </article>
+              } @empty {
+                <div class="notes-empty">
+                  <span class="note-icon">N</span>
+                  <strong>No review notes yet</strong>
+                  <p>Right-click a changed line or selection and choose Add note.</p>
+                </div>
+              }
+            </div>
+
+            <div class="notes-actions">
+              <button (click)="copyNotes()" [disabled]="notes().length === 0">Copy notes</button>
+              <button
+                class="primary-agent-action"
+                (click)="agentRunning() ? cancelAgent() : sendNotesToAgent()"
+                [disabled]="notes().length === 0 || !selectedAgent()"
+              >
+                <span class="ai-mark">AI</span>{{ agentRunning() ? "Cancel" : "Send to agent" }}
+              </button>
+            </div>
+
+            @if (agentResponse()) {
+              <section class="agent-response">
+                <span>Agent response</span>
+                <pre>{{ agentResponse() }}</pre>
+              </section>
+            }
           </div>
-          <div class="coming-next">
-            <span>Next slice</span>
-            <h2>Ask the code, not a chat box.</h2>
-            <p>The selected patch and line range will become the context sent to the active coding agent.</p>
-          </div>
-        </div>
+        }
       </aside>
     </section>
+
+    @if (toolsMenu(); as menu) {
+      <section
+        class="selection-tools"
+        [style.left.px]="menu.x"
+        [style.top.px]="menu.y"
+        [attr.role]="noteComposerOpen() ? 'dialog' : 'menu'"
+        [attr.aria-label]="noteComposerOpen() ? 'Add review note' : 'Selection tools'"
+      >
+        <header><span>Tools</span><small>{{ selectionLabel() }}</small></header>
+        @if (noteComposerOpen()) {
+          <label for="review-note">Review note</label>
+          <textarea
+            id="review-note"
+            rows="4"
+            autofocus
+            placeholder="What should be checked or changed?"
+            [value]="noteDraft()"
+            (input)="noteDraft.set($any($event.target).value)"
+          ></textarea>
+          <div class="note-composer-actions">
+            <button (click)="cancelNote()">Cancel</button>
+            <button class="save-note" (click)="saveNote()" [disabled]="!noteDraft().trim()">Add note</button>
+          </div>
+        } @else {
+          <button role="menuitem" (click)="startNote()"><span class="tool-mark">+</span><span><strong>Add note</strong><small>Attach review feedback</small></span></button>
+          <button role="menuitem" (click)="explainSelection()" [disabled]="!selectedAgent() || agentRunning()">
+            <span class="ai-mark">AI</span><span><strong>Explain</strong><small>Ask the active code agent</small></span>
+          </button>
+          <button role="menuitem" disabled title="Coming soon"><span class="ai-mark">AI</span><span><strong>Refactor</strong><small>Coming soon</small></span></button>
+        }
+      </section>
+    }
 
     <footer class="statusbar">
       <span>{{ repository()!.files.length }} files changed</span>
       <span class="positive">+{{ repository()!.additions }}</span>
       <span class="negative">-{{ repository()!.deletions }}</span>
+      @if (notes().length > 0) { <span>{{ notes().length }} review notes</span> }
       <span class="status-spacer"></span>
       <span>Watching repository</span>
     </footer>

@@ -8,6 +8,10 @@ const api: RiftApi = {
   getFilePatch: (path) => ipcRenderer.invoke("repository:patch", path),
   chooseRepository: () => ipcRenderer.invoke("repository:choose"),
   selectComparison: (id) => ipcRenderer.invoke("repository:compare", id),
+  listAgents: () => ipcRenderer.invoke("agent:list"),
+  runAgent: (id, prompt) => ipcRenderer.invoke("agent:run", id, prompt),
+  cancelAgent: () => ipcRenderer.invoke("agent:cancel"),
+  copyText: (text) => ipcRenderer.invoke("clipboard:write", text),
   onRepositoryChanged: (listener) => {
     const handler = (): void => listener();
     ipcRenderer.on("repository:changed", handler);
