@@ -7,6 +7,11 @@ if [ "$(uname -s)" != "Darwin" ]; then
   exit 1
 fi
 
+if [ "$(id -u)" -eq 0 ]; then
+  echo "Run install.sh as your normal user, not with sudo." >&2
+  exit 1
+fi
+
 if ! command -v npm >/dev/null 2>&1; then
   echo "Node.js 24 or newer is required." >&2
   exit 1
@@ -16,12 +21,25 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 APP_DESTINATION="$HOME/Applications/Rift.app"
 CLI_DESTINATION="$HOME/.local/bin/rift"
 
+has_foreign_owner() {
+  [ -e "$1" ] && [ -n "$(find "$1" ! -user "$(id -u)" -print -quit 2>/dev/null)" ]
+}
+
+if has_foreign_owner "$ROOT/node_modules" ||
+   has_foreign_owner "$APP_DESTINATION" ||
+   has_foreign_owner "$(dirname "$CLI_DESTINATION")"; then
+  echo "Files from an earlier sudo install are owned by root." >&2
+  echo "Repair them once, then run this installer again:" >&2
+  echo "sudo chown -R \"$(id -un):$(id -gn)\" \"$ROOT/node_modules\" \"$APP_DESTINATION\" \"$(dirname "$CLI_DESTINATION")\"" >&2
+  exit 1
+fi
+
 cd "$ROOT"
 npm ci
 npm run package:mac
 
 PACKAGED_APP=""
-for candidate in "$ROOT"/dist/mac*/Rift.app; do
+for candidate in "$ROOT"/release/mac*/Rift.app; do
   if [ -d "$candidate" ]; then
     PACKAGED_APP=$candidate
     break
@@ -29,7 +47,7 @@ for candidate in "$ROOT"/dist/mac*/Rift.app; do
 done
 
 if [ -z "$PACKAGED_APP" ]; then
-  echo "The packaged Rift.app was not found in $ROOT/dist." >&2
+  echo "The packaged Rift.app was not found in $ROOT/release." >&2
   exit 1
 fi
 

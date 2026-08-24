@@ -1,30 +1,31 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu } from "electron";
-import chokidar, { type FSWatcher } from "chokidar";
 import { execFile } from "node:child_process";
 import type { ChildProcess, ExecFileException } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, watch, type FSWatcher } from "node:fs";
 import { join, resolve } from "node:path";
 import { loadFilePatch, loadRepository } from "./git";
 import type { IpcMainInvokeEvent } from "electron";
-import type { AgentId, AgentOption, AgentRunResult, RepositorySnapshot } from "../shared/contracts";
+import type { AgentId, AgentOption, AgentRunResult, AgentToolEvent, RepositorySnapshot } from "../shared/contracts";
 
 const AGENTS: Readonly<Record<AgentId, { label: string; args: (prompt: string) => string[] }>> = {
-  opencode: { label: "OpenCode", args: (prompt) => ["run", "--pure", "--agent", "plan", prompt] },
+  opencode: { label: "OpenCode", args: (prompt) => ["run", "--pure", "--agent", "plan", "--format", "json", prompt] },
   claude: {
     label: "Claude Code",
-    args: (prompt) => ["--print", "--permission-mode", "plan", "--tools", "Read,Grep,Glob", prompt]
+    args: (prompt) => ["--print", "--verbose", "--output-format", "stream-json", "--permission-mode", "plan", "--tools", "Read,Grep,Glob,Bash", prompt]
   }
 };
 
 let mainWindow: BrowserWindow | null = null;
 let snapshot: RepositorySnapshot | null = null;
 let watcher: FSWatcher | null = null;
+let watchedRoot: string | null = null;
 let refreshTimer: NodeJS.Timeout | null = null;
-let activeComparisonId = "working-tree";
+let activeComparisonId = "auto";
 let repositoryLoadQueue = Promise.resolve();
 let repositoryGeneration = 0;
 let currentRepositoryPath: string | null = null;
 let activeAgentProcess: ChildProcess | null = null;
+let activePatchController: AbortController | null = null;
 const initialRepository = repositoryArgument(process.argv);
 
 function repositoryArgument(argv: string[]): string | undefined {
@@ -38,7 +39,7 @@ function execute(command: string, args: string[], cwd = process.cwd()): Promise<
     execFile(
       command,
       args,
-      { cwd, maxBuffer: 10 * 1024 * 1024, timeout: 180_000, windowsHide: true },
+      { cwd, maxBuffer: 10 * 1024 * 1024, timeout: 180_000, killSignal: "SIGKILL", windowsHide: true },
       (error, stdout, stderr) => {
         if (error) {
           reject(new Error(stderr.trim() || stdout.trim() || error.message));
@@ -60,7 +61,9 @@ function executeAgent(command: string, args: string[], cwd: string): Promise<str
       (error: ExecFileException | null, stdout, stderr) => {
         activeAgentProcess = null;
         if (error) {
-          const message = stderr.trim() || stdout.trim() || (error.killed ? "Agent request was cancelled." : error.message);
+          const message = error.killed
+            ? "Agent request timed out or was cancelled."
+            : stderr.trim() || stdout.trim() || error.message;
           reject(new Error(message));
           return;
         }
@@ -95,27 +98,108 @@ async function runAgent(id: AgentId, prompt: string): Promise<AgentRunResult> {
   if (!snapshot) throw new Error("No repository is open.");
   const command = await resolveCommand(id);
   if (!command) throw new Error(`${AGENTS[id].label} is not installed or is not on PATH.`);
-  return { output: await executeAgent(command, AGENTS[id].args(prompt), snapshot.root) };
+  return parseAgentOutput(id, await executeAgent(command, AGENTS[id].args(prompt), snapshot.root));
+}
+
+function record(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" ? value as Record<string, unknown> : null;
+}
+
+function toolDetail(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  try {
+    const serialized = typeof value === "string" ? value : JSON.stringify(value);
+    return serialized.length > 180 ? `${serialized.slice(0, 177)}...` : serialized;
+  } catch {
+    return undefined;
+  }
+}
+
+function parseAgentOutput(id: AgentId, output: string): AgentRunResult {
+  const events = output.split(/\r?\n/).map((line) => {
+    try {
+      return record(JSON.parse(line));
+    } catch {
+      return null;
+    }
+  }).filter((event): event is Record<string, unknown> => event !== null);
+
+  const tools = new Map<string, AgentToolEvent>();
+  const text: string[] = [];
+  let explanation = "";
+
+  for (const event of events) {
+    if (id === "opencode") {
+      const part = record(event.part);
+      if (part?.type === "tool") {
+        const state = record(part.state);
+        const toolId = String(part.callID ?? part.id ?? tools.size);
+        tools.set(toolId, {
+          id: toolId,
+          name: String(part.tool ?? "Tool"),
+          status: state?.status === "error" ? "failed" : "completed",
+          detail: toolDetail(state?.input)
+        });
+      }
+      if (part?.type === "text" && typeof part.text === "string" && part.text.trim()) text.push(part.text.trim());
+      continue;
+    }
+
+    if (event.type === "result" && typeof event.result === "string") explanation = event.result.trim();
+    const message = record(event.message);
+    const content = Array.isArray(message?.content) ? message.content : [];
+    for (const itemValue of content) {
+      const item = record(itemValue);
+      if (!item) continue;
+      if (item.type === "text" && typeof item.text === "string" && message?.role === "assistant") {
+        text.push(item.text.trim());
+      }
+      if (item.type === "tool_use") {
+        const toolId = String(item.id ?? tools.size);
+        tools.set(toolId, {
+          id: toolId,
+          name: String(item.name ?? "Tool"),
+          status: "completed",
+          detail: toolDetail(item.input)
+        });
+      }
+      if (item.type === "tool_result") {
+        const toolId = String(item.tool_use_id ?? "");
+        const existing = tools.get(toolId);
+        if (existing) tools.set(toolId, { ...existing, status: item.is_error ? "failed" : "completed" });
+      }
+    }
+  }
+
+  if (!explanation) explanation = text.filter(Boolean).join("\n\n").trim();
+  if (!explanation && events.length === 0) explanation = output.trim();
+  return {
+    tools: [...tools.values()],
+    explanation: explanation || "The agent completed without a text explanation."
+  };
 }
 
 function assertTrustedSender(event: IpcMainInvokeEvent): void {
   if (event.sender !== mainWindow?.webContents) throw new Error("Unauthorized IPC sender.");
 }
 
-async function watchRepository(root: string): Promise<void> {
-  await watcher?.close();
-  watcher = chokidar.watch(root, {
-    ignoreInitial: true,
-    ignored: (path) => {
-      const relative = path.slice(root.length);
-      return /[\\/](node_modules|out|dist|\.git[\\/]objects)([\\/]|$)/.test(relative);
-    }
-  });
+function watchRepository(root: string): void {
+  if (watcher && watchedRoot === root) return;
+  watcher?.close();
+  watchedRoot = root;
 
-  watcher.on("all", () => {
+  const onChange = (_event: string, filename: string | Buffer | null): void => {
+    const relative = filename?.toString() ?? "";
+    if (/(^|[\\/])(node_modules|out|app-out|dist|release|\.git[\\/]objects)([\\/]|$)/.test(relative)) return;
     if (refreshTimer) clearTimeout(refreshTimer);
     refreshTimer = setTimeout(() => mainWindow?.webContents.send("repository:changed"), 180);
-  });
+  };
+
+  try {
+    watcher = watch(root, { recursive: true }, onChange);
+  } catch {
+    watcher = watch(root, onChange);
+  }
 }
 
 function queueRepositoryLoad(path: string, comparisonId: string, generation: number): Promise<RepositorySnapshot> {
@@ -136,13 +220,13 @@ async function openRepository(path: string): Promise<RepositorySnapshot> {
   const previousComparisonId = activeComparisonId;
   const generation = ++repositoryGeneration;
   currentRepositoryPath = path;
-  activeComparisonId = "working-tree";
+  activeComparisonId = "auto";
   try {
     const loaded = await queueRepositoryLoad(path, activeComparisonId, generation);
     if (repositoryGeneration === generation) {
       if (refreshTimer) clearTimeout(refreshTimer);
       refreshTimer = null;
-      await watchRepository(loaded.root);
+      watchRepository(loaded.root);
     }
     return loaded;
   } catch (error) {
@@ -166,13 +250,30 @@ function registerIpc(): void {
 
   ipcMain.handle("repository:compare", async (_event, comparisonId: string) => {
     if (!currentRepositoryPath) throw new Error("No repository is open.");
+    if (!snapshot?.comparisons.some((option) => option.id === comparisonId)) {
+      throw new Error(`Unknown comparison: ${comparisonId}`);
+    }
+    const previousComparisonId = activeComparisonId;
     activeComparisonId = comparisonId;
-    return queueRepositoryLoad(currentRepositoryPath, comparisonId, repositoryGeneration);
+    try {
+      return await queueRepositoryLoad(currentRepositoryPath, comparisonId, repositoryGeneration);
+    } catch (error) {
+      activeComparisonId = previousComparisonId;
+      throw error;
+    }
   });
 
   ipcMain.handle("repository:patch", async (_event, path: string) => {
     if (!snapshot) throw new Error("No repository is open.");
-    return loadFilePatch(snapshot, path);
+    activePatchController?.abort();
+    const controller = new AbortController();
+    activePatchController = controller;
+    const patchSnapshot = snapshot;
+    try {
+      return await loadFilePatch(patchSnapshot, path, controller.signal);
+    } finally {
+      if (activePatchController === controller) activePatchController = null;
+    }
   });
 
   ipcMain.handle("repository:choose", async () => {
@@ -200,7 +301,7 @@ function registerIpc(): void {
 
   ipcMain.handle("agent:cancel", (event) => {
     assertTrustedSender(event);
-    activeAgentProcess?.kill();
+    activeAgentProcess?.kill("SIGKILL");
   });
 
   ipcMain.handle("clipboard:write", (event, text: string) => {
@@ -218,6 +319,7 @@ function createWindow(): void {
     minWidth: 940,
     minHeight: 600,
     backgroundColor: "#0b0d10",
+    show: false,
     autoHideMenuBar: true,
     titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "hidden",
     titleBarOverlay: process.platform === "win32"
@@ -232,6 +334,11 @@ function createWindow(): void {
     }
   });
   mainWindow.setMenuBarVisibility(false);
+  mainWindow.once("ready-to-show", () => {
+    mainWindow?.show();
+    if (process.platform === "darwin") app.focus({ steal: true });
+    mainWindow?.focus();
+  });
 
   if (process.env.ELECTRON_RENDERER_URL) {
     void mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL);
@@ -273,5 +380,5 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
-  void watcher?.close();
+  watcher?.close();
 });

@@ -46,8 +46,16 @@ export interface AgentOption {
   label: string;
 }
 
+export interface AgentToolEvent {
+  id: string;
+  name: string;
+  status: "completed" | "failed";
+  detail?: string;
+}
+
 export interface AgentRunResult {
-  output: string;
+  tools: AgentToolEvent[];
+  explanation: string;
 }
 
 export interface RiftApi {

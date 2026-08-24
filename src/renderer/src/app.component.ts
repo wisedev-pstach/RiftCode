@@ -9,14 +9,10 @@ import {
   signal,
   viewChild
 } from "@angular/core";
-import hljs from "highlight.js/lib/common";
-import powershell from "highlight.js/lib/languages/powershell";
-import type { AgentId, AgentOption, ChangedFile, FilePatch, RepositorySnapshot } from "../../shared/contracts";
+import type { AgentId, AgentOption, AgentRunResult, ChangedFile, FilePatch, RepositorySnapshot } from "../../shared/contracts";
 
 type DiffKind = "header" | "hunk" | "context" | "addition" | "deletion" | "meta";
 type DiffMode = "unified" | "split";
-
-hljs.registerLanguage("powershell", powershell);
 
 interface DetectedLanguage {
   id: string;
@@ -24,6 +20,7 @@ interface DetectedLanguage {
 }
 
 const PLAIN_TEXT: DetectedLanguage = { id: "plaintext", label: "Plain text" };
+const AGENT_STORAGE_KEY = "rift:last-agent";
 const LANGUAGES: Readonly<Record<string, DetectedLanguage>> = {
   bash: { id: "bash", label: "Shell" },
   c: { id: "c", label: "C" },
@@ -78,6 +75,11 @@ interface DiffRow {
   newHighlighted?: string;
   oldLine?: number;
   newLine?: number;
+}
+
+interface HighlightResponse {
+  requestId: number;
+  rows: DiffRow[];
 }
 
 interface SelectionRange {
@@ -181,64 +183,6 @@ function detectLanguage(path: string | null): DetectedLanguage {
   return LANGUAGES[extension] ?? PLAIN_TEXT;
 }
 
-function splitHighlightedLines(html: string): string[] {
-  const lines: string[] = [];
-  const openSpans: string[] = [];
-  let current = "";
-
-  for (const token of html.split(/(<span class="[^"]+">|<\/span>|\n)/)) {
-    if (token === "\n") {
-      current += "</span>".repeat(openSpans.length);
-      lines.push(current);
-      current = openSpans.join("");
-    } else if (token.startsWith("<span ")) {
-      openSpans.push(token);
-      current += token;
-    } else if (token === "</span>") {
-      openSpans.pop();
-      current += token;
-    } else {
-      current += token;
-    }
-  }
-  lines.push(current);
-  return lines;
-}
-
-function highlightRows(rows: DiffRow[], language: DetectedLanguage): DiffRow[] {
-  if (!hljs.getLanguage(language.id) || rows.length > 5000) return rows;
-  const highlighted = rows.map((row) => ({ ...row }));
-
-  function applyHighlighting(indexes: number[], side: "oldHighlighted" | "newHighlighted"): void {
-    if (indexes.length === 0) return;
-    try {
-      const code = indexes.map((index) => rows[index].content).join("\n");
-      const lines = splitHighlightedLines(
-        hljs.highlight(code, { language: language.id, ignoreIllegals: true }).value
-      );
-      indexes.forEach((rowIndex, lineIndex) => {
-        highlighted[rowIndex][side] = lines[lineIndex];
-      });
-    } catch {
-      // Plain text interpolation remains available if a grammar rejects the input.
-    }
-  }
-
-  let segmentStart = 0;
-  for (let index = 0; index <= rows.length; index += 1) {
-    if (index < rows.length && rows[index].kind !== "hunk") continue;
-    const indexes = Array.from({ length: index - segmentStart }, (_, offset) => segmentStart + offset);
-    applyHighlighting(indexes.filter((rowIndex) => rows[rowIndex].kind !== "addition"), "oldHighlighted");
-    applyHighlighting(indexes.filter((rowIndex) => rows[rowIndex].kind !== "deletion"), "newHighlighted");
-    segmentStart = index + 1;
-  }
-
-  return highlighted.map((row) => ({
-    ...row,
-    highlighted: row.kind === "deletion" ? row.oldHighlighted : row.newHighlighted
-  }));
-}
-
 function pairSplitRows(rows: DiffRow[]): SplitDiffRow[] {
   const result: SplitDiffRow[] = [];
   let index = 0;
@@ -288,22 +232,31 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly patch = signal<FilePatch | null>(null);
   readonly diffMode = signal<DiffMode>("unified");
   readonly selectedRange = signal<SelectionRange | null>(null);
+  readonly allChangesSelected = signal(false);
   readonly loading = signal(true);
   readonly comparisonChanging = signal(false);
   readonly error = signal<string | null>(null);
   readonly reviewSidebarOpen = signal(false);
   readonly toolsMenu = signal<ToolsMenu | null>(null);
   readonly noteComposerOpen = signal(false);
+  readonly questionComposerOpen = signal(false);
+  readonly questionDraft = signal("");
   readonly noteDraft = signal("");
   readonly notes = signal<ReviewNote[]>([]);
   readonly agents = signal<AgentOption[]>([]);
   readonly selectedAgent = signal<AgentId | null>(null);
   readonly agentRunning = signal(false);
-  readonly agentResponse = signal<string | null>(null);
+  readonly agentResult = signal<AgentRunResult | null>(null);
+  readonly agentError = signal<string | null>(null);
+  readonly agentModalOpen = signal(false);
+  readonly activeQuestion = signal("");
   readonly reviewMessage = signal<string | null>(null);
   readonly selectedFile = computed(() => this.repository()?.files.find((file) => file.path === this.selectedPath()));
+  readonly selectedAgentOption = computed(() => this.agents().find((agent) => agent.id === this.selectedAgent()));
   readonly detectedLanguage = computed(() => detectLanguage(this.selectedPath()));
-  readonly rows = computed(() => highlightRows(parsePatch(this.patch()?.patch ?? ""), this.detectedLanguage()));
+  readonly parsedRows = computed(() => parsePatch(this.patch()?.patch ?? ""));
+  readonly highlightedRows = signal<DiffRow[] | null>(null);
+  readonly rows = computed(() => this.highlightedRows() ?? this.parsedRows());
   readonly splitRows = computed(() => pairSplitRows(this.rows()));
   readonly diffScroll = viewChild<ElementRef<HTMLDivElement>>("diffScroll");
   readonly selectedLineCount = computed(() => {
@@ -314,6 +267,7 @@ export class AppComponent implements OnInit, OnDestroy {
     return this.rows().slice(start, end + 1).filter((row) => this.isSelectable(row)).length;
   });
   readonly selectionLabel = computed(() => {
+    if (this.allChangesSelected()) return `${this.repository()?.files.length ?? 0} files selected`;
     const range = this.selectedRange();
     const count = this.selectedLineCount();
     if (!range || count === 0) return "Select one or more changed lines";
@@ -331,8 +285,14 @@ export class AppComponent implements OnInit, OnDestroy {
   private selecting = false;
   private patchRequest = 0;
   private repositoryRequest = 0;
+  private highlightRequest = 0;
+  private agentRequest = 0;
+  private readonly highlightWorker = new Worker(new URL("./highlight.worker.ts", import.meta.url), { type: "module" });
 
   ngOnInit(): void {
+    this.highlightWorker.onmessage = ({ data }: MessageEvent<HighlightResponse>) => {
+      if (data.requestId === this.highlightRequest) this.highlightedRows.set(data.rows);
+    };
     const request = ++this.repositoryRequest;
     void window.rift.openRepository()
       .then((repository) => {
@@ -346,12 +306,16 @@ export class AppComponent implements OnInit, OnDestroy {
     this.removeRepositoryListener = window.rift.onRepositoryChanged(() => void this.refreshRepository());
     void window.rift.listAgents().then((agents) => {
       this.agents.set(agents);
-      this.selectedAgent.set(agents[0]?.id ?? null);
+      const preferred = localStorage.getItem(AGENT_STORAGE_KEY);
+      this.selectedAgent.set(agents.find((agent) => agent.id === preferred)?.id ?? agents[0]?.id ?? null);
+    }).catch((reason: Error) => {
+      this.reviewMessage.set(reason.message);
     });
   }
 
   ngOnDestroy(): void {
     this.removeRepositoryListener?.();
+    this.highlightWorker.terminate();
   }
 
   async chooseRepository(): Promise<void> {
@@ -372,6 +336,7 @@ export class AppComponent implements OnInit, OnDestroy {
     const request = ++this.repositoryRequest;
     this.comparisonChanging.set(true);
     this.selectedRange.set(null);
+    this.allChangesSelected.set(false);
     try {
       const repository = await window.rift.selectComparison(select.value);
       if (request === this.repositoryRequest) this.acceptRepository(repository);
@@ -394,7 +359,13 @@ export class AppComponent implements OnInit, OnDestroy {
 
   selectAgent(event: Event): void {
     if (event.target instanceof HTMLSelectElement) {
-      this.selectedAgent.set(event.target.value as AgentId);
+      const id = event.target.value as AgentId;
+      this.selectedAgent.set(id);
+      try {
+        localStorage.setItem(AGENT_STORAGE_KEY, id);
+      } catch {
+        this.reviewMessage.set("Could not remember the selected agent");
+      }
     }
   }
 
@@ -402,6 +373,7 @@ export class AppComponent implements OnInit, OnDestroy {
     if (path === this.selectedPath()) return;
     this.selectedPath.set(path);
     this.selectedRange.set(null);
+    this.allChangesSelected.set(false);
     this.resetHorizontalScroll();
     void this.loadPatch(path);
   }
@@ -410,6 +382,7 @@ export class AppComponent implements OnInit, OnDestroy {
     if (event.button !== 0 || !this.isSelectable(row)) return;
     event.preventDefault();
     (event.currentTarget as HTMLElement).focus({ preventScroll: true });
+    this.allChangesSelected.set(false);
     const current = this.selectedRange();
     const anchor = event.shiftKey && current ? current.anchor : index;
     this.selectedRange.set({ anchor, focus: index });
@@ -432,7 +405,9 @@ export class AppComponent implements OnInit, OnDestroy {
   private showTools(index: number, row: DiffRow, x: number, y: number): void {
     if (!this.isSelectable(row)) return;
     if (!this.isRowSelected(index, row)) this.selectedRange.set({ anchor: index, focus: index });
+    this.allChangesSelected.set(false);
     this.noteComposerOpen.set(false);
+    this.questionComposerOpen.set(false);
     this.noteDraft.set("");
     this.toolsMenu.set({
       x: Math.max(6, Math.min(x, window.innerWidth - 250)),
@@ -441,7 +416,25 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   startNote(): void {
+    this.questionComposerOpen.set(false);
     this.noteComposerOpen.set(true);
+  }
+
+  toggleAllChanges(event: MouseEvent): void {
+    const active = !this.allChangesSelected();
+    this.allChangesSelected.set(active);
+    this.selectedRange.set(null);
+    this.noteComposerOpen.set(false);
+    this.questionComposerOpen.set(false);
+    if (!active) {
+      this.toolsMenu.set(null);
+      return;
+    }
+    const bounds = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    this.toolsMenu.set({
+      x: Math.max(6, Math.min(bounds.right - 20, window.innerWidth - 250)),
+      y: bounds.bottom + 7
+    });
   }
 
   saveNote(): void {
@@ -529,26 +522,47 @@ export class AppComponent implements OnInit, OnDestroy {
     }
   }
 
+  startExplain(): void {
+    this.noteComposerOpen.set(false);
+    this.questionDraft.set("");
+    this.questionComposerOpen.set(true);
+  }
+
   async explainSelection(): Promise<void> {
     const context = this.selectedContext();
     const repository = this.repository();
     const agent = this.selectedAgent();
-    if (!context || !repository || !agent || this.agentRunning()) return;
+    if ((!context && !this.allChangesSelected()) || !repository || !agent || this.agentRunning()) return;
+    const question = this.questionDraft().trim() || "Explain this";
+    const scope = this.allChangesSelected()
+      ? [
+          "Scope: the complete comparison.",
+          `Start revision: ${repository.startRevision}`,
+          `End revision: ${repository.endRevision ?? "working tree"}`,
+          "Inspect the complete Git diff with read-only tools before answering.",
+          "Changed files:",
+          ...repository.files.map((file) => `- ${file.path}`)
+        ]
+      : [
+          `Location: ${this.selectedPath()}:${context!.startLine}-${context!.endLine}`,
+          "Selected diff:",
+          "```diff",
+          context!.diff,
+          "```"
+        ];
     const prompt = [
       "You are in read-only review mode. Do not edit files or run mutating commands.",
       "Respond with analysis only.",
-      "Explain the selected code change.",
       `Repository: ${repository.name}`,
       `Comparison: ${repository.comparisonLabel}`,
-      `Location: ${this.selectedPath()}:${context.startLine}-${context.endLine}`,
-      "Selected diff:",
-      "```diff",
-      context.diff,
-      "```",
+      ...scope,
+      `Question: ${question}`,
       "Explain intent, behavior, and any non-obvious implications concisely."
     ].join("\n");
     this.toolsMenu.set(null);
-    this.reviewSidebarOpen.set(true);
+    this.questionComposerOpen.set(false);
+    this.activeQuestion.set(question);
+    this.agentModalOpen.set(true);
     await this.sendToAgent(agent, prompt);
   }
 
@@ -563,13 +577,24 @@ export class AppComponent implements OnInit, OnDestroy {
       "",
       this.formatNotes()
     ].join("\n");
+    this.activeQuestion.set(`Review ${this.notes().length} code note${this.notes().length === 1 ? "" : "s"}`);
+    this.agentModalOpen.set(true);
     await this.sendToAgent(agent, prompt);
+  }
+
+  closeAgentModal(): void {
+    if (this.agentRunning()) void this.cancelAgent();
+    this.agentModalOpen.set(false);
   }
 
   async cancelAgent(): Promise<void> {
     if (!this.agentRunning()) return;
     this.reviewMessage.set("Cancelling agent request");
-    await window.rift.cancelAgent();
+    try {
+      await window.rift.cancelAgent();
+    } catch (reason) {
+      this.reviewMessage.set(reason instanceof Error ? reason.message : String(reason));
+    }
   }
 
   @HostListener("document:pointerdown", ["$event"])
@@ -581,7 +606,9 @@ export class AppComponent implements OnInit, OnDestroy {
 
   @HostListener("document:keydown.escape")
   closeTools(): void {
-    if (this.noteComposerOpen()) this.cancelNote();
+    if (this.agentModalOpen()) this.closeAgentModal();
+    else if (this.noteComposerOpen()) this.cancelNote();
+    else if (this.questionComposerOpen()) this.questionComposerOpen.set(false);
     else this.toolsMenu.set(null);
   }
 
@@ -608,6 +635,7 @@ export class AppComponent implements OnInit, OnDestroy {
   selectWithKeyboard(index: number, row: DiffRow, event: KeyboardEvent): void {
     if (!this.isSelectable(row) || (event.key !== "Enter" && event.key !== " ")) return;
     event.preventDefault();
+    this.allChangesSelected.set(false);
     const current = this.selectedRange();
     this.selectedRange.set({
       anchor: event.shiftKey && current ? current.anchor : index,
@@ -653,6 +681,7 @@ export class AppComponent implements OnInit, OnDestroy {
       && previousComparison === repository.comparisonId
       && previousPath === nextPath;
     if (!keepSelection) this.selectedRange.set(null);
+    if (!keepSelection) this.allChangesSelected.set(false);
     this.selectedPath.set(nextPath);
     if (nextPath) void this.loadPatch(nextPath, keepSelection);
     else {
@@ -686,20 +715,43 @@ export class AppComponent implements OnInit, OnDestroy {
 
   private async loadPatch(path: string, preserveSelection = false): Promise<void> {
     const request = ++this.patchRequest;
+    this.highlightRequest += 1;
     const previousPatch = this.patch();
     if (!preserveSelection) {
       this.patch.set(null);
+      this.highlightedRows.set(null);
       this.resetHorizontalScroll();
     }
     try {
       const patch = await window.rift.getFilePatch(path);
       if (request === this.patchRequest) {
+        if (
+          previousPatch?.path === patch.path
+          && previousPatch.patch === patch.patch
+          && previousPatch.binary === patch.binary
+        ) return;
         if (preserveSelection && previousPatch?.patch !== patch.patch) this.selectedRange.set(null);
         this.patch.set(patch);
+        this.requestHighlighting();
       }
     } catch (reason) {
       if (request === this.patchRequest) this.error.set(reason instanceof Error ? reason.message : String(reason));
     }
+  }
+
+  private requestHighlighting(): void {
+    const rows = this.parsedRows();
+    const language = this.detectedLanguage();
+    const characterCount = rows.reduce((total, row) => total + row.content.length, 0);
+    const requestId = ++this.highlightRequest;
+    this.highlightedRows.set(null);
+    if (
+      language.id === "plaintext"
+      || rows.length > 120
+      || characterCount > 30_000
+      || rows.some((row) => row.content.length > 10_000)
+    ) return;
+    this.highlightWorker.postMessage({ requestId, rows, languageId: language.id });
   }
 
   private resetHorizontalScroll(): void {
@@ -782,18 +834,25 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   private async sendToAgent(agent: AgentId, prompt: string): Promise<void> {
+    const request = ++this.agentRequest;
     this.agentRunning.set(true);
-    this.agentResponse.set(null);
+    this.agentModalOpen.set(true);
+    this.agentResult.set(null);
+    this.agentError.set(null);
     this.reviewMessage.set(`Waiting for ${this.agents().find((option) => option.id === agent)?.label ?? agent}`);
     try {
       const result = await window.rift.runAgent(agent, prompt);
-      this.agentResponse.set(result.output || "The agent completed without a text response.");
-      this.reviewMessage.set("Agent response ready");
+      if (request === this.agentRequest) {
+        this.agentResult.set(result);
+        this.reviewMessage.set("Explanation ready");
+      }
     } catch (reason) {
-      this.agentResponse.set(reason instanceof Error ? reason.message : String(reason));
-      this.reviewMessage.set("Agent request failed");
+      if (request === this.agentRequest) {
+        this.agentError.set(reason instanceof Error ? reason.message : String(reason));
+        this.reviewMessage.set("Agent request failed");
+      }
     } finally {
-      this.agentRunning.set(false);
+      if (request === this.agentRequest) this.agentRunning.set(false);
     }
   }
 }

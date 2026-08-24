@@ -35,11 +35,11 @@ finally {
     Pop-Location
 }
 
-$packagedApp = Get-ChildItem -LiteralPath (Join-Path $root "dist") -Directory -Filter "win*unpacked" |
+$packagedApp = Get-ChildItem -LiteralPath (Join-Path $root "release") -Directory -Filter "win*unpacked" |
     Sort-Object LastWriteTime -Descending |
     Select-Object -First 1
 if (-not $packagedApp -or -not (Test-Path -LiteralPath (Join-Path $packagedApp.FullName "Rift.exe"))) {
-    throw "The packaged Rift.exe was not found under $root\dist."
+    throw "The packaged Rift.exe was not found under $root\release."
 }
 
 if (Get-Process -Name "Rift" -ErrorAction SilentlyContinue) {
