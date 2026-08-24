@@ -23,11 +23,17 @@ interface ComparisonDefinition extends ComparisonOption {
   includeUntracked: boolean;
 }
 
-function run(command: string, args: string[], cwd: string, acceptedCodes = [0]): Promise<GitResult> {
+function run(
+  command: string,
+  args: string[],
+  cwd: string,
+  acceptedCodes = [0],
+  signal?: AbortSignal
+): Promise<GitResult> {
   return new Promise((resolvePromise, reject) => {
-    execFile(command, args, { cwd, maxBuffer: 50 * 1024 * 1024 }, (error, stdout, stderr) => {
+    execFile(command, args, { cwd, maxBuffer: 50 * 1024 * 1024, timeout: 30_000, signal }, (error, stdout, stderr) => {
       const code = error && "code" in error && typeof error.code === "number" ? error.code : 0;
-      if (error && !acceptedCodes.includes(code)) {
+      if (error && (typeof error.code !== "number" || !acceptedCodes.includes(code))) {
         reject(new Error(stderr.trim() || error.message));
         return;
       }
@@ -36,8 +42,8 @@ function run(command: string, args: string[], cwd: string, acceptedCodes = [0]):
   });
 }
 
-function git(cwd: string, args: string[], acceptedCodes = [0]): Promise<GitResult> {
-  return run("git", ["-c", "core.quotepath=false", ...args], cwd, acceptedCodes);
+function git(cwd: string, args: string[], acceptedCodes = [0], signal?: AbortSignal): Promise<GitResult> {
+  return run("git", ["-c", "core.quotepath=false", ...args], cwd, acceptedCodes, signal);
 }
 
 async function refExists(root: string, ref: string): Promise<boolean> {
@@ -162,7 +168,7 @@ async function untrackedStats(root: string, path: string): Promise<number> {
   }
 }
 
-export async function loadRepository(requestedPath: string, comparisonId = "working-tree"): Promise<RepositorySnapshot> {
+export async function loadRepository(requestedPath: string, comparisonId = "auto"): Promise<RepositorySnapshot> {
   const candidate = resolve(requestedPath);
   const rootResult = await git(candidate, ["rev-parse", "--show-toplevel"]);
   const root = rootResult.stdout.trim();
@@ -170,7 +176,10 @@ export async function loadRepository(requestedPath: string, comparisonId = "work
   const branch = branchResult.stdout.trim() || "HEAD";
   const base = await detectBase(root, branch);
   const comparisons = await comparisonDefinitions(root, branch, base);
-  const comparison = comparisons.find((entry) => entry.id === comparisonId) ?? comparisons[0];
+  const requestedComparisonId = comparisonId === "auto"
+    ? await defaultComparisonId(root, comparisons)
+    : comparisonId;
+  const comparison = comparisons.find((entry) => entry.id === requestedComparisonId) ?? comparisons[0];
   const revisions = comparison.endRevision
     ? [comparison.startRevision, comparison.endRevision]
     : [comparison.startRevision];
@@ -217,7 +226,15 @@ export async function loadRepository(requestedPath: string, comparisonId = "work
   };
 }
 
-export async function loadFilePatch(snapshot: RepositorySnapshot, path: string): Promise<FilePatch> {
+async function defaultComparisonId(root: string, comparisons: ComparisonDefinition[]): Promise<string> {
+  const status = await git(root, ["status", "--porcelain=v1", "--untracked-files=normal"]);
+  if (!status.stdout.trim() && comparisons.some((option) => option.id === "current-branch")) {
+    return "current-branch";
+  }
+  return "working-tree";
+}
+
+export async function loadFilePatch(snapshot: RepositorySnapshot, path: string, signal?: AbortSignal): Promise<FilePatch> {
   const file = snapshot.files.find((entry) => entry.path === path);
   if (!file) throw new Error(`File is no longer part of the comparison: ${path}`);
 
@@ -226,7 +243,8 @@ export async function loadFilePatch(snapshot: RepositorySnapshot, path: string):
     result = await git(
       snapshot.root,
       ["diff", "--no-index", "--no-color", "--unified=4", "--", "/dev/null", join(snapshot.root, path)],
-      [0, 1]
+      [0, 1],
+      signal
     );
   } else {
     const revisions = snapshot.endRevision
@@ -244,7 +262,7 @@ export async function loadFilePatch(snapshot: RepositorySnapshot, path: string):
       ...revisions,
       "--",
       ...paths
-    ]);
+    ], [0], signal);
   }
 
   return {

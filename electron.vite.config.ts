@@ -16,11 +16,15 @@ function inlineAngularTemplate() {
 
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin()]
+    plugins: [externalizeDepsPlugin()],
+    build: {
+      outDir: resolve("app-out/main")
+    }
   },
   preload: {
     plugins: [externalizeDepsPlugin()],
     build: {
+      outDir: resolve("app-out/preload"),
       rollupOptions: {
         output: {
           format: "cjs",
@@ -36,6 +40,9 @@ export default defineConfig({
         "@shared": resolve("src/shared")
       }
     },
-    plugins: [inlineAngularTemplate()]
+    plugins: [inlineAngularTemplate()],
+    build: {
+      outDir: resolve("app-out/renderer")
+    }
   }
 });
