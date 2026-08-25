@@ -10,7 +10,7 @@
 } @else {
   <main class="app-shell" [class.platform-windows]="platform === 'win32'" [class.platform-macos]="platform === 'darwin'">
     <header class="topbar">
-      <div class="brand"><strong>RIFT<small>code</small></strong></div>
+       <div class="brand" aria-label="RIFTcode"><strong class="typing-logo"><span class="logo-letter">R</span><span class="logo-letter">I</span><span class="logo-letter">F</span><span class="logo-letter">T</span><small>code</small></strong></div>
       <div class="comparison-picker">
         <button class="repository-switcher" (click)="chooseRepository()" [title]="repository()!.root">
           {{ repository()!.name }}
@@ -192,17 +192,21 @@
 
       <aside class="review-panel">
         @if (!reviewSidebarOpen()) {
-          <button
-            class="review-rail"
-            (click)="reviewSidebarOpen.set(true)"
-            title="Open review notes"
-            aria-label="Open review notes"
-            aria-expanded="false"
-          >
-            <span class="note-icon">N</span>
-            @if (notes().length > 0) { <b>{{ notes().length }}</b> }
-            <small>Notes</small>
-          </button>
+          <div class="review-rails">
+            <button class="review-rail" (click)="reviewSidebarOpen.set(true)" title="Open review notes" aria-label="Open review notes">
+              <span class="note-icon">N</span>
+              @if (notes().length > 0) { <b>{{ notes().length }}</b> }
+              <small>Notes</small>
+            </button>
+            @if (conversations().length > 0) {
+              <button class="review-rail conversation-rail" (click)="openConversation()" title="Open conversations" aria-label="Open conversations">
+                <span class="ai-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 1c0 6.1-4.9 11-11 11 6.1 0 11 4.9 11 11 0-6.1 4.9-11 11-11-6.1 0-11-11-11-11Z"/><circle cx="19" cy="5" r="2"/></svg></span>
+                @if (conversations().some((conversation) => conversation.status === "running")) { <i class="rail-spinner" aria-label="Conversation is waiting"></i> }
+                @else { <b>{{ conversations().length }}</b> }
+                <small>Chats</small>
+              </button>
+            }
+          </div>
         } @else {
           <div class="panel-title review-header">
             <span>Review notes</span>
@@ -226,6 +230,18 @@
               <span>{{ notes().length }} {{ notes().length === 1 ? "note" : "notes" }}</span>
               @if (reviewMessage()) { <small>{{ reviewMessage() }}</small> }
             </div>
+
+            @if (conversations().length > 0) {
+              <div class="conversation-list" aria-label="Conversations">
+                @for (conversation of conversations(); track conversation.id) {
+                  <button class="conversation-item" [class.active]="conversation.id === activeConversationId()" (click)="openConversation(conversation.id)">
+                    <span class="conversation-status status-{{ conversation.status }}"></span>
+                    <span>{{ conversation.question }}</span>
+                    @if (conversation.status === "running") { <i class="mini-spinner" aria-label="Waiting"></i> }
+                  </button>
+                }
+              </div>
+            }
 
             <div class="notes-list">
               @for (note of notes(); track note.id) {
@@ -269,20 +285,36 @@
             <span class="ai-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 1c0 6.1-4.9 11-11 11 6.1 0 11 4.9 11 11 0-6.1 4.9-11 11-11-6.1 0-11-4.9-11-11Z"/><circle cx="19" cy="5" r="2"/></svg></span>
             <span><strong>Inference</strong><small>{{ selectedAgentOption()?.label || "Code agent" }} · default model</small></span>
             <button (click)="closeAgentModal()" aria-label="Close inference">×</button>
-          </header>
+           </header>
+
+          @if (conversations().length > 1) {
+            <nav class="conversation-tabs" aria-label="Conversation tabs">
+              @for (conversation of conversations(); track conversation.id) {
+                <button [class.active]="conversation.id === activeConversationId()" (click)="openConversation(conversation.id)">
+                  <span class="conversation-status status-{{ conversation.status }}"></span>{{ conversation.question }}
+                </button>
+              }
+            </nav>
+          }
 
           <div class="inference-thread">
-            <div class="chat-message user-message">
-              <span>You</span>
-              <p>{{ activeQuestion() || "Explain this" }}</p>
-            </div>
+             <div class="chat-message user-message">
+               <span>You</span>
+               <p>{{ activeQuestion() || "Explain this" }}</p>
+               @if (activeConversation()?.context; as context) {
+                 <button class="conversation-context" (click)="jumpToConversationContext(context)" title="Jump to referenced code">
+                   <span class="context-pin">↳</span>
+                   <span><strong>{{ shortName(context.filePath) }}</strong><small>Lines {{ context.startLine }}{{ context.endLine !== context.startLine ? "-" + context.endLine : "" }} · Jump to code</small></span>
+                 </button>
+               }
+             </div>
 
             <div class="chat-message assistant-message">
               <span>{{ selectedAgentOption()?.label || "Agent" }}</span>
-              @if (agentRunning()) {
+              @if (activeConversationRunning()) {
                 <div class="agent-pending">
                   <span class="ai-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 1c0 6.1-4.9 11-11 11 6.1 0 11 4.9 11 11 0-6.1 4.9-11 11-11-6.1 0-11-4.9-11-11Z"/><circle cx="19" cy="5" r="2"/></svg></span>
-                  <span><strong>Analyzing selection</strong><small>Waiting for the provider</small></span>
+                  <span><strong>Analyzing selection <i class="loading-spinner" aria-hidden="true"></i></strong><small>Waiting for the provider</small></span>
                 </div>
               }
 
@@ -306,10 +338,36 @@
             </div>
           </div>
 
-          <footer>
-            <span>{{ agentRunning() ? "Provider request in progress" : agentError() ? "Request failed" : "Explanation complete" }}</span>
-            <button (click)="agentRunning() ? cancelAgent() : closeAgentModal()">{{ agentRunning() ? "Cancel" : "Close" }}</button>
-          </footer>
+           <footer>
+             <span>{{ activeConversationRunning() ? "Provider request in progress · you can hide this" : agentError() ? "Request failed" : "Explanation complete" }}</span>
+             <div class="inference-actions">
+               @if (activeConversationRunning()) { <button (click)="cancelAgent()">Cancel</button> }
+               <button (click)="closeAgentModal()">Hide</button>
+             </div>
+           </footer>
+        </section>
+      </div>
+    }
+
+    @if (conversationChoiceOpen(); as choiceOpen) {
+      <div class="conversation-choice-backdrop">
+        <section class="conversation-choice" role="dialog" aria-modal="true" aria-label="Choose conversation">
+          <header>
+            <strong>Continue your review</strong>
+            <button (click)="cancelConversationChoice()" aria-label="Close conversation choice">×</button>
+          </header>
+          <p>Start a separate conversation or continue in one of your existing conversations.</p>
+          <div class="conversation-choice-actions">
+            <button class="new-conversation" (click)="startExplainRequest()">
+              <strong>New conversation</strong><small>Keep this explanation in a new tab</small>
+            </button>
+            @for (conversation of conversations(); track conversation.id) {
+              <button (click)="startExplainRequest(pendingExplain(), conversation.id)" [disabled]="conversation.status === 'running'">
+                <span class="conversation-status status-{{ conversation.status }}"></span>
+                <span><strong>Use {{ conversation.question }}</strong><small>Continue in this conversation</small></span>
+              </button>
+            }
+          </div>
         </section>
       </div>
     }
