@@ -1,6 +1,6 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu } from "electron";
-import { execFile } from "node:child_process";
-import type { ChildProcess, ExecFileException } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { existsSync, watch, type FSWatcher } from "node:fs";
 import { join, resolve } from "node:path";
 import { loadFilePatch, loadRepository } from "./git";
@@ -8,7 +8,7 @@ import type { IpcMainInvokeEvent } from "electron";
 import type { AgentId, AgentOption, AgentRunResult, AgentToolEvent, RepositorySnapshot } from "../shared/contracts";
 
 const AGENTS: Readonly<Record<AgentId, { label: string; args: (prompt: string) => string[] }>> = {
-  opencode: { label: "OpenCode", args: (prompt) => ["run", "--pure", "--agent", "plan", "--format", "json", prompt] },
+  opencode: { label: "OpenCode", args: (prompt) => ["run", "--pure", "--agent", "plan", "--format", "json", "--auto", prompt] },
   claude: {
     label: "Claude Code",
     args: (prompt) => ["--print", "--verbose", "--output-format", "stream-json", "--permission-mode", "plan", "--tools", "Read,Grep,Glob,Bash", prompt]
@@ -25,6 +25,7 @@ let repositoryLoadQueue = Promise.resolve();
 let repositoryGeneration = 0;
 let currentRepositoryPath: string | null = null;
 let activeAgentProcess: ChildProcess | null = null;
+let agentCancellationRequested = false;
 let activePatchController: AbortController | null = null;
 const initialRepository = repositoryArgument(process.argv);
 
@@ -53,23 +54,44 @@ function execute(command: string, args: string[], cwd = process.cwd()): Promise<
 
 function executeAgent(command: string, args: string[], cwd: string): Promise<string> {
   if (activeAgentProcess) return Promise.reject(new Error("An agent request is already running."));
+  agentCancellationRequested = false;
   return new Promise((resolvePromise, reject) => {
-    const child = execFile(
-      command,
-      args,
-      { cwd, maxBuffer: 10 * 1024 * 1024, timeout: 180_000, windowsHide: true },
-      (error: ExecFileException | null, stdout, stderr) => {
-        activeAgentProcess = null;
-        if (error) {
-          const message = error.killed
-            ? "Agent request timed out or was cancelled."
-            : stderr.trim() || stdout.trim() || error.message;
-          reject(new Error(message));
-          return;
-        }
-        resolvePromise(stdout.trim());
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const child = spawn(command, args, { cwd, windowsHide: true, shell: false, stdio: ["ignore", "pipe", "pipe"] });
+    const timer = setTimeout(() => {
+      if (settled) return;
+      child.kill("SIGKILL");
+    }, 120_000);
+    const finish = (error?: Error): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      activeAgentProcess = null;
+      if (error) reject(error);
+      else resolvePromise(stdout.trim());
+    };
+    child.stdout?.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString();
+      if (stdout.length > 10 * 1024 * 1024) {
+        child.kill("SIGKILL");
+        finish(new Error("Agent output exceeded the 10 MB limit."));
       }
-    );
+    });
+    child.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+    child.once("error", (error) => finish(error));
+    child.once("close", (code, signal) => {
+      if (agentCancellationRequested) {
+        finish(new Error("Agent request was cancelled."));
+      } else if (signal) {
+        finish(new Error("Agent request timed out after 120 seconds."));
+      } else if (code !== 0) {
+        finish(new Error(stderr.trim() || stdout.trim() || `Agent exited with code ${code}.`));
+      } else {
+        finish();
+      }
+    });
     activeAgentProcess = child;
   });
 }
@@ -116,13 +138,16 @@ function toolDetail(value: unknown): string | undefined {
 }
 
 function parseAgentOutput(id: AgentId, output: string): AgentRunResult {
-  const events = output.split(/\r?\n/).map((line) => {
+  const events = output.split(/\r?\n/).flatMap((line) => {
     try {
-      return record(JSON.parse(line));
+      const parsed = JSON.parse(line);
+      return Array.isArray(parsed)
+        ? parsed.map(record).filter((event): event is Record<string, unknown> => event !== null)
+        : [record(parsed)].filter((event): event is Record<string, unknown> => event !== null);
     } catch {
-      return null;
+      return [];
     }
-  }).filter((event): event is Record<string, unknown> => event !== null);
+  });
 
   const tools = new Map<string, AgentToolEvent>();
   const text: string[] = [];
@@ -130,18 +155,22 @@ function parseAgentOutput(id: AgentId, output: string): AgentRunResult {
 
   for (const event of events) {
     if (id === "opencode") {
-      const part = record(event.part);
+      const data = record(event.data);
+      const part = record(event.part) ?? record(data?.part);
       if (part?.type === "tool") {
-        const state = record(part.state);
+        const state = record(part.state) ?? record(data?.state) ?? record(event.state);
         const toolId = String(part.callID ?? part.id ?? tools.size);
         tools.set(toolId, {
           id: toolId,
-          name: String(part.tool ?? "Tool"),
+          name: String(part.tool ?? data?.tool ?? event.tool ?? "Tool"),
           status: state?.status === "error" ? "failed" : "completed",
           detail: toolDetail(state?.input)
         });
       }
-      if (part?.type === "text" && typeof part.text === "string" && part.text.trim()) text.push(part.text.trim());
+      const eventText = part?.text ?? event.text ?? data?.text;
+      if ((part?.type === "text" || event.type === "text") && typeof eventText === "string" && eventText.trim()) {
+        text.push(eventText.trim());
+      }
       continue;
     }
 
@@ -301,7 +330,10 @@ function registerIpc(): void {
 
   ipcMain.handle("agent:cancel", (event) => {
     assertTrustedSender(event);
-    activeAgentProcess?.kill("SIGKILL");
+    if (activeAgentProcess) {
+      agentCancellationRequested = true;
+      activeAgentProcess.kill("SIGKILL");
+    }
   });
 
   ipcMain.handle("clipboard:write", (event, text: string) => {

@@ -116,6 +116,31 @@ interface ToolsMenu {
   y: number;
 }
 
+type ConversationStatus = "running" | "complete" | "error" | "cancelled";
+
+interface Conversation {
+  id: number;
+  question: string;
+  context?: ConversationContext;
+  status: ConversationStatus;
+  result: AgentRunResult | null;
+  error: string | null;
+}
+
+interface ConversationContext {
+  filePath: string;
+  startLine: number;
+  endLine: number;
+  diff: string;
+}
+
+interface PendingExplain {
+  agent: AgentId;
+  prompt: string;
+  question: string;
+  context?: ConversationContext;
+}
+
 function isReviewNote(value: unknown): value is ReviewNote {
   if (!value || typeof value !== "object") return false;
   const note = value as Record<string, unknown>;
@@ -250,6 +275,12 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly agentError = signal<string | null>(null);
   readonly agentModalOpen = signal(false);
   readonly activeQuestion = signal("");
+  readonly conversations = signal<Conversation[]>([]);
+  readonly activeConversationId = signal<number | null>(null);
+  readonly activeConversation = computed(() => this.conversations().find((conversation) => conversation.id === this.activeConversationId()) ?? null);
+  readonly activeConversationRunning = computed(() => this.activeConversation()?.status === "running");
+  readonly conversationChoiceOpen = signal(false);
+  readonly pendingExplain = signal<PendingExplain | null>(null);
   readonly reviewMessage = signal<string | null>(null);
   readonly selectedFile = computed(() => this.repository()?.files.find((file) => file.path === this.selectedPath()));
   readonly selectedAgentOption = computed(() => this.agents().find((agent) => agent.id === this.selectedAgent()));
@@ -287,6 +318,7 @@ export class AppComponent implements OnInit, OnDestroy {
   private repositoryRequest = 0;
   private highlightRequest = 0;
   private agentRequest = 0;
+  private conversationRequest = 0;
   private readonly highlightWorker = new Worker(new URL("./highlight.worker.ts", import.meta.url), { type: "module" });
 
   ngOnInit(): void {
@@ -562,8 +594,45 @@ export class AppComponent implements OnInit, OnDestroy {
     this.toolsMenu.set(null);
     this.questionComposerOpen.set(false);
     this.activeQuestion.set(question);
+    const conversationContext = context ? {
+      filePath: this.selectedPath()!,
+      startLine: context.startLine,
+      endLine: context.endLine,
+      diff: context.diff
+    } : undefined;
+    const pending: PendingExplain = { agent, prompt, question, context: conversationContext };
+    if (this.conversations().length > 0) {
+      this.pendingExplain.set(pending);
+      this.conversationChoiceOpen.set(true);
+      return;
+    }
+    await this.startExplainRequest(pending);
+  }
+
+  async startExplainRequest(pending = this.pendingExplain(), conversationId?: number): Promise<void> {
+    if (!pending) return;
+    const existing = conversationId === undefined
+      ? null
+      : this.conversations().find((conversation) => conversation.id === conversationId);
+    const prompt = existing?.result
+      ? [
+          pending.prompt,
+          "Continue the existing review conversation.",
+          `Previous question: ${existing.question}`,
+          "Previous response:",
+          existing.result.explanation
+        ].join("\n\n")
+      : pending.prompt;
+    this.conversationChoiceOpen.set(false);
+    this.pendingExplain.set(null);
+    this.activeQuestion.set(pending.question);
     this.agentModalOpen.set(true);
-    await this.sendToAgent(agent, prompt);
+    await this.sendToAgent(pending.agent, prompt, pending.context, conversationId);
+  }
+
+  cancelConversationChoice(): void {
+    this.conversationChoiceOpen.set(false);
+    this.pendingExplain.set(null);
   }
 
   async sendNotesToAgent(): Promise<void> {
@@ -583,8 +652,17 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   closeAgentModal(): void {
-    if (this.agentRunning()) void this.cancelAgent();
     this.agentModalOpen.set(false);
+  }
+
+  openConversation(id?: number): void {
+    const conversation = this.conversations().find((entry) => entry.id === (id ?? this.activeConversationId()));
+    if (!conversation) return;
+    this.activeConversationId.set(conversation.id);
+    this.activeQuestion.set(conversation.question);
+    this.agentResult.set(conversation.result);
+    this.agentError.set(conversation.error);
+    this.agentModalOpen.set(true);
   }
 
   async cancelAgent(): Promise<void> {
@@ -595,6 +673,41 @@ export class AppComponent implements OnInit, OnDestroy {
     } catch (reason) {
       this.reviewMessage.set(reason instanceof Error ? reason.message : String(reason));
     }
+  }
+
+  async jumpToConversationContext(context: ConversationContext): Promise<void> {
+    const repository = this.repository();
+    if (!repository?.files.some((file) => file.path === context.filePath)) {
+      this.reviewMessage.set("Conversation context is no longer in this comparison");
+      return;
+    }
+    if (this.selectedPath() !== context.filePath) {
+      this.selectedPath.set(context.filePath);
+      await this.loadPatch(context.filePath);
+    }
+    const firstDiffLine = context.diff.split("\n")[0] ?? "";
+    const expectedKind = firstDiffLine.startsWith("+")
+      ? "addition"
+      : firstDiffLine.startsWith("-") ? "deletion" : "context";
+    const expectedContent = firstDiffLine.slice(1);
+    const start = this.rows().findIndex((row) => (
+      row.kind === expectedKind && this.lineFor(row) === context.startLine && row.content === expectedContent
+    ));
+    if (start < 0) {
+      this.reviewMessage.set("Conversation context is outdated");
+      return;
+    }
+    const lastDiffLine = context.diff.split("\n").at(-1) ?? firstDiffLine;
+    const end = context.endLine === context.startLine
+      ? start
+      : this.rows().findIndex((row, index) => (
+        index >= start && this.lineFor(row) === context.endLine && row.content === lastDiffLine.slice(1)
+      ));
+    this.selectedRange.set({ anchor: start, focus: end >= start ? end : start });
+    requestAnimationFrame(() => {
+      this.diffScroll()?.nativeElement.querySelector(".line-selected")?.scrollIntoView({ block: "center" });
+    });
+    this.agentModalOpen.set(false);
   }
 
   @HostListener("document:pointerdown", ["$event"])
@@ -833,8 +946,16 @@ export class AppComponent implements OnInit, OnDestroy {
     ].join("\n\n");
   }
 
-  private async sendToAgent(agent: AgentId, prompt: string): Promise<void> {
+  private async sendToAgent(agent: AgentId, prompt: string, context?: ConversationContext, existingConversationId?: number): Promise<void> {
     const request = ++this.agentRequest;
+    const conversationId = existingConversationId ?? ++this.conversationRequest;
+    const question = this.activeQuestion();
+    this.conversations.update((conversations) => existingConversationId
+      ? conversations.map((conversation) => conversation.id === conversationId
+        ? { ...conversation, question, context, status: "running", result: null, error: null }
+        : conversation)
+      : [...conversations, { id: conversationId, question, context, status: "running", result: null, error: null }]);
+    this.activeConversationId.set(conversationId);
     this.agentRunning.set(true);
     this.agentModalOpen.set(true);
     this.agentResult.set(null);
@@ -843,13 +964,22 @@ export class AppComponent implements OnInit, OnDestroy {
     try {
       const result = await window.rift.runAgent(agent, prompt);
       if (request === this.agentRequest) {
-        this.agentResult.set(result);
+        if (this.activeConversationId() === conversationId) this.agentResult.set(result);
+        this.conversations.update((conversations) => conversations.map((conversation) => (
+          conversation.id === conversationId ? { ...conversation, status: "complete", result, error: null } : conversation
+        )));
         this.reviewMessage.set("Explanation ready");
       }
     } catch (reason) {
       if (request === this.agentRequest) {
-        this.agentError.set(reason instanceof Error ? reason.message : String(reason));
-        this.reviewMessage.set("Agent request failed");
+        const error = reason instanceof Error ? reason.message : String(reason);
+        if (this.activeConversationId() === conversationId) this.agentError.set(error);
+        this.conversations.update((conversations) => conversations.map((conversation) => (
+          conversation.id === conversationId
+            ? { ...conversation, status: error.toLowerCase().includes("cancel") ? "cancelled" : "error", error }
+            : conversation
+        )));
+        this.reviewMessage.set(error.toLowerCase().includes("cancel") ? "Agent request cancelled" : "Agent request failed");
       }
     } finally {
       if (request === this.agentRequest) this.agentRunning.set(false);
