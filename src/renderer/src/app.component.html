@@ -45,7 +45,7 @@
               (click)="toggleAllChanges($event)"
               title="Select the complete comparison"
             >All</button>
-            <span class="count">{{ repository()!.files.length }}</span>
+            <span class="count" [title]="reviewedFileCount() + ' files reviewed'">{{ reviewedFileCount() }}/{{ repository()!.files.length }}</span>
           </span>
         </div>
         <div class="file-list">
@@ -53,12 +53,16 @@
             <button
               class="file-row"
               [class.selected]="file.path === selectedPath()"
+              [class.reviewed]="isFileReviewed(file.path)"
               (click)="selectFile(file.path)"
               [title]="file.path"
             >
               <span class="status status-{{ file.status }}">{{ statusLabel(file) }}</span>
               <span class="file-name"><strong>{{ shortName(file.path) }}</strong><small>{{ directory(file.path) }}</small></span>
-              <span class="file-stat"><i>+{{ file.additions }}</i><b>-{{ file.deletions }}</b></span>
+              <span class="file-stat">
+                @if (isFileReviewed(file.path)) { <em title="Reviewed" aria-label="Reviewed">✓</em> }
+                <i>+{{ file.additions }}</i><b>-{{ file.deletions }}</b>
+              </span>
             </button>
           } @empty {
             <p class="empty-copy">No changes in this comparison.</p>
@@ -73,6 +77,12 @@
             @if (selectedFile()) { <span>{{ selectedFile()!.path }}</span> }
           </div>
           <div class="diff-options">
+            <button
+              class="review-file-button"
+              [class.reviewed]="selectedPath() && isFileReviewed(selectedPath()!)"
+              [disabled]="!selectedFile()"
+              (click)="toggleSelectedFileReviewed()"
+            >{{ selectedPath() && isFileReviewed(selectedPath()!) ? "Reviewed" : "Mark reviewed" }}</button>
             <span class="language-pill">{{ detectedLanguage().label }}</span>
             <label class="mode-picker">
               <span class="visually-hidden">Diff layout</span>
@@ -195,17 +205,14 @@
           <div class="review-rails">
             <button class="review-rail" (click)="reviewSidebarOpen.set(true)" title="Open review notes" aria-label="Open review notes">
               <span class="note-icon">N</span>
-              @if (notes().length > 0) { <b>{{ notes().length }}</b> }
               <small>Notes</small>
+              @if (notes().length > 0) { <b>{{ notes().length }}</b> }
             </button>
-            @if (conversations().length > 0) {
-              <button class="review-rail conversation-rail" (click)="openConversation()" title="Open conversations" aria-label="Open conversations">
-                <span class="ai-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 1c0 6.1-4.9 11-11 11 6.1 0 11 4.9 11 11 0-6.1 4.9-11 11-11-6.1 0-11-11-11-11Z"/><circle cx="19" cy="5" r="2"/></svg></span>
-                @if (conversations().some((conversation) => conversation.status === "running")) { <i class="rail-spinner" aria-label="Conversation is waiting"></i> }
-                @else { <b>{{ conversations().length }}</b> }
-                <small>Chats</small>
-              </button>
-            }
+            <button class="review-rail conversation-rail" (click)="startSidebarExplain()" [disabled]="!selectedAgent() || agentRunning()" title="Explain changes" aria-label="Explain changes">
+              <span class="ai-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 1c0 6.1-4.9 11-11 11 6.1 0 11 4.9 11 11 0-6.1 4.9-11 11-11-6.1 0-11-11-11-11Z"/><circle cx="19" cy="5" r="2"/></svg></span>
+              <small>Chats</small>
+              @if (repositoryConversations().some((conversation) => conversation.status === "running")) { <i class="rail-spinner" aria-label="Explanation is running"></i> }
+            </button>
           </div>
         } @else {
           <div class="panel-title review-header">
@@ -230,18 +237,6 @@
               <span>{{ notes().length }} {{ notes().length === 1 ? "note" : "notes" }}</span>
               @if (reviewMessage()) { <small>{{ reviewMessage() }}</small> }
             </div>
-
-            @if (conversations().length > 0) {
-              <div class="conversation-list" aria-label="Conversations">
-                @for (conversation of conversations(); track conversation.id) {
-                  <button class="conversation-item" [class.active]="conversation.id === activeConversationId()" (click)="openConversation(conversation.id)">
-                    <span class="conversation-status status-{{ conversation.status }}"></span>
-                    <span>{{ conversation.question }}</span>
-                    @if (conversation.status === "running") { <i class="mini-spinner" aria-label="Waiting"></i> }
-                  </button>
-                }
-              </div>
-            }
 
             <div class="notes-list">
               @for (note of notes(); track note.id) {
@@ -271,6 +266,12 @@
               >
                 <span class="ai-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 1c0 6.1-4.9 11-11 11 6.1 0 11 4.9 11 11 0-6.1 4.9-11 11-11-6.1 0-11-4.9-11-11Z"/><circle cx="19" cy="5" r="2"/></svg></span>{{ agentRunning() ? "Cancel" : "Send to agent" }}
               </button>
+              <button
+                class="clear-session-action"
+                [class.armed]="clearSessionArmed()"
+                [disabled]="agentRunning()"
+                (click)="clearReviewSession()"
+              >{{ clearSessionArmed() ? "Confirm clear session" : "Clear session" }}</button>
             </div>
 
           </div>
@@ -287,9 +288,9 @@
             <button (click)="closeAgentModal()" aria-label="Close inference">×</button>
            </header>
 
-          @if (conversations().length > 1) {
+          @if (repositoryConversations().length > 1) {
             <nav class="conversation-tabs" aria-label="Conversation tabs">
-              @for (conversation of conversations(); track conversation.id) {
+              @for (conversation of repositoryConversations(); track conversation.id) {
                 <button [class.active]="conversation.id === activeConversationId()" (click)="openConversation(conversation.id)">
                   <span class="conversation-status status-{{ conversation.status }}"></span>{{ conversation.question }}
                 </button>
@@ -351,20 +352,21 @@
 
     @if (conversationChoiceOpen(); as choiceOpen) {
       <div class="conversation-choice-backdrop">
-        <section class="conversation-choice" role="dialog" aria-modal="true" aria-label="Choose conversation">
+        <section class="conversation-choice" role="dialog" aria-modal="true" aria-label="Choose session">
           <header>
-            <strong>Continue your review</strong>
-            <button (click)="cancelConversationChoice()" aria-label="Close conversation choice">×</button>
+            <strong>Choose a session</strong>
+            <button (click)="cancelConversationChoice()" aria-label="Close session choice">×</button>
           </header>
-          <p>Start a separate conversation or continue in one of your existing conversations.</p>
+          <p>Ask in a new session or continue one already started in this repository.</p>
           <div class="conversation-choice-actions">
             <button class="new-conversation" (click)="startExplainRequest()">
-              <strong>New conversation</strong><small>Keep this explanation in a new tab</small>
+              <span class="session-choice-mark">+</span>
+              <span><strong>New session</strong><small>Start a separate explanation</small></span>
             </button>
-            @for (conversation of conversations(); track conversation.id) {
+            @for (conversation of repositoryConversations(); track conversation.id) {
               <button (click)="startExplainRequest(pendingExplain(), conversation.id)" [disabled]="conversation.status === 'running'">
                 <span class="conversation-status status-{{ conversation.status }}"></span>
-                <span><strong>Use {{ conversation.question }}</strong><small>Continue in this conversation</small></span>
+                <span><strong>{{ conversation.question }}</strong><small>Continue this session</small></span>
               </button>
             }
           </div>

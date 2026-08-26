@@ -111,6 +111,12 @@ interface ReviewNote {
   createdAt: number;
 }
 
+interface ReviewSessionData {
+  version: 1;
+  reviewedFiles: string[];
+  notes: ReviewNote[];
+}
+
 interface ToolsMenu {
   x: number;
   y: number;
@@ -120,6 +126,8 @@ type ConversationStatus = "running" | "complete" | "error" | "cancelled";
 
 interface Conversation {
   id: number;
+  repositoryRoot: string;
+  agent: AgentId;
   question: string;
   context?: ConversationContext;
   status: ConversationStatus;
@@ -156,6 +164,15 @@ function isReviewNote(value: unknown): value is ReviewNote {
     && typeof note.startLine === "number" && Number.isFinite(note.startLine)
     && typeof note.endLine === "number" && Number.isFinite(note.endLine)
     && typeof note.createdAt === "number" && Number.isFinite(note.createdAt);
+}
+
+function isReviewSessionData(value: unknown): value is ReviewSessionData {
+  if (!value || typeof value !== "object") return false;
+  const session = value as Record<string, unknown>;
+  return session.version === 1
+    && Array.isArray(session.reviewedFiles)
+    && session.reviewedFiles.every((path) => typeof path === "string" && path.length <= 10_000)
+    && Array.isArray(session.notes);
 }
 
 function parsePatch(patch: string): DiffRow[] {
@@ -268,6 +285,12 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly questionDraft = signal("");
   readonly noteDraft = signal("");
   readonly notes = signal<ReviewNote[]>([]);
+  readonly reviewedFiles = signal<string[]>([]);
+  readonly reviewedFileCount = computed(() => {
+    const paths = new Set(this.repository()?.files.map((file) => file.path) ?? []);
+    return this.reviewedFiles().filter((path) => paths.has(path)).length;
+  });
+  readonly clearSessionArmed = signal(false);
   readonly agents = signal<AgentOption[]>([]);
   readonly selectedAgent = signal<AgentId | null>(null);
   readonly agentRunning = signal(false);
@@ -276,8 +299,12 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly agentModalOpen = signal(false);
   readonly activeQuestion = signal("");
   readonly conversations = signal<Conversation[]>([]);
+  readonly repositoryConversations = computed(() => {
+    const root = this.repository()?.root;
+    return root ? this.conversations().filter((conversation) => conversation.repositoryRoot === root) : [];
+  });
   readonly activeConversationId = signal<number | null>(null);
-  readonly activeConversation = computed(() => this.conversations().find((conversation) => conversation.id === this.activeConversationId()) ?? null);
+  readonly activeConversation = computed(() => this.repositoryConversations().find((conversation) => conversation.id === this.activeConversationId()) ?? null);
   readonly activeConversationRunning = computed(() => this.activeConversation()?.status === "running");
   readonly conversationChoiceOpen = signal(false);
   readonly pendingExplain = signal<PendingExplain | null>(null);
@@ -487,7 +514,7 @@ export class AppComponent implements OnInit, OnDestroy {
       createdAt: Date.now()
     };
     this.notes.update((notes) => [...notes, note]);
-    this.persistNotes();
+    this.persistReviewSession();
     this.toolsMenu.set(null);
     this.noteComposerOpen.set(false);
     this.noteDraft.set("");
@@ -502,7 +529,57 @@ export class AppComponent implements OnInit, OnDestroy {
 
   deleteNote(id: string): void {
     this.notes.update((notes) => notes.filter((note) => note.id !== id));
-    this.persistNotes();
+    this.persistReviewSession();
+  }
+
+  isFileReviewed(path: string): boolean {
+    return this.reviewedFiles().includes(path);
+  }
+
+  toggleSelectedFileReviewed(): void {
+    const path = this.selectedPath();
+    if (!path) return;
+    const reviewed = this.isFileReviewed(path);
+    this.reviewedFiles.update((paths) => reviewed
+      ? paths.filter((entry) => entry !== path)
+      : [...paths, path]);
+    this.persistReviewSession();
+    this.reviewMessage.set(reviewed ? "File marked for review" : "File marked reviewed");
+  }
+
+  clearReviewSession(): void {
+    if (!this.clearSessionArmed()) {
+      this.clearSessionArmed.set(true);
+      this.reviewMessage.set("Click Clear session again to confirm");
+      return;
+    }
+    const root = this.repository()?.root;
+    this.notes.set([]);
+    this.reviewedFiles.set([]);
+    this.conversations.update((conversations) => conversations.filter((conversation) => conversation.repositoryRoot !== root));
+    this.activeConversationId.set(null);
+    this.activeQuestion.set("");
+    this.agentResult.set(null);
+    this.agentError.set(null);
+    this.agentModalOpen.set(false);
+    this.conversationChoiceOpen.set(false);
+    this.pendingExplain.set(null);
+    this.toolsMenu.set(null);
+    this.noteComposerOpen.set(false);
+    this.questionComposerOpen.set(false);
+    this.selectedRange.set(null);
+    this.allChangesSelected.set(false);
+    this.clearSessionArmed.set(false);
+    const key = this.reviewSessionStorageKey();
+    const legacyKey = this.legacyNotesStorageKey();
+    try {
+      if (key) localStorage.removeItem(key);
+      if (legacyKey) localStorage.removeItem(legacyKey);
+    } catch {
+      this.reviewMessage.set("Session cleared, but persisted data could not be removed");
+      return;
+    }
+    this.reviewMessage.set("Session cleared");
   }
 
   async navigateToNote(note: ReviewNote): Promise<void> {
@@ -560,6 +637,19 @@ export class AppComponent implements OnInit, OnDestroy {
     this.questionComposerOpen.set(true);
   }
 
+  startSidebarExplain(): void {
+    if (!this.selectedAgent() || this.agentRunning()) return;
+    if (!this.selectedContext()) {
+      this.selectedRange.set(null);
+      this.allChangesSelected.set(true);
+    }
+    this.toolsMenu.set({
+      x: Math.max(6, window.innerWidth - (this.reviewSidebarOpen() ? 560 : 294)),
+      y: 86
+    });
+    this.startExplain();
+  }
+
   async explainSelection(): Promise<void> {
     const context = this.selectedContext();
     const repository = this.repository();
@@ -601,19 +691,16 @@ export class AppComponent implements OnInit, OnDestroy {
       diff: context.diff
     } : undefined;
     const pending: PendingExplain = { agent, prompt, question, context: conversationContext };
-    if (this.conversations().length > 0) {
-      this.pendingExplain.set(pending);
-      this.conversationChoiceOpen.set(true);
-      return;
-    }
-    await this.startExplainRequest(pending);
+    this.pendingExplain.set(pending);
+    this.conversationChoiceOpen.set(true);
   }
 
   async startExplainRequest(pending = this.pendingExplain(), conversationId?: number): Promise<void> {
     if (!pending) return;
     const existing = conversationId === undefined
       ? null
-      : this.conversations().find((conversation) => conversation.id === conversationId);
+      : this.repositoryConversations().find((conversation) => conversation.id === conversationId);
+    const agent = existing?.agent ?? pending.agent;
     const prompt = existing?.result
       ? [
           pending.prompt,
@@ -626,8 +713,9 @@ export class AppComponent implements OnInit, OnDestroy {
     this.conversationChoiceOpen.set(false);
     this.pendingExplain.set(null);
     this.activeQuestion.set(pending.question);
+    this.selectedAgent.set(agent);
     this.agentModalOpen.set(true);
-    await this.sendToAgent(pending.agent, prompt, pending.context, conversationId);
+    await this.sendToAgent(agent, prompt, pending.context, conversationId);
   }
 
   cancelConversationChoice(): void {
@@ -785,8 +873,19 @@ export class AppComponent implements OnInit, OnDestroy {
     const previousPath = this.selectedPath();
     const previousComparison = this.repository()?.comparisonId;
     const previousRoot = this.repository()?.root;
+    const previousBranch = this.repository()?.branch;
     this.repository.set(repository);
-    if (previousRoot !== repository.root || previousComparison !== repository.comparisonId) this.loadNotes();
+    if (previousRoot !== repository.root) {
+      this.activeConversationId.set(null);
+      this.agentModalOpen.set(false);
+      this.conversationChoiceOpen.set(false);
+      this.pendingExplain.set(null);
+    }
+    if (
+      previousRoot !== repository.root
+      || previousBranch !== repository.branch
+      || previousComparison !== repository.comparisonId
+    ) this.loadReviewSession();
     this.error.set(null);
     const current = this.selectedPath();
     const nextPath = repository.files.some((file) => file.path === current) ? current : repository.files[0]?.path ?? null;
@@ -900,29 +999,59 @@ export class AppComponent implements OnInit, OnDestroy {
     };
   }
 
-  private notesStorageKey(): string | null {
+  private reviewSessionStorageKey(): string | null {
+    const repository = this.repository();
+    return repository
+      ? `rift:review-session:${repository.root}:${repository.branch}:${repository.comparisonId}`
+      : null;
+  }
+
+  private legacyNotesStorageKey(): string | null {
     const repository = this.repository();
     return repository ? `rift:notes:${repository.root}:${repository.comparisonId}` : null;
   }
 
-  private loadNotes(): void {
-    const key = this.notesStorageKey();
+  private loadReviewSession(): void {
+    const key = this.reviewSessionStorageKey();
     if (!key) return;
     try {
-      const stored = JSON.parse(localStorage.getItem(key) ?? "[]");
-      this.notes.set(Array.isArray(stored) ? stored.filter(isReviewNote).slice(0, 500) : []);
+      const raw = localStorage.getItem(key);
+      if (raw) {
+        const stored: unknown = JSON.parse(raw);
+        if (!isReviewSessionData(stored)) throw new Error("Invalid review session");
+        this.notes.set(stored.notes.filter(isReviewNote).slice(0, 500));
+        this.reviewedFiles.set([...new Set(stored.reviewedFiles)].slice(0, 5_000));
+        this.clearSessionArmed.set(false);
+        return;
+      }
+      const legacyKey = this.legacyNotesStorageKey();
+      const legacy: unknown = JSON.parse(legacyKey ? localStorage.getItem(legacyKey) ?? "[]" : "[]");
+      this.notes.set(Array.isArray(legacy) ? legacy.filter(isReviewNote).slice(0, 500) : []);
+      this.reviewedFiles.set([]);
+      this.clearSessionArmed.set(false);
+      if (this.notes().length > 0) {
+        this.persistReviewSession();
+        if (legacyKey) localStorage.removeItem(legacyKey);
+      }
     } catch {
       this.notes.set([]);
+      this.reviewedFiles.set([]);
+      this.clearSessionArmed.set(false);
     }
   }
 
-  private persistNotes(): void {
-    const key = this.notesStorageKey();
+  private persistReviewSession(): void {
+    const key = this.reviewSessionStorageKey();
     if (!key) return;
     try {
-      localStorage.setItem(key, JSON.stringify(this.notes()));
+      const session: ReviewSessionData = {
+        version: 1,
+        reviewedFiles: this.reviewedFiles(),
+        notes: this.notes()
+      };
+      localStorage.setItem(key, JSON.stringify(session));
     } catch {
-      this.reviewMessage.set("Could not persist review notes");
+      this.reviewMessage.set("Could not persist review session");
     }
   }
 
@@ -947,6 +1076,8 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   private async sendToAgent(agent: AgentId, prompt: string, context?: ConversationContext, existingConversationId?: number): Promise<void> {
+    const repository = this.repository();
+    if (!repository) return;
     const request = ++this.agentRequest;
     const conversationId = existingConversationId ?? ++this.conversationRequest;
     const question = this.activeQuestion();
@@ -954,7 +1085,16 @@ export class AppComponent implements OnInit, OnDestroy {
       ? conversations.map((conversation) => conversation.id === conversationId
         ? { ...conversation, question, context, status: "running", result: null, error: null }
         : conversation)
-      : [...conversations, { id: conversationId, question, context, status: "running", result: null, error: null }]);
+      : [...conversations, {
+          id: conversationId,
+          repositoryRoot: repository.root,
+          agent,
+          question,
+          context,
+          status: "running",
+          result: null,
+          error: null
+        }]);
     this.activeConversationId.set(conversationId);
     this.agentRunning.set(true);
     this.agentModalOpen.set(true);
