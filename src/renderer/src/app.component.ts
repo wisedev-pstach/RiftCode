@@ -9,7 +9,7 @@ import {
   signal,
   viewChild
 } from "@angular/core";
-import type { AgentId, AgentOption, AgentRunResult, ChangedFile, FilePatch, RepositorySnapshot } from "../../shared/contracts";
+import type { AgentId, AgentOption, AgentRunResult, AgentStreamEvent, ChangedFile, FilePatch, RepositorySnapshot } from "../../shared/contracts";
 
 type DiffKind = "header" | "hunk" | "context" | "addition" | "deletion" | "meta";
 type DiffMode = "unified" | "split";
@@ -21,6 +21,7 @@ interface DetectedLanguage {
 
 const PLAIN_TEXT: DetectedLanguage = { id: "plaintext", label: "Plain text" };
 const AGENT_STORAGE_KEY = "rift:last-agent";
+const MODEL_STORAGE_PREFIX = "rift:last-model:";
 const LANGUAGES: Readonly<Record<string, DetectedLanguage>> = {
   bash: { id: "bash", label: "Shell" },
   c: { id: "c", label: "C" },
@@ -128,6 +129,7 @@ interface Conversation {
   id: number;
   repositoryRoot: string;
   agent: AgentId;
+  model: string | null;
   question: string;
   context?: ConversationContext;
   status: ConversationStatus;
@@ -144,6 +146,7 @@ interface ConversationContext {
 
 interface PendingExplain {
   agent: AgentId;
+  model: string | null;
   prompt: string;
   question: string;
   context?: ConversationContext;
@@ -293,10 +296,14 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly clearSessionArmed = signal(false);
   readonly agents = signal<AgentOption[]>([]);
   readonly selectedAgent = signal<AgentId | null>(null);
+  readonly agentModels = signal<string[]>([]);
+  readonly selectedModel = signal<string | null>(null);
+  readonly modelsLoading = signal(false);
   readonly agentRunning = signal(false);
   readonly agentResult = signal<AgentRunResult | null>(null);
   readonly agentError = signal<string | null>(null);
   readonly agentModalOpen = signal(false);
+  readonly chatPageOpen = signal(false);
   readonly activeQuestion = signal("");
   readonly conversations = signal<Conversation[]>([]);
   readonly repositoryConversations = computed(() => {
@@ -308,6 +315,7 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly activeConversationRunning = computed(() => this.activeConversation()?.status === "running");
   readonly conversationChoiceOpen = signal(false);
   readonly pendingExplain = signal<PendingExplain | null>(null);
+  readonly continuingConversationId = signal<number | null>(null);
   readonly reviewMessage = signal<string | null>(null);
   readonly selectedFile = computed(() => this.repository()?.files.find((file) => file.path === this.selectedPath()));
   readonly selectedAgentOption = computed(() => this.agents().find((agent) => agent.id === this.selectedAgent()));
@@ -338,6 +346,7 @@ export class AppComponent implements OnInit, OnDestroy {
   });
 
   private removeRepositoryListener?: () => void;
+  private removeAgentListener?: () => void;
   private refreshing = false;
   private refreshDirty = false;
   private selecting = false;
@@ -345,6 +354,8 @@ export class AppComponent implements OnInit, OnDestroy {
   private repositoryRequest = 0;
   private highlightRequest = 0;
   private agentRequest = 0;
+  private modelRequest = 0;
+  private activeAgentConversationId: number | null = null;
   private conversationRequest = 0;
   private readonly highlightWorker = new Worker(new URL("./highlight.worker.ts", import.meta.url), { type: "module" });
 
@@ -363,10 +374,13 @@ export class AppComponent implements OnInit, OnDestroy {
       .finally(() => this.loading.set(false));
 
     this.removeRepositoryListener = window.rift.onRepositoryChanged(() => void this.refreshRepository());
+    this.removeAgentListener = window.rift.onAgentEvent((event) => this.acceptAgentEvent(event));
     void window.rift.listAgents().then((agents) => {
       this.agents.set(agents);
       const preferred = localStorage.getItem(AGENT_STORAGE_KEY);
-      this.selectedAgent.set(agents.find((agent) => agent.id === preferred)?.id ?? agents[0]?.id ?? null);
+      const agent = agents.find((option) => option.id === preferred)?.id ?? agents[0]?.id ?? null;
+      this.selectedAgent.set(agent);
+      if (agent) void this.loadAgentModels(agent);
     }).catch((reason: Error) => {
       this.reviewMessage.set(reason.message);
     });
@@ -374,6 +388,7 @@ export class AppComponent implements OnInit, OnDestroy {
 
   ngOnDestroy(): void {
     this.removeRepositoryListener?.();
+    this.removeAgentListener?.();
     this.highlightWorker.terminate();
   }
 
@@ -420,6 +435,8 @@ export class AppComponent implements OnInit, OnDestroy {
     if (event.target instanceof HTMLSelectElement) {
       const id = event.target.value as AgentId;
       this.selectedAgent.set(id);
+      this.selectedModel.set(null);
+      void this.loadAgentModels(id);
       try {
         localStorage.setItem(AGENT_STORAGE_KEY, id);
       } catch {
@@ -428,7 +445,28 @@ export class AppComponent implements OnInit, OnDestroy {
     }
   }
 
+  selectModel(event: Event): void {
+    if (!(event.target instanceof HTMLSelectElement)) return;
+    const model = event.target.value || null;
+    this.selectedModel.set(model);
+    const agent = this.selectedAgent();
+    if (!agent) return;
+    try {
+      if (model) localStorage.setItem(`${MODEL_STORAGE_PREFIX}${agent}`, model);
+      else localStorage.removeItem(`${MODEL_STORAGE_PREFIX}${agent}`);
+    } catch {
+      this.reviewMessage.set("Could not remember the selected model");
+    }
+  }
+
+  handleExplainKeydown(event: KeyboardEvent): void {
+    if (event.key !== "Enter" || event.shiftKey || event.isComposing || this.modelsLoading()) return;
+    event.preventDefault();
+    void this.explainSelection();
+  }
+
   selectFile(path: string): void {
+    this.chatPageOpen.set(false);
     if (path === this.selectedPath()) return;
     this.selectedPath.set(path);
     this.selectedRange.set(null);
@@ -469,8 +507,8 @@ export class AppComponent implements OnInit, OnDestroy {
     this.questionComposerOpen.set(false);
     this.noteDraft.set("");
     this.toolsMenu.set({
-      x: Math.max(6, Math.min(x, window.innerWidth - 250)),
-      y: Math.max(6, Math.min(y, window.innerHeight - 230))
+      x: Math.max(6, Math.min(x, window.innerWidth - 400)),
+      y: Math.max(6, Math.min(y, window.innerHeight - 430))
     });
   }
 
@@ -491,7 +529,7 @@ export class AppComponent implements OnInit, OnDestroy {
     }
     const bounds = (event.currentTarget as HTMLElement).getBoundingClientRect();
     this.toolsMenu.set({
-      x: Math.max(6, Math.min(bounds.right - 20, window.innerWidth - 250)),
+      x: Math.max(6, Math.min(bounds.right - 20, window.innerWidth - 400)),
       y: bounds.bottom + 7
     });
   }
@@ -644,9 +682,38 @@ export class AppComponent implements OnInit, OnDestroy {
       this.allChangesSelected.set(true);
     }
     this.toolsMenu.set({
-      x: Math.max(6, window.innerWidth - (this.reviewSidebarOpen() ? 560 : 294)),
+      x: Math.max(6, window.innerWidth - (this.reviewSidebarOpen() ? 710 : 444)),
       y: 86
     });
+    this.startExplain();
+  }
+
+  openChats(): void {
+    this.chatPageOpen.set(true);
+    const active = this.activeConversation() ?? this.repositoryConversations().at(-1);
+    if (active) this.openConversation(active.id);
+  }
+
+  startNewChat(): void {
+    this.chatPageOpen.set(true);
+    this.continuingConversationId.set(null);
+    this.selectedRange.set(null);
+    this.allChangesSelected.set(true);
+    this.toolsMenu.set({ x: Math.max(12, window.innerWidth / 2 - 180), y: 94 });
+    this.startExplain();
+  }
+
+  continueConversation(): void {
+    const conversation = this.activeConversation();
+    if (!conversation || conversation.status === "running") return;
+    const agentChanged = this.selectedAgent() !== conversation.agent;
+    this.continuingConversationId.set(conversation.id);
+    this.selectedAgent.set(conversation.agent);
+    this.selectedModel.set(conversation.model);
+    if (agentChanged) void this.loadAgentModels(conversation.agent, conversation.model);
+    this.selectedRange.set(null);
+    this.allChangesSelected.set(true);
+    this.toolsMenu.set({ x: Math.max(12, window.innerWidth / 2 - 195), y: 94 });
     this.startExplain();
   }
 
@@ -690,9 +757,12 @@ export class AppComponent implements OnInit, OnDestroy {
       endLine: context.endLine,
       diff: context.diff
     } : undefined;
-    const pending: PendingExplain = { agent, prompt, question, context: conversationContext };
+    const pending: PendingExplain = { agent, model: this.selectedModel(), prompt, question, context: conversationContext };
     this.pendingExplain.set(pending);
-    this.conversationChoiceOpen.set(true);
+    this.chatPageOpen.set(true);
+    const conversationId = this.continuingConversationId();
+    this.continuingConversationId.set(null);
+    await this.startExplainRequest(pending, conversationId ?? undefined);
   }
 
   async startExplainRequest(pending = this.pendingExplain(), conversationId?: number): Promise<void> {
@@ -701,6 +771,7 @@ export class AppComponent implements OnInit, OnDestroy {
       ? null
       : this.repositoryConversations().find((conversation) => conversation.id === conversationId);
     const agent = existing?.agent ?? pending.agent;
+    const model = existing?.model ?? pending.model;
     const prompt = existing?.result
       ? [
           pending.prompt,
@@ -714,8 +785,7 @@ export class AppComponent implements OnInit, OnDestroy {
     this.pendingExplain.set(null);
     this.activeQuestion.set(pending.question);
     this.selectedAgent.set(agent);
-    this.agentModalOpen.set(true);
-    await this.sendToAgent(agent, prompt, pending.context, conversationId);
+    await this.sendToAgent(agent, model, prompt, pending.context);
   }
 
   cancelConversationChoice(): void {
@@ -735,8 +805,8 @@ export class AppComponent implements OnInit, OnDestroy {
       this.formatNotes()
     ].join("\n");
     this.activeQuestion.set(`Review ${this.notes().length} code note${this.notes().length === 1 ? "" : "s"}`);
-    this.agentModalOpen.set(true);
-    await this.sendToAgent(agent, prompt);
+    this.chatPageOpen.set(true);
+    await this.sendToAgent(agent, this.selectedModel(), prompt);
   }
 
   closeAgentModal(): void {
@@ -750,7 +820,7 @@ export class AppComponent implements OnInit, OnDestroy {
     this.activeQuestion.set(conversation.question);
     this.agentResult.set(conversation.result);
     this.agentError.set(conversation.error);
-    this.agentModalOpen.set(true);
+    this.chatPageOpen.set(true);
   }
 
   async cancelAgent(): Promise<void> {
@@ -796,6 +866,7 @@ export class AppComponent implements OnInit, OnDestroy {
       this.diffScroll()?.nativeElement.querySelector(".line-selected")?.scrollIntoView({ block: "center" });
     });
     this.agentModalOpen.set(false);
+    this.chatPageOpen.set(false);
   }
 
   @HostListener("document:pointerdown", ["$event"])
@@ -865,6 +936,10 @@ export class AppComponent implements OnInit, OnDestroy {
     return path.split("/").at(-1) || path;
   }
 
+  agentLabel(id: AgentId): string {
+    return this.agents().find((agent) => agent.id === id)?.label ?? id;
+  }
+
   directory(path: string): string {
     return path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : ".";
   }
@@ -880,6 +955,7 @@ export class AppComponent implements OnInit, OnDestroy {
       this.agentModalOpen.set(false);
       this.conversationChoiceOpen.set(false);
       this.pendingExplain.set(null);
+      this.chatPageOpen.set(false);
     }
     if (
       previousRoot !== repository.root
@@ -1075,20 +1151,72 @@ export class AppComponent implements OnInit, OnDestroy {
     ].join("\n\n");
   }
 
-  private async sendToAgent(agent: AgentId, prompt: string, context?: ConversationContext, existingConversationId?: number): Promise<void> {
+  private async loadAgentModels(agent: AgentId, preferredModel: string | null = null): Promise<void> {
+    const request = ++this.modelRequest;
+    this.modelsLoading.set(true);
+    this.agentModels.set([]);
+    try {
+      const models = await window.rift.listAgentModels(agent);
+      if (request !== this.modelRequest || this.selectedAgent() !== agent) return;
+      this.agentModels.set(models);
+      const saved = preferredModel ?? localStorage.getItem(`${MODEL_STORAGE_PREFIX}${agent}`);
+      this.selectedModel.set(saved && models.includes(saved) ? saved : null);
+    } catch (reason) {
+      if (request === this.modelRequest && this.selectedAgent() === agent) {
+        this.selectedModel.set(null);
+        this.reviewMessage.set(reason instanceof Error ? reason.message : String(reason));
+      }
+    } finally {
+      if (request === this.modelRequest && this.selectedAgent() === agent) this.modelsLoading.set(false);
+    }
+  }
+
+  private acceptAgentEvent(event: AgentStreamEvent): void {
+    if (event.runId !== String(this.agentRequest)) return;
+    const conversationId = this.activeAgentConversationId;
+    if (this.activeConversationId() === conversationId) {
+      this.agentResult.update((result) => this.mergeAgentResult(result, event.result));
+    }
+    this.conversations.update((conversations) => conversations.map((conversation) => (
+      conversation.id === conversationId
+        ? { ...conversation, result: this.mergeAgentResult(conversation.result, event.result) }
+        : conversation
+    )));
+  }
+
+  private mergeAgentResult(current: AgentRunResult | null, update: AgentRunResult): AgentRunResult {
+    const tools = new Map((current?.tools ?? []).map((tool) => [tool.id, tool]));
+    for (const tool of update.tools) {
+      const existing = tools.get(tool.id);
+      tools.set(tool.id, {
+        ...existing,
+        ...tool,
+        name: tool.name || existing?.name || "Tool",
+        detail: tool.detail ?? existing?.detail
+      });
+    }
+    return {
+      tools: [...tools.values()],
+      explanation: `${current?.explanation ?? ""}${update.explanation}`
+    };
+  }
+
+  private async sendToAgent(agent: AgentId, model: string | null, prompt: string, context?: ConversationContext, existingConversationId?: number): Promise<void> {
     const repository = this.repository();
     if (!repository) return;
     const request = ++this.agentRequest;
     const conversationId = existingConversationId ?? ++this.conversationRequest;
+    this.activeAgentConversationId = conversationId;
     const question = this.activeQuestion();
     this.conversations.update((conversations) => existingConversationId
       ? conversations.map((conversation) => conversation.id === conversationId
-        ? { ...conversation, question, context, status: "running", result: null, error: null }
+        ? { ...conversation, agent, model, question, context, status: "running", result: null, error: null }
         : conversation)
       : [...conversations, {
           id: conversationId,
           repositoryRoot: repository.root,
           agent,
+          model,
           question,
           context,
           status: "running",
@@ -1097,12 +1225,11 @@ export class AppComponent implements OnInit, OnDestroy {
         }]);
     this.activeConversationId.set(conversationId);
     this.agentRunning.set(true);
-    this.agentModalOpen.set(true);
     this.agentResult.set(null);
     this.agentError.set(null);
     this.reviewMessage.set(`Waiting for ${this.agents().find((option) => option.id === agent)?.label ?? agent}`);
     try {
-      const result = await window.rift.runAgent(agent, prompt);
+      const result = await window.rift.runAgent(String(request), agent, model, prompt);
       if (request === this.agentRequest) {
         if (this.activeConversationId() === conversationId) this.agentResult.set(result);
         this.conversations.update((conversations) => conversations.map((conversation) => (

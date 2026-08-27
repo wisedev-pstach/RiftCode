@@ -9,13 +9,19 @@ const api: RiftApi = {
   chooseRepository: () => ipcRenderer.invoke("repository:choose"),
   selectComparison: (id) => ipcRenderer.invoke("repository:compare", id),
   listAgents: () => ipcRenderer.invoke("agent:list"),
-  runAgent: (id, prompt) => ipcRenderer.invoke("agent:run", id, prompt),
+  listAgentModels: (id) => ipcRenderer.invoke("agent:models", id),
+  runAgent: (runId, id, model, prompt) => ipcRenderer.invoke("agent:run", runId, id, model, prompt),
   cancelAgent: () => ipcRenderer.invoke("agent:cancel"),
   copyText: (text) => ipcRenderer.invoke("clipboard:write", text),
   onRepositoryChanged: (listener) => {
     const handler = (): void => listener();
     ipcRenderer.on("repository:changed", handler);
     return () => ipcRenderer.removeListener("repository:changed", handler);
+  },
+  onAgentEvent: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, value: Parameters<typeof listener>[0]): void => listener(value);
+    ipcRenderer.on("agent:event", handler);
+    return () => ipcRenderer.removeListener("agent:event", handler);
   }
 };
 
