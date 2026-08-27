@@ -5,13 +5,13 @@ import { existsSync, watch, type FSWatcher } from "node:fs";
 import { join, resolve } from "node:path";
 import { loadFilePatch, loadRepository } from "./git";
 import type { IpcMainInvokeEvent } from "electron";
-import type { AgentId, AgentOption, AgentRunResult, AgentToolEvent, RepositorySnapshot } from "../shared/contracts";
+import type { AgentId, AgentOption, AgentRunResult, AgentStreamEvent, AgentToolEvent, RepositorySnapshot } from "../shared/contracts";
 
-const AGENTS: Readonly<Record<AgentId, { label: string; args: (prompt: string) => string[] }>> = {
-  opencode: { label: "OpenCode", args: (prompt) => ["run", "--pure", "--agent", "plan", "--format", "json", "--auto", prompt] },
+const AGENTS: Readonly<Record<AgentId, { label: string; args: (prompt: string, model: string | null) => string[] }>> = {
+  opencode: { label: "OpenCode", args: (prompt, model) => ["run", "--pure", "--agent", "plan", "--format", "json", "--auto", ...(model ? ["--model", model] : []), prompt] },
   claude: {
     label: "Claude Code",
-    args: (prompt) => ["--print", "--verbose", "--output-format", "stream-json", "--permission-mode", "plan", "--tools", "Read,Grep,Glob,Bash", prompt]
+    args: (prompt, model) => ["--print", "--verbose", "--output-format", "stream-json", "--include-partial-messages", "--permission-mode", "plan", "--tools", "Read,Grep,Glob,Bash", ...(model ? ["--model", model] : []), prompt]
   }
 };
 
@@ -52,7 +52,7 @@ function execute(command: string, args: string[], cwd = process.cwd()): Promise<
   });
 }
 
-function executeAgent(command: string, args: string[], cwd: string): Promise<string> {
+function executeAgent(command: string, args: string[], cwd: string, onOutput: (chunk: string) => void): Promise<string> {
   if (activeAgentProcess) return Promise.reject(new Error("An agent request is already running."));
   agentCancellationRequested = false;
   return new Promise((resolvePromise, reject) => {
@@ -73,7 +73,9 @@ function executeAgent(command: string, args: string[], cwd: string): Promise<str
       else resolvePromise(stdout.trim());
     };
     child.stdout?.on("data", (chunk: Buffer) => {
-      stdout += chunk.toString();
+      const text = chunk.toString();
+      stdout += text;
+      onOutput(text);
       if (stdout.length > 10 * 1024 * 1024) {
         child.kill("SIGKILL");
         finish(new Error("Agent output exceeded the 10 MB limit."));
@@ -111,16 +113,76 @@ async function resolveCommand(command: AgentId): Promise<string | null> {
 
 async function listAgents(): Promise<AgentOption[]> {
   const agents = await Promise.all((Object.keys(AGENTS) as AgentId[]).map(async (id) => (
-    await resolveCommand(id) ? { id, label: AGENTS[id].label } : null
+    await resolveAgentCommand(id) ? { id, label: AGENTS[id].label } : null
   )));
   return agents.filter((agent): agent is AgentOption => agent !== null);
 }
 
-async function runAgent(id: AgentId, prompt: string): Promise<AgentRunResult> {
-  if (!snapshot) throw new Error("No repository is open.");
+async function resolveAgentCommand(id: AgentId): Promise<string | null> {
   const command = await resolveCommand(id);
-  if (!command) throw new Error(`${AGENTS[id].label} is not installed or is not on PATH.`);
-  return parseAgentOutput(id, await executeAgent(command, AGENTS[id].args(prompt), snapshot.root));
+  if (!command) return null;
+  if (id !== "claude") return command;
+  try {
+    const version = await execute(command, ["--version"]);
+    return /claude code/i.test(version) ? command : null;
+  } catch {
+    return null;
+  }
+}
+
+async function listAgentModels(id: AgentId): Promise<string[]> {
+  if (id === "claude") return ["sonnet", "opus", "haiku"];
+  const command = await resolveAgentCommand(id);
+  if (!command) return [];
+  return (await execute(command, ["models"])).split(/\r?\n/).map((model) => model.trim()).filter(Boolean);
+}
+
+async function runAgent(runId: string, id: AgentId, model: string | null, prompt: string): Promise<AgentRunResult> {
+  if (!snapshot) throw new Error("No repository is open.");
+  const command = await resolveAgentCommand(id);
+  if (!command) {
+    throw new Error(id === "claude"
+      ? "Claude Code is unavailable. The claude executable is missing or invalid; if 'claude --version' reports Bun, reinstall Claude Code."
+      : `${AGENTS[id].label} is not installed or is not on PATH.`);
+  }
+  let lineBuffer = "";
+  let pendingResult: AgentRunResult = { tools: [], explanation: "" };
+  let streamTimer: NodeJS.Timeout | null = null;
+  const emit = (): void => {
+    streamTimer = null;
+    if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) return;
+    const event: AgentStreamEvent = { runId, result: pendingResult };
+    pendingResult = { tools: [], explanation: "" };
+    mainWindow.webContents.send("agent:event", event);
+  };
+  const output = await executeAgent(command, AGENTS[id].args(prompt, model), snapshot.root, (chunk) => {
+    lineBuffer += chunk;
+    const lastNewline = Math.max(lineBuffer.lastIndexOf("\n"), lineBuffer.lastIndexOf("\r"));
+    if (lastNewline < 0) return;
+    const completeLines = lineBuffer.slice(0, lastNewline + 1);
+    lineBuffer = lineBuffer.slice(lastNewline + 1);
+    pendingResult = mergeAgentResults(pendingResult, parseAgentOutput(id, completeLines, false));
+    if (!streamTimer) streamTimer = setTimeout(emit, 80);
+  });
+  if (streamTimer) clearTimeout(streamTimer);
+  return parseAgentOutput(id, output);
+}
+
+function mergeAgentResults(current: AgentRunResult, update: AgentRunResult): AgentRunResult {
+  const tools = new Map(current.tools.map((tool) => [tool.id, tool]));
+  for (const tool of update.tools) {
+    const existing = tools.get(tool.id);
+    tools.set(tool.id, {
+      ...existing,
+      ...tool,
+      name: tool.name || existing?.name || "Tool",
+      detail: tool.detail ?? existing?.detail
+    });
+  }
+  return {
+    tools: [...tools.values()],
+    explanation: [current.explanation, update.explanation].filter(Boolean).join("")
+  };
 }
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -137,7 +199,7 @@ function toolDetail(value: unknown): string | undefined {
   }
 }
 
-function parseAgentOutput(id: AgentId, output: string): AgentRunResult {
+function parseAgentOutput(id: AgentId, output: string, complete = true): AgentRunResult {
   const events = output.split(/\r?\n/).flatMap((line) => {
     try {
       const parsed = JSON.parse(line);
@@ -151,6 +213,7 @@ function parseAgentOutput(id: AgentId, output: string): AgentRunResult {
 
   const tools = new Map<string, AgentToolEvent>();
   const text: string[] = [];
+  let streamedText = "";
   let explanation = "";
 
   for (const event of events) {
@@ -163,7 +226,7 @@ function parseAgentOutput(id: AgentId, output: string): AgentRunResult {
         tools.set(toolId, {
           id: toolId,
           name: String(part.tool ?? data?.tool ?? event.tool ?? "Tool"),
-          status: state?.status === "error" ? "failed" : "completed",
+          status: state?.status === "error" ? "failed" : state?.status === "completed" ? "completed" : "running",
           detail: toolDetail(state?.input)
         });
       }
@@ -175,36 +238,43 @@ function parseAgentOutput(id: AgentId, output: string): AgentRunResult {
     }
 
     if (event.type === "result" && typeof event.result === "string") explanation = event.result.trim();
+    const streamEvent = record(event.event);
+    const delta = record(streamEvent?.delta);
+    if (streamEvent?.type === "content_block_delta" && delta?.type === "text_delta" && typeof delta.text === "string") {
+      streamedText += delta.text;
+    }
     const message = record(event.message);
     const content = Array.isArray(message?.content) ? message.content : [];
     for (const itemValue of content) {
       const item = record(itemValue);
       if (!item) continue;
-      if (item.type === "text" && typeof item.text === "string" && message?.role === "assistant") {
-        text.push(item.text.trim());
-      }
       if (item.type === "tool_use") {
         const toolId = String(item.id ?? tools.size);
         tools.set(toolId, {
           id: toolId,
           name: String(item.name ?? "Tool"),
-          status: "completed",
+          status: "running",
           detail: toolDetail(item.input)
         });
       }
       if (item.type === "tool_result") {
         const toolId = String(item.tool_use_id ?? "");
         const existing = tools.get(toolId);
-        if (existing) tools.set(toolId, { ...existing, status: item.is_error ? "failed" : "completed" });
+        tools.set(toolId, {
+          id: toolId,
+          name: existing?.name ?? "",
+          status: item.is_error ? "failed" : "completed",
+          detail: existing?.detail
+        });
       }
     }
   }
 
-  if (!explanation) explanation = text.filter(Boolean).join("\n\n").trim();
+  if (!explanation) explanation = streamedText || text.filter(Boolean).join("\n\n").trim();
   if (!explanation && events.length === 0) explanation = output.trim();
   return {
     tools: [...tools.values()],
-    explanation: explanation || "The agent completed without a text explanation."
+    explanation: explanation || (complete ? "The agent completed without a text explanation." : "")
   };
 }
 
@@ -319,13 +389,21 @@ function registerIpc(): void {
     return listAgents();
   });
 
-  ipcMain.handle("agent:run", (event, id: unknown, prompt: unknown) => {
+  ipcMain.handle("agent:models", (event, id: unknown) => {
     assertTrustedSender(event);
     if (typeof id !== "string" || !Object.hasOwn(AGENTS, id)) throw new Error(`Unsupported agent: ${String(id)}`);
+    return listAgentModels(id as AgentId);
+  });
+
+  ipcMain.handle("agent:run", (event, runId: unknown, id: unknown, model: unknown, prompt: unknown) => {
+    assertTrustedSender(event);
+    if (typeof runId !== "string" || !runId || runId.length > 100) throw new Error("Invalid agent run identifier.");
+    if (typeof id !== "string" || !Object.hasOwn(AGENTS, id)) throw new Error(`Unsupported agent: ${String(id)}`);
+    if (model !== null && (typeof model !== "string" || model.length > 200)) throw new Error("Invalid agent model.");
     if (typeof prompt !== "string" || !prompt.trim() || prompt.length > 100_000) {
       throw new Error("The agent prompt is empty or too large.");
     }
-    return runAgent(id as AgentId, prompt);
+    return runAgent(runId, id as AgentId, model as string | null, prompt);
   });
 
   ipcMain.handle("agent:cancel", (event) => {

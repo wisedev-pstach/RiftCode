@@ -49,13 +49,18 @@ export interface AgentOption {
 export interface AgentToolEvent {
   id: string;
   name: string;
-  status: "completed" | "failed";
+  status: "running" | "completed" | "failed";
   detail?: string;
 }
 
 export interface AgentRunResult {
   tools: AgentToolEvent[];
   explanation: string;
+}
+
+export interface AgentStreamEvent {
+  runId: string;
+  result: AgentRunResult;
 }
 
 export interface RiftApi {
@@ -66,8 +71,10 @@ export interface RiftApi {
   chooseRepository(): Promise<RepositorySnapshot | null>;
   selectComparison(id: string): Promise<RepositorySnapshot>;
   listAgents(): Promise<AgentOption[]>;
-  runAgent(id: AgentId, prompt: string): Promise<AgentRunResult>;
+  listAgentModels(id: AgentId): Promise<string[]>;
+  runAgent(runId: string, id: AgentId, model: string | null, prompt: string): Promise<AgentRunResult>;
   cancelAgent(): Promise<void>;
   copyText(text: string): Promise<void>;
   onRepositoryChanged(listener: () => void): () => void;
+  onAgentEvent(listener: (event: AgentStreamEvent) => void): () => void;
 }
