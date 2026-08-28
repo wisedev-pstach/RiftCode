@@ -9,6 +9,7 @@ import {
   signal,
   viewChild
 } from "@angular/core";
+import { marked } from "marked";
 import type { AgentId, AgentOption, AgentRunResult, AgentStreamEvent, ChangedFile, FilePatch, RepositorySnapshot } from "../../shared/contracts";
 
 type DiffKind = "header" | "hunk" | "context" | "addition" | "deletion" | "meta";
@@ -113,9 +114,10 @@ interface ReviewNote {
 }
 
 interface ReviewSessionData {
-  version: 1;
+  version: 1 | 2;
   reviewedFiles: string[];
   notes: ReviewNote[];
+  conversations?: Conversation[];
 }
 
 interface ToolsMenu {
@@ -135,6 +137,14 @@ interface Conversation {
   status: ConversationStatus;
   result: AgentRunResult | null;
   error: string | null;
+  history: ConversationTurn[];
+}
+
+interface ConversationTurn {
+  question: string;
+  context?: ConversationContext;
+  result: AgentRunResult | null;
+  error: string | null;
 }
 
 interface ConversationContext {
@@ -150,6 +160,11 @@ interface PendingExplain {
   prompt: string;
   question: string;
   context?: ConversationContext;
+}
+
+interface RowAnnotations {
+  notes: ReviewNote[];
+  conversations: Conversation[];
 }
 
 function isReviewNote(value: unknown): value is ReviewNote {
@@ -172,10 +187,59 @@ function isReviewNote(value: unknown): value is ReviewNote {
 function isReviewSessionData(value: unknown): value is ReviewSessionData {
   if (!value || typeof value !== "object") return false;
   const session = value as Record<string, unknown>;
-  return session.version === 1
+  return (session.version === 1 || session.version === 2)
     && Array.isArray(session.reviewedFiles)
     && session.reviewedFiles.every((path) => typeof path === "string" && path.length <= 10_000)
-    && Array.isArray(session.notes);
+    && Array.isArray(session.notes)
+    && (session.version === 1 || (Array.isArray(session.conversations) && session.conversations.every(isConversation)));
+}
+
+function isConversationContext(value: unknown): value is ConversationContext {
+  if (!value || typeof value !== "object") return false;
+  const context = value as Record<string, unknown>;
+  return typeof context.filePath === "string" && context.filePath.length <= 10_000
+    && typeof context.startLine === "number" && Number.isFinite(context.startLine)
+    && typeof context.endLine === "number" && Number.isFinite(context.endLine)
+    && typeof context.diff === "string" && context.diff.length <= 200_000;
+}
+
+function isAgentResult(value: unknown): value is AgentRunResult {
+  if (!value || typeof value !== "object") return false;
+  const result = value as Record<string, unknown>;
+  return typeof result.explanation === "string" && result.explanation.length <= 1_000_000
+    && Array.isArray(result.tools) && result.tools.length <= 2_000
+    && result.tools.every((entry) => {
+      if (!entry || typeof entry !== "object") return false;
+      const tool = entry as Record<string, unknown>;
+      return typeof tool.id === "string" && typeof tool.name === "string"
+        && (tool.status === "running" || tool.status === "completed" || tool.status === "failed")
+        && (tool.detail === undefined || typeof tool.detail === "string");
+    });
+}
+
+function isConversationTurn(value: unknown): value is ConversationTurn {
+  if (!value || typeof value !== "object") return false;
+  const turn = value as Record<string, unknown>;
+  return typeof turn.question === "string" && turn.question.length <= 20_000
+    && (turn.context === undefined || isConversationContext(turn.context))
+    && (turn.result === null || isAgentResult(turn.result))
+    && (turn.error === null || (typeof turn.error === "string" && turn.error.length <= 20_000));
+}
+
+function isConversation(value: unknown): value is Conversation {
+  if (!value || typeof value !== "object") return false;
+  const conversation = value as Record<string, unknown>;
+  return typeof conversation.id === "number" && Number.isSafeInteger(conversation.id) && conversation.id > 0
+    && typeof conversation.repositoryRoot === "string" && conversation.repositoryRoot.length <= 10_000
+    && (conversation.agent === "opencode" || conversation.agent === "claude")
+    && (conversation.model === null || (typeof conversation.model === "string" && conversation.model.length <= 200))
+    && typeof conversation.question === "string" && conversation.question.length <= 20_000
+    && (conversation.context === undefined || isConversationContext(conversation.context))
+    && (conversation.status === "running" || conversation.status === "complete" || conversation.status === "error" || conversation.status === "cancelled")
+    && (conversation.result === null || isAgentResult(conversation.result))
+    && (conversation.error === null || (typeof conversation.error === "string" && conversation.error.length <= 20_000))
+    && Array.isArray(conversation.history) && conversation.history.length <= 500
+    && conversation.history.every(isConversationTurn);
 }
 
 function parsePatch(patch: string): DiffRow[] {
@@ -288,6 +352,7 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly questionDraft = signal("");
   readonly noteDraft = signal("");
   readonly notes = signal<ReviewNote[]>([]);
+  readonly activeLinkedNoteId = signal<string | null>(null);
   readonly reviewedFiles = signal<string[]>([]);
   readonly reviewedFileCount = computed(() => {
     const paths = new Set(this.repository()?.files.map((file) => file.path) ?? []);
@@ -298,7 +363,15 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly selectedAgent = signal<AgentId | null>(null);
   readonly agentModels = signal<string[]>([]);
   readonly selectedModel = signal<string | null>(null);
+  readonly modelSearch = signal("");
+  readonly modelPickerOpen = signal(false);
   readonly modelsLoading = signal(false);
+  readonly filteredAgentModels = computed(() => {
+    const query = this.modelSearch().trim().toLowerCase();
+    return (query
+      ? this.agentModels().filter((model) => model.toLowerCase().includes(query))
+      : this.agentModels()).slice(0, 100);
+  });
   readonly agentRunning = signal(false);
   readonly agentResult = signal<AgentRunResult | null>(null);
   readonly agentError = signal<string | null>(null);
@@ -344,6 +417,29 @@ export class AppComponent implements OnInit, OnDestroy {
     }
     return `${count} lines selected`;
   });
+  readonly rowAnnotations = computed(() => {
+    const annotations = new Map<number, RowAnnotations>();
+    const path = this.selectedPath();
+    if (!path) return annotations;
+    for (const note of this.notes()) {
+      if (note.filePath !== path) continue;
+      const index = this.resolveAnchorIndex(note.startLine, note.diff);
+      if (index < 0) continue;
+      const annotation = annotations.get(index) ?? { notes: [], conversations: [] };
+      annotation.notes.push(note);
+      annotations.set(index, annotation);
+    }
+    for (const conversation of this.repositoryConversations()) {
+      const context = conversation.context;
+      if (!context || context.filePath !== path) continue;
+      const index = this.resolveAnchorIndex(context.startLine, context.diff);
+      if (index < 0) continue;
+      const annotation = annotations.get(index) ?? { notes: [], conversations: [] };
+      annotation.conversations.push(conversation);
+      annotations.set(index, annotation);
+    }
+    return annotations;
+  });
 
   private removeRepositoryListener?: () => void;
   private removeAgentListener?: () => void;
@@ -355,6 +451,7 @@ export class AppComponent implements OnInit, OnDestroy {
   private highlightRequest = 0;
   private agentRequest = 0;
   private modelRequest = 0;
+  private modelsAgent: AgentId | null = null;
   private activeAgentConversationId: number | null = null;
   private conversationRequest = 0;
   private readonly highlightWorker = new Worker(new URL("./highlight.worker.ts", import.meta.url), { type: "module" });
@@ -436,6 +533,9 @@ export class AppComponent implements OnInit, OnDestroy {
       const id = event.target.value as AgentId;
       this.selectedAgent.set(id);
       this.selectedModel.set(null);
+      this.modelSearch.set("");
+      this.modelPickerOpen.set(false);
+      this.modelsAgent = null;
       void this.loadAgentModels(id);
       try {
         localStorage.setItem(AGENT_STORAGE_KEY, id);
@@ -445,10 +545,17 @@ export class AppComponent implements OnInit, OnDestroy {
     }
   }
 
-  selectModel(event: Event): void {
-    if (!(event.target instanceof HTMLSelectElement)) return;
-    const model = event.target.value || null;
+  updateModelSearch(event: Event): void {
+    if (!(event.target instanceof HTMLInputElement)) return;
+    this.modelSearch.set(event.target.value);
+    this.selectedModel.set(null);
+    this.modelPickerOpen.set(true);
+  }
+
+  selectModel(model: string | null): void {
     this.selectedModel.set(model);
+    this.modelSearch.set(model ?? "");
+    this.modelPickerOpen.set(false);
     const agent = this.selectedAgent();
     if (!agent) return;
     try {
@@ -457,6 +564,20 @@ export class AppComponent implements OnInit, OnDestroy {
     } catch {
       this.reviewMessage.set("Could not remember the selected model");
     }
+  }
+
+  handleModelSearchKeydown(event: KeyboardEvent): void {
+    if (event.key === "Escape") {
+      event.stopPropagation();
+      this.modelPickerOpen.set(false);
+      return;
+    }
+    if (event.key !== "Enter") return;
+    const model = this.agentModels().find((entry) => entry === this.modelSearch()) ?? this.filteredAgentModels()[0];
+    if (!model) return;
+    event.preventDefault();
+    event.stopPropagation();
+    this.selectModel(model);
   }
 
   handleExplainKeydown(event: KeyboardEvent): void {
@@ -596,12 +717,15 @@ export class AppComponent implements OnInit, OnDestroy {
     this.reviewedFiles.set([]);
     this.conversations.update((conversations) => conversations.filter((conversation) => conversation.repositoryRoot !== root));
     this.activeConversationId.set(null);
+    this.activeLinkedNoteId.set(null);
     this.activeQuestion.set("");
     this.agentResult.set(null);
     this.agentError.set(null);
     this.agentModalOpen.set(false);
     this.conversationChoiceOpen.set(false);
     this.pendingExplain.set(null);
+    this.continuingConversationId.set(null);
+    this.chatPageOpen.set(false);
     this.toolsMenu.set(null);
     this.noteComposerOpen.set(false);
     this.questionComposerOpen.set(false);
@@ -654,6 +778,7 @@ export class AppComponent implements OnInit, OnDestroy {
       end = next;
     }
     this.selectedRange.set({ anchor: start, focus: end });
+    this.activeLinkedNoteId.set(note.id);
     requestAnimationFrame(() => {
       this.diffScroll()?.nativeElement.querySelector(".line-selected")?.scrollIntoView({ block: "center" });
     });
@@ -672,7 +797,11 @@ export class AppComponent implements OnInit, OnDestroy {
   startExplain(): void {
     this.noteComposerOpen.set(false);
     this.questionDraft.set("");
+    this.modelSearch.set(this.selectedModel() ?? "");
+    this.modelPickerOpen.set(false);
     this.questionComposerOpen.set(true);
+    const agent = this.selectedAgent();
+    if (agent && this.modelsAgent !== agent && !this.modelsLoading()) void this.loadAgentModels(agent);
   }
 
   startSidebarExplain(): void {
@@ -690,8 +819,15 @@ export class AppComponent implements OnInit, OnDestroy {
 
   openChats(): void {
     this.chatPageOpen.set(true);
-    const active = this.activeConversation() ?? this.repositoryConversations().at(-1);
-    if (active) this.openConversation(active.id);
+    this.activeConversationId.set(null);
+  }
+
+  openInlineNote(note: ReviewNote): void {
+    this.activeLinkedNoteId.set(note.id);
+    this.reviewSidebarOpen.set(true);
+    requestAnimationFrame(() => {
+      document.getElementById(`review-note-${note.id}`)?.scrollIntoView({ block: "center" });
+    });
   }
 
   startNewChat(): void {
@@ -762,6 +898,10 @@ export class AppComponent implements OnInit, OnDestroy {
     this.chatPageOpen.set(true);
     const conversationId = this.continuingConversationId();
     this.continuingConversationId.set(null);
+    if (conversationId === null && this.repositoryConversations().length > 0) {
+      this.conversationChoiceOpen.set(true);
+      return;
+    }
     await this.startExplainRequest(pending, conversationId ?? undefined);
   }
 
@@ -772,20 +912,30 @@ export class AppComponent implements OnInit, OnDestroy {
       : this.repositoryConversations().find((conversation) => conversation.id === conversationId);
     const agent = existing?.agent ?? pending.agent;
     const model = existing?.model ?? pending.model;
+    const previousTurns = existing
+      ? [...existing.history, {
+          question: existing.question,
+          context: existing.context,
+          result: existing.result,
+          error: existing.error
+        }]
+      : [];
     const prompt = existing?.result
       ? [
           pending.prompt,
           "Continue the existing review conversation.",
-          `Previous question: ${existing.question}`,
-          "Previous response:",
-          existing.result.explanation
+          "Conversation so far:",
+          ...previousTurns.flatMap((turn, index) => [
+            `Question ${index + 1}: ${turn.question}`,
+            `Response ${index + 1}: ${turn.result?.explanation ?? turn.error ?? "No response"}`
+          ])
         ].join("\n\n")
       : pending.prompt;
     this.conversationChoiceOpen.set(false);
     this.pendingExplain.set(null);
     this.activeQuestion.set(pending.question);
     this.selectedAgent.set(agent);
-    await this.sendToAgent(agent, model, prompt, pending.context);
+    await this.sendToAgent(agent, model, prompt, pending.context, conversationId);
   }
 
   cancelConversationChoice(): void {
@@ -944,6 +1094,21 @@ export class AppComponent implements OnInit, OnDestroy {
     return path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : ".";
   }
 
+  renderMarkdown(markdown: string): string {
+    return marked.parse(markdown, { async: false, breaks: true });
+  }
+
+  private resolveAnchorIndex(startLine: number, diff: string): number {
+    const firstDiffLine = diff.split("\n", 1)[0] ?? "";
+    const expectedKind = firstDiffLine.startsWith("+")
+      ? "addition"
+      : firstDiffLine.startsWith("-") ? "deletion" : "context";
+    const expectedContent = firstDiffLine.slice(1);
+    return this.rows().findIndex((row) => (
+      row.kind === expectedKind && this.lineFor(row) === startLine && row.content === expectedContent
+    ));
+  }
+
   private acceptRepository(repository: RepositorySnapshot, preserveSelection = false): void {
     const previousPath = this.selectedPath();
     const previousComparison = this.repository()?.comparisonId;
@@ -1097,6 +1262,17 @@ export class AppComponent implements OnInit, OnDestroy {
         if (!isReviewSessionData(stored)) throw new Error("Invalid review session");
         this.notes.set(stored.notes.filter(isReviewNote).slice(0, 500));
         this.reviewedFiles.set([...new Set(stored.reviewedFiles)].slice(0, 5_000));
+        const root = this.repository()!.root;
+        const restored = (stored.conversations ?? []).filter(isConversation).slice(-100).map((conversation) => (
+          conversation.status === "running"
+            ? { ...conversation, status: "cancelled" as const, error: "The request was interrupted when Rift closed." }
+            : conversation
+        ));
+        this.conversations.update((conversations) => [
+          ...conversations.filter((conversation) => conversation.repositoryRoot !== root),
+          ...restored
+        ]);
+        this.conversationRequest = Math.max(this.conversationRequest, ...restored.map((conversation) => conversation.id), 0);
         this.clearSessionArmed.set(false);
         return;
       }
@@ -1104,6 +1280,8 @@ export class AppComponent implements OnInit, OnDestroy {
       const legacy: unknown = JSON.parse(legacyKey ? localStorage.getItem(legacyKey) ?? "[]" : "[]");
       this.notes.set(Array.isArray(legacy) ? legacy.filter(isReviewNote).slice(0, 500) : []);
       this.reviewedFiles.set([]);
+      const root = this.repository()!.root;
+      this.conversations.update((conversations) => conversations.filter((conversation) => conversation.repositoryRoot !== root));
       this.clearSessionArmed.set(false);
       if (this.notes().length > 0) {
         this.persistReviewSession();
@@ -1112,6 +1290,8 @@ export class AppComponent implements OnInit, OnDestroy {
     } catch {
       this.notes.set([]);
       this.reviewedFiles.set([]);
+      const root = this.repository()?.root;
+      this.conversations.update((conversations) => conversations.filter((conversation) => conversation.repositoryRoot !== root));
       this.clearSessionArmed.set(false);
     }
   }
@@ -1121,9 +1301,10 @@ export class AppComponent implements OnInit, OnDestroy {
     if (!key) return;
     try {
       const session: ReviewSessionData = {
-        version: 1,
+        version: 2,
         reviewedFiles: this.reviewedFiles(),
-        notes: this.notes()
+        notes: this.notes(),
+        conversations: this.repositoryConversations().slice(-100)
       };
       localStorage.setItem(key, JSON.stringify(session));
     } catch {
@@ -1155,12 +1336,15 @@ export class AppComponent implements OnInit, OnDestroy {
     const request = ++this.modelRequest;
     this.modelsLoading.set(true);
     this.agentModels.set([]);
+    this.modelsAgent = null;
     try {
       const models = await window.rift.listAgentModels(agent);
       if (request !== this.modelRequest || this.selectedAgent() !== agent) return;
       this.agentModels.set(models);
+      this.modelsAgent = agent;
       const saved = preferredModel ?? localStorage.getItem(`${MODEL_STORAGE_PREFIX}${agent}`);
       this.selectedModel.set(saved && models.includes(saved) ? saved : null);
+      this.modelSearch.set(this.selectedModel() ?? "");
     } catch (reason) {
       if (request === this.modelRequest && this.selectedAgent() === agent) {
         this.selectedModel.set(null);
@@ -1210,7 +1394,22 @@ export class AppComponent implements OnInit, OnDestroy {
     const question = this.activeQuestion();
     this.conversations.update((conversations) => existingConversationId
       ? conversations.map((conversation) => conversation.id === conversationId
-        ? { ...conversation, agent, model, question, context, status: "running", result: null, error: null }
+        ? {
+            ...conversation,
+            agent,
+            model,
+            question,
+            context: context ?? conversation.context,
+            status: "running",
+            result: null,
+            error: null,
+            history: [...conversation.history, {
+              question: conversation.question,
+              context: conversation.context,
+              result: conversation.result,
+              error: conversation.error
+            }]
+          }
         : conversation)
       : [...conversations, {
           id: conversationId,
@@ -1221,7 +1420,8 @@ export class AppComponent implements OnInit, OnDestroy {
           context,
           status: "running",
           result: null,
-          error: null
+          error: null,
+          history: []
         }]);
     this.activeConversationId.set(conversationId);
     this.agentRunning.set(true);
@@ -1249,7 +1449,10 @@ export class AppComponent implements OnInit, OnDestroy {
         this.reviewMessage.set(error.toLowerCase().includes("cancel") ? "Agent request cancelled" : "Agent request failed");
       }
     } finally {
-      if (request === this.agentRequest) this.agentRunning.set(false);
+      if (request === this.agentRequest) {
+        this.agentRunning.set(false);
+        this.persistReviewSession();
+      }
     }
   }
 }

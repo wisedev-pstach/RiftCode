@@ -370,6 +370,9 @@ function registerIpc(): void {
     const patchSnapshot = snapshot;
     try {
       return await loadFilePatch(patchSnapshot, path, controller.signal);
+    } catch (error) {
+      if (controller.signal.aborted) return { path, patch: "", binary: false };
+      throw error;
     } finally {
       if (activePatchController === controller) activePatchController = null;
     }
