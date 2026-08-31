@@ -46,6 +46,24 @@ export interface AgentOption {
   label: string;
 }
 
+export interface AgentSession {
+  id: string;
+  title: string;
+  updatedAt: number;
+}
+
+export interface AgentConversationMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface AgentConversationHistory {
+  id: string;
+  title: string;
+  model: string | null;
+  messages: AgentConversationMessage[];
+}
+
 export interface AgentToolEvent {
   id: string;
   name: string;
@@ -56,6 +74,7 @@ export interface AgentToolEvent {
 export interface AgentRunResult {
   tools: AgentToolEvent[];
   explanation: string;
+  sessionId?: string;
 }
 
 export interface AgentStreamEvent {
@@ -72,7 +91,9 @@ export interface RiftApi {
   selectComparison(id: string): Promise<RepositorySnapshot>;
   listAgents(): Promise<AgentOption[]>;
   listAgentModels(id: AgentId): Promise<string[]>;
-  runAgent(runId: string, id: AgentId, model: string | null, prompt: string): Promise<AgentRunResult>;
+  listAgentSessions(id: AgentId): Promise<AgentSession[]>;
+  getAgentSession(id: AgentId, sessionId: string): Promise<AgentConversationHistory>;
+  runAgent(runId: string, id: AgentId, model: string | null, prompt: string, sessionId?: string): Promise<AgentRunResult>;
   cancelAgent(): Promise<void>;
   copyText(text: string): Promise<void>;
   onRepositoryChanged(listener: () => void): () => void;
