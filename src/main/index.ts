@@ -9,11 +9,12 @@ import { loadFilePatch, loadRepository } from "./git";
 import type { IpcMainInvokeEvent } from "electron";
 import type { AgentConversationHistory, AgentConversationMessage, AgentId, AgentOption, AgentRunResult, AgentSession, AgentStreamEvent, AgentToolEvent, RepositorySnapshot } from "../shared/contracts";
 
-const AGENTS: Readonly<Record<AgentId, { label: string; args: (prompt: string, model: string | null, sessionId?: string) => string[] }>> = {
+const AGENTS: Readonly<Record<AgentId, { label: string; args: (prompt: string, model: string | null, sessionId?: string) => string[]; promptViaStdin?: boolean }>> = {
   opencode: { label: "OpenCode", args: (prompt, model, sessionId) => ["run", "--pure", "--agent", "plan", "--format", "json", "--auto", ...(model ? ["--model", model] : []), ...(sessionId ? ["--session", sessionId] : []), prompt] },
   claude: {
     label: "Claude Code",
-    args: (prompt, model, sessionId) => ["--print", "--verbose", "--output-format", "stream-json", "--include-partial-messages", "--permission-mode", "plan", "--tools", "Read,Grep,Glob,Bash", ...(model ? ["--model", model] : []), ...(sessionId ? ["--resume", sessionId] : []), prompt]
+    args: (_prompt, model, sessionId) => ["--print", "--verbose", "--output-format", "stream-json", "--include-partial-messages", "--permission-mode", "plan", "--tools", "Read,Grep,Glob,Bash", ...(model ? ["--model", model] : []), ...(sessionId ? ["--resume", sessionId] : [])],
+    promptViaStdin: true
   }
 };
 
@@ -54,14 +55,14 @@ function execute(command: string, args: string[], cwd = process.cwd(), maxBuffer
   });
 }
 
-function executeAgent(command: string, args: string[], cwd: string, onOutput: (chunk: string) => void): Promise<string> {
+function executeAgent(command: string, args: string[], cwd: string, onOutput: (chunk: string) => void, input?: string): Promise<string> {
   if (activeAgentProcess) return Promise.reject(new Error("An agent request is already running."));
   agentCancellationRequested = false;
   return new Promise((resolvePromise, reject) => {
     let stdout = "";
     let stderr = "";
     let settled = false;
-    const child = spawn(command, args, { cwd, windowsHide: true, shell: false, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(command, args, { cwd, windowsHide: true, shell: false, stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"] });
     const timer = setTimeout(() => {
       if (settled) return;
       child.kill("SIGKILL");
@@ -84,6 +85,8 @@ function executeAgent(command: string, args: string[], cwd: string, onOutput: (c
       }
     });
     child.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+    child.stdin?.on("error", () => {});
+    child.stdin?.end(input);
     child.once("error", (error) => finish(error));
     child.once("close", (code, signal) => {
       if (agentCancellationRequested) {
@@ -98,6 +101,15 @@ function executeAgent(command: string, args: string[], cwd: string, onOutput: (c
     });
     activeAgentProcess = child;
   });
+}
+
+function normalizeAgentError(id: AgentId, reason: unknown): Error {
+  const message = reason instanceof Error ? reason.message : String(reason);
+  if (/authentication_failed|failed to authenticate|oauth session expired|authentication (?:session )?expired|unauthorized|not (?:logged|signed) in|login required|invalid (?:api key|token)|\b401\b/i.test(message)) {
+    const command = id === "claude" ? "claude auth login" : "opencode auth login";
+    return new Error(`Authentication required. Sign in to ${AGENTS[id].label} again by running "${command}" in a terminal, then retry.`);
+  }
+  return reason instanceof Error ? reason : new Error(message);
 }
 
 async function resolveCommand(command: AgentId): Promise<string | null> {
@@ -354,15 +366,22 @@ async function runAgent(runId: string, id: AgentId, model: string | null, prompt
     pendingResult = { tools: [], explanation: "" };
     mainWindow.webContents.send("agent:event", event);
   };
-  const output = await executeAgent(command, AGENTS[id].args(prompt, model, sessionId), repositoryRoot, (chunk) => {
-    lineBuffer += chunk;
-    const lastNewline = Math.max(lineBuffer.lastIndexOf("\n"), lineBuffer.lastIndexOf("\r"));
-    if (lastNewline < 0) return;
-    const completeLines = lineBuffer.slice(0, lastNewline + 1);
-    lineBuffer = lineBuffer.slice(lastNewline + 1);
-    pendingResult = mergeAgentResults(pendingResult, parseAgentOutput(id, completeLines, false));
-    if (!streamTimer) streamTimer = setTimeout(emit, 80);
-  });
+  const agent = AGENTS[id];
+  let output: string;
+  try {
+    output = await executeAgent(command, agent.args(prompt, model, sessionId), repositoryRoot, (chunk) => {
+      lineBuffer += chunk;
+      const lastNewline = Math.max(lineBuffer.lastIndexOf("\n"), lineBuffer.lastIndexOf("\r"));
+      if (lastNewline < 0) return;
+      const completeLines = lineBuffer.slice(0, lastNewline + 1);
+      lineBuffer = lineBuffer.slice(lastNewline + 1);
+      pendingResult = mergeAgentResults(pendingResult, parseAgentOutput(id, completeLines, false));
+      if (!streamTimer) streamTimer = setTimeout(emit, 80);
+    }, agent.promptViaStdin ? prompt : undefined);
+  } catch (reason) {
+    if (streamTimer) clearTimeout(streamTimer);
+    throw normalizeAgentError(id, reason);
+  }
   if (streamTimer) clearTimeout(streamTimer);
   return parseAgentOutput(id, output);
 }
