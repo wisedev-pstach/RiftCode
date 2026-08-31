@@ -2,16 +2,18 @@ import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu } from "electron";
 import { execFile, spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { existsSync, watch, type FSWatcher } from "node:fs";
+import { open, readFile, readdir, stat } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { loadFilePatch, loadRepository } from "./git";
 import type { IpcMainInvokeEvent } from "electron";
-import type { AgentId, AgentOption, AgentRunResult, AgentStreamEvent, AgentToolEvent, RepositorySnapshot } from "../shared/contracts";
+import type { AgentConversationHistory, AgentConversationMessage, AgentId, AgentOption, AgentRunResult, AgentSession, AgentStreamEvent, AgentToolEvent, RepositorySnapshot } from "../shared/contracts";
 
-const AGENTS: Readonly<Record<AgentId, { label: string; args: (prompt: string, model: string | null) => string[] }>> = {
-  opencode: { label: "OpenCode", args: (prompt, model) => ["run", "--pure", "--agent", "plan", "--format", "json", "--auto", ...(model ? ["--model", model] : []), prompt] },
+const AGENTS: Readonly<Record<AgentId, { label: string; args: (prompt: string, model: string | null, sessionId?: string) => string[] }>> = {
+  opencode: { label: "OpenCode", args: (prompt, model, sessionId) => ["run", "--pure", "--agent", "plan", "--format", "json", "--auto", ...(model ? ["--model", model] : []), ...(sessionId ? ["--session", sessionId] : []), prompt] },
   claude: {
     label: "Claude Code",
-    args: (prompt, model) => ["--print", "--verbose", "--output-format", "stream-json", "--include-partial-messages", "--permission-mode", "plan", "--tools", "Read,Grep,Glob,Bash", ...(model ? ["--model", model] : []), prompt]
+    args: (prompt, model, sessionId) => ["--print", "--verbose", "--output-format", "stream-json", "--include-partial-messages", "--permission-mode", "plan", "--tools", "Read,Grep,Glob,Bash", ...(model ? ["--model", model] : []), ...(sessionId ? ["--resume", sessionId] : []), prompt]
   }
 };
 
@@ -35,12 +37,12 @@ function repositoryArgument(argv: string[]): string | undefined {
   return undefined;
 }
 
-function execute(command: string, args: string[], cwd = process.cwd()): Promise<string> {
+function execute(command: string, args: string[], cwd = process.cwd(), maxBuffer = 10 * 1024 * 1024): Promise<string> {
   return new Promise((resolvePromise, reject) => {
     execFile(
       command,
       args,
-      { cwd, maxBuffer: 10 * 1024 * 1024, timeout: 180_000, killSignal: "SIGKILL", windowsHide: true },
+      { cwd, maxBuffer, timeout: 180_000, killSignal: "SIGKILL", windowsHide: true },
       (error, stdout, stderr) => {
         if (error) {
           reject(new Error(stderr.trim() || stdout.trim() || error.message));
@@ -137,8 +139,205 @@ async function listAgentModels(id: AgentId): Promise<string[]> {
   return (await execute(command, ["models"])).split(/\r?\n/).map((model) => model.trim()).filter(Boolean);
 }
 
-async function runAgent(runId: string, id: AgentId, model: string | null, prompt: string): Promise<AgentRunResult> {
+async function listAgentSessions(id: AgentId): Promise<AgentSession[]> {
   if (!snapshot) throw new Error("No repository is open.");
+  const command = await resolveAgentCommand(id);
+  if (!command) return [];
+  if (id === "opencode") {
+    const output = await execute(command, ["session", "list", "--format", "json", "--max-count", "30"], snapshot.root);
+    const sessions: unknown = JSON.parse(output || "[]");
+    if (!Array.isArray(sessions)) return [];
+    return sessions.flatMap((value): AgentSession[] => {
+      const session = record(value);
+      return typeof session?.id === "string"
+        && typeof session.title === "string"
+        && typeof session.updated === "number"
+        && typeof session.directory === "string"
+        && samePath(session.directory, snapshot!.root)
+        ? [{ id: session.id, title: session.title, updatedAt: session.updated }]
+        : [];
+    }).slice(0, 20);
+  }
+
+  const projectName = resolve(snapshot.root).replace(/[^a-zA-Z0-9]/g, "-");
+  const directory = join(homedir(), ".claude", "projects", projectName);
+  let entries;
+  try {
+    entries = await readdir(directory, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const candidates = await Promise.all(entries
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".jsonl"))
+    .map(async (entry) => ({ entry, details: await stat(join(directory, entry.name)) })));
+  candidates.sort((left, right) => right.details.mtimeMs - left.details.mtimeMs);
+  const sessions = await Promise.all(candidates.slice(0, 20).map(async ({ entry, details }): Promise<AgentSession | null> => {
+    const title = await readClaudeSessionTitle(join(directory, entry.name), snapshot!.root);
+    return title ? {
+      id: entry.name.slice(0, -".jsonl".length),
+      title,
+      updatedAt: details.mtimeMs
+    } : null;
+  }));
+  return sessions.filter((session): session is AgentSession => session !== null);
+}
+
+function samePath(left: string, right: string): boolean {
+  const leftPath = resolve(left);
+  const rightPath = resolve(right);
+  return process.platform === "win32" ? leftPath.toLowerCase() === rightPath.toLowerCase() : leftPath === rightPath;
+}
+
+async function readClaudeSessionTitle(path: string, repositoryRoot: string): Promise<string | null> {
+  const handle = await open(path, "r");
+  try {
+    const buffer = Buffer.alloc(512 * 1024);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    let title: string | null = null;
+    let matchesRepository = false;
+    for (const line of buffer.toString("utf8", 0, bytesRead).split(/\r?\n/)) {
+      let event: Record<string, unknown> | null = null;
+      try { event = record(JSON.parse(line)); } catch { continue; }
+      if (!event) continue;
+      if (typeof event.cwd === "string" && samePath(event.cwd, repositoryRoot)) matchesRepository = true;
+      if (event.type === "summary" && typeof event.summary === "string" && event.summary.trim()) {
+        title ??= event.summary.trim().slice(0, 120);
+      }
+      if (event.type !== "user" || event.isMeta === true) continue;
+      const message = record(event.message);
+      if (typeof message?.content !== "string" || message.content.startsWith("<")) continue;
+      const firstLine = message.content.trim().split(/\r?\n/, 1)[0];
+      if (firstLine) title ??= firstLine.slice(0, 120);
+    }
+    return matchesRepository ? title ?? "Claude conversation" : null;
+  } finally {
+    await handle.close();
+  }
+}
+
+function appendConversationMessage(messages: AgentConversationMessage[], role: "user" | "assistant", content: string): void {
+  const text = content.trim();
+  if (!text) return;
+  const previous = messages.at(-1);
+  if (previous?.role === role) previous.content = `${previous.content}\n\n${text}`;
+  else messages.push({ role, content: text });
+}
+
+async function getAgentSession(id: AgentId, sessionId: string): Promise<AgentConversationHistory> {
+  if (!snapshot) throw new Error("No repository is open.");
+  if (id === "opencode") {
+    const command = await resolveAgentCommand(id);
+    if (!command) throw new Error("OpenCode is not installed or is not on PATH.");
+    const output = await execute(command, ["export", sessionId], snapshot.root, 50 * 1024 * 1024);
+    const jsonStart = output.indexOf("{");
+    if (jsonStart < 0) throw new Error("OpenCode returned an invalid conversation export.");
+    const exported = record(JSON.parse(output.slice(jsonStart)));
+    const info = record(exported?.info);
+    if (typeof info?.directory !== "string" || !samePath(info.directory, snapshot.root)) {
+      throw new Error("This conversation belongs to a different repository.");
+    }
+    const messages: AgentConversationMessage[] = [];
+    for (const value of Array.isArray(exported?.messages) ? exported.messages : []) {
+      const message = record(value);
+      const messageInfo = record(message?.info);
+      const role = messageInfo?.role;
+      if (role !== "user" && role !== "assistant") continue;
+      const text = (Array.isArray(message?.parts) ? message.parts : []).flatMap((partValue): string[] => {
+        const part = record(partValue);
+        return part?.type === "text" && typeof part.text === "string" ? [part.text] : [];
+      }).join("\n\n");
+      appendConversationMessage(messages, role, text);
+    }
+    const model = record(info.model);
+    const modelId = typeof model?.id === "string" ? model.id : null;
+    const providerId = typeof model?.providerID === "string" ? model.providerID : null;
+    return {
+      id: sessionId,
+      title: typeof info.title === "string" ? info.title : "OpenCode conversation",
+      model: modelId && providerId ? `${providerId}/${modelId}` : modelId,
+      messages
+    };
+  }
+
+  const projectName = resolve(snapshot.root).replace(/[^a-zA-Z0-9]/g, "-");
+  const path = join(homedir(), ".claude", "projects", projectName, `${sessionId}.jsonl`);
+  const details = await stat(path);
+  if (details.size > 50 * 1024 * 1024) throw new Error("Claude conversation is too large to display.");
+  const messages: AgentConversationMessage[] = [];
+  let title = "Claude conversation";
+  let model: string | null = null;
+  let matchesRepository = false;
+  const events = new Map<string, Record<string, unknown>>();
+  let leafId: string | null = null;
+  for (const line of (await readFile(path, "utf8")).split(/\r?\n/)) {
+    let event: Record<string, unknown> | null = null;
+    try { event = record(JSON.parse(line)); } catch { continue; }
+    if (!event) continue;
+    if (typeof event.cwd === "string" && samePath(event.cwd, snapshot.root)) matchesRepository = true;
+    if (event.type === "ai-title" && typeof event.aiTitle === "string") title = event.aiTitle;
+    if (event.isSidechain !== true && typeof event.uuid === "string") {
+      events.set(event.uuid, event);
+      leafId = event.uuid;
+    }
+  }
+  if (!matchesRepository) throw new Error("This conversation belongs to a different repository.");
+  const activeEvents: Record<string, unknown>[] = [];
+  const visited = new Set<string>();
+  while (leafId && !visited.has(leafId)) {
+    visited.add(leafId);
+    const event = events.get(leafId);
+    if (!event) break;
+    activeEvents.push(event);
+    leafId = typeof event.parentUuid === "string" ? event.parentUuid : null;
+  }
+  activeEvents.reverse();
+  for (const event of activeEvents) {
+    const message = record(event.message);
+    if (event.type === "user" && event.isMeta !== true) {
+      const content = typeof message?.content === "string"
+        ? message.content
+        : (Array.isArray(message?.content) ? message.content : []).flatMap((partValue): string[] => {
+            const part = record(partValue);
+            return part?.type === "text" && typeof part.text === "string" ? [part.text] : [];
+          }).join("\n\n");
+      appendConversationMessage(messages, "user", content);
+      continue;
+    }
+    if (event.type !== "assistant") continue;
+    if (typeof message?.model === "string") model = message.model;
+    const text = (Array.isArray(message?.content) ? message.content : []).flatMap((partValue): string[] => {
+      const part = record(partValue);
+      return part?.type === "text" && typeof part.text === "string" ? [part.text] : [];
+    }).join("\n\n");
+    appendConversationMessage(messages, "assistant", text);
+  }
+  return { id: sessionId, title, model, messages };
+}
+
+async function assertAgentSessionRepository(id: AgentId, sessionId: string, repositoryRoot: string): Promise<void> {
+  if (id === "opencode") {
+    const command = await resolveAgentCommand(id);
+    if (!command) throw new Error("OpenCode is not installed or is not on PATH.");
+    const output = await execute(command, ["session", "list", "--format", "json"], repositoryRoot);
+    const sessions: unknown = JSON.parse(output || "[]");
+    const match = Array.isArray(sessions) && sessions.some((value) => {
+      const session = record(value);
+      return session?.id === sessionId && typeof session.directory === "string" && samePath(session.directory, repositoryRoot);
+    });
+    if (!match) throw new Error("This conversation does not belong to the open repository.");
+    return;
+  }
+  const projectName = resolve(repositoryRoot).replace(/[^a-zA-Z0-9]/g, "-");
+  const path = join(homedir(), ".claude", "projects", projectName, `${sessionId}.jsonl`);
+  if (!await readClaudeSessionTitle(path, repositoryRoot)) {
+    throw new Error("This conversation does not belong to the open repository.");
+  }
+}
+
+async function runAgent(runId: string, id: AgentId, model: string | null, prompt: string, sessionId?: string): Promise<AgentRunResult> {
+  const repositoryRoot = snapshot?.root;
+  if (!repositoryRoot) throw new Error("No repository is open.");
+  if (sessionId) await assertAgentSessionRepository(id, sessionId, repositoryRoot);
   const command = await resolveAgentCommand(id);
   if (!command) {
     throw new Error(id === "claude"
@@ -155,7 +354,7 @@ async function runAgent(runId: string, id: AgentId, model: string | null, prompt
     pendingResult = { tools: [], explanation: "" };
     mainWindow.webContents.send("agent:event", event);
   };
-  const output = await executeAgent(command, AGENTS[id].args(prompt, model), snapshot.root, (chunk) => {
+  const output = await executeAgent(command, AGENTS[id].args(prompt, model, sessionId), repositoryRoot, (chunk) => {
     lineBuffer += chunk;
     const lastNewline = Math.max(lineBuffer.lastIndexOf("\n"), lineBuffer.lastIndexOf("\r"));
     if (lastNewline < 0) return;
@@ -181,7 +380,8 @@ function mergeAgentResults(current: AgentRunResult, update: AgentRunResult): Age
   }
   return {
     tools: [...tools.values()],
-    explanation: [current.explanation, update.explanation].filter(Boolean).join("")
+    explanation: [current.explanation, update.explanation].filter(Boolean).join(""),
+    sessionId: update.sessionId ?? current.sessionId
   };
 }
 
@@ -215,10 +415,13 @@ function parseAgentOutput(id: AgentId, output: string, complete = true): AgentRu
   const text: string[] = [];
   let streamedText = "";
   let explanation = "";
+  let sessionId: string | undefined;
 
   for (const event of events) {
+    const data = record(event.data);
+    const eventSessionId = event.sessionID ?? event.session_id ?? data?.sessionID ?? data?.session_id;
+    if (typeof eventSessionId === "string" && /^[a-zA-Z0-9_-]{8,100}$/.test(eventSessionId)) sessionId = eventSessionId;
     if (id === "opencode") {
-      const data = record(event.data);
       const part = record(event.part) ?? record(data?.part);
       if (part?.type === "tool") {
         const state = record(part.state) ?? record(data?.state) ?? record(event.state);
@@ -274,7 +477,8 @@ function parseAgentOutput(id: AgentId, output: string, complete = true): AgentRu
   if (!explanation && events.length === 0) explanation = output.trim();
   return {
     tools: [...tools.values()],
-    explanation: explanation || (complete ? "The agent completed without a text explanation." : "")
+    explanation: explanation || (complete ? "The agent completed without a text explanation." : ""),
+    sessionId
   };
 }
 
@@ -398,7 +602,20 @@ function registerIpc(): void {
     return listAgentModels(id as AgentId);
   });
 
-  ipcMain.handle("agent:run", (event, runId: unknown, id: unknown, model: unknown, prompt: unknown) => {
+  ipcMain.handle("agent:sessions", (event, id: unknown) => {
+    assertTrustedSender(event);
+    if (typeof id !== "string" || !Object.hasOwn(AGENTS, id)) throw new Error(`Unsupported agent: ${String(id)}`);
+    return listAgentSessions(id as AgentId);
+  });
+
+  ipcMain.handle("agent:session", (event, id: unknown, sessionId: unknown) => {
+    assertTrustedSender(event);
+    if (typeof id !== "string" || !Object.hasOwn(AGENTS, id)) throw new Error(`Unsupported agent: ${String(id)}`);
+    if (typeof sessionId !== "string" || !/^[a-zA-Z0-9_-]{8,100}$/.test(sessionId)) throw new Error("Invalid agent session identifier.");
+    return getAgentSession(id as AgentId, sessionId);
+  });
+
+  ipcMain.handle("agent:run", (event, runId: unknown, id: unknown, model: unknown, prompt: unknown, sessionId: unknown) => {
     assertTrustedSender(event);
     if (typeof runId !== "string" || !runId || runId.length > 100) throw new Error("Invalid agent run identifier.");
     if (typeof id !== "string" || !Object.hasOwn(AGENTS, id)) throw new Error(`Unsupported agent: ${String(id)}`);
@@ -406,7 +623,10 @@ function registerIpc(): void {
     if (typeof prompt !== "string" || !prompt.trim() || prompt.length > 100_000) {
       throw new Error("The agent prompt is empty or too large.");
     }
-    return runAgent(runId, id as AgentId, model as string | null, prompt);
+    if (sessionId !== undefined && (typeof sessionId !== "string" || !/^[a-zA-Z0-9_-]{8,100}$/.test(sessionId))) {
+      throw new Error("Invalid agent session identifier.");
+    }
+    return runAgent(runId, id as AgentId, model as string | null, prompt, sessionId as string | undefined);
   });
 
   ipcMain.handle("agent:cancel", (event) => {
@@ -447,6 +667,8 @@ function createWindow(): void {
     }
   });
   mainWindow.setMenuBarVisibility(false);
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  mainWindow.webContents.on("will-navigate", (event) => event.preventDefault());
   mainWindow.once("ready-to-show", () => {
     mainWindow?.show();
     if (process.platform === "darwin") app.focus({ steal: true });

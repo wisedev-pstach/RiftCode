@@ -1,8 +1,8 @@
 @if (loading()) {
-  <main class="center-state"><span class="rift-mark">R</span><p>Opening repository...</p></main>
+  <main class="center-state"><span class="loading-wordmark"><strong>RIFT</strong><small>/code</small></span><p>Opening repository...</p></main>
 } @else if (!repository()) {
   <main class="center-state">
-    <span class="rift-mark">R</span>
+    <span class="loading-wordmark"><strong>RIFT</strong><small>/code</small></span>
     <h1>Open a Git repository</h1>
     <p>{{ error() || "Launch Rift from a repository or choose one here." }}</p>
     <button class="primary-button" (click)="chooseRepository()">Choose repository</button>
@@ -37,8 +37,17 @@
     <section class="workspace" [class.review-open]="reviewSidebarOpen()">
       <aside class="changes-panel">
         <div class="panel-title">
-          <span>Changes</span>
+          <button class="changes-title-button" (click)="showDiff()" title="Show changes and diff">Changes</button>
           <span class="changes-heading-actions">
+            @if (reviewSessionStarted()) {
+              <button
+                class="clear-session-action"
+                [class.armed]="clearSessionArmed()"
+                [disabled]="agentRunning()"
+                (click)="clearReviewSession()"
+                title="Clear all notes, chats, reviewed files, and selections"
+              >{{ clearSessionArmed() ? "Confirm clear" : "Clear session" }}</button>
+            }
             <button
               class="all-changes-button"
               [class.active]="allChangesSelected()"
@@ -55,6 +64,7 @@
               [class.selected]="file.path === selectedPath()"
               [class.reviewed]="isFileReviewed(file.path)"
               (click)="selectFile(file.path)"
+              (contextmenu)="openFileTools(file.path, $event)"
               [title]="file.path"
             >
               <span class="status status-{{ file.status }}">{{ statusLabel(file) }}</span>
@@ -71,11 +81,17 @@
       </aside>
 
       @if (chatPageOpen()) {
-        <section class="chat-page" aria-label="Chats">
+        <section class="chat-page" aria-label="Chats" [style.--chat-font-size.px]="chatFontSize()">
           <header class="chat-page-header">
-            <button class="back-to-diff" (click)="chatPageOpen.set(false)">← Back to diff</button>
+            <button class="back-to-diff" (click)="leaveChatPage()">← {{ activeConversation() ? "Back to chats" : "Back to diff" }}</button>
             <span><strong>Chats</strong><small>{{ repository()!.name }} · {{ repository()!.comparisonLabel }}</small></span>
-            <button class="new-chat-button" (click)="startNewChat()" [disabled]="!selectedAgent() || agentRunning()">New chat</button>
+            <div class="chat-header-actions">
+              <label class="chat-font-control" title="Chat text size"><span>A</span><input type="range" min="12" max="20" step="1" [value]="chatFontSize()" (input)="updateChatFontSize($event)" aria-label="Chat text size"><strong>A</strong></label>
+              @if (agents().length > 0) {
+                <label class="chat-provider-control" title="Provider for new chats"><span class="visually-hidden">Provider for new chats</span><select [value]="selectedAgent()" (change)="selectAgent($event)">@for (agent of agents(); track agent.id) { <option [value]="agent.id" [selected]="agent.id === selectedAgent()">{{ agent.label }}</option> }</select></label>
+              }
+              <button class="new-chat-button" (click)="startNewChat()" [disabled]="!selectedAgent() || agentRunning()">New chat</button>
+            </div>
           </header>
 
           @if (activeConversation() && repositoryConversations().length > 0) {
@@ -83,7 +99,7 @@
               <button class="all-chat-tab" (click)="openChats()">All chats</button>
               @for (conversation of repositoryConversations(); track conversation.id) {
                 <button [class.active]="conversation.id === activeConversationId()" (click)="openConversation(conversation.id)">
-                  <span class="conversation-status status-{{ conversation.status }}"></span>{{ conversation.question }}
+                  <span class="conversation-status status-{{ conversation.status }}"></span>{{ conversation.title || conversation.question }}
                 </button>
               }
             </nav>
@@ -144,24 +160,53 @@
               </div>
             </div>
             <footer class="chat-page-footer">
-              <span>{{ conversation.status === "running" ? "Provider request in progress" : conversation.status === "complete" ? "Explanation complete" : "Request " + conversation.status }}</span>
-              @if (conversation.status === "running") { <button (click)="cancelAgent()">Cancel</button> } @else { <button (click)="continueConversation()">Ask follow-up</button> }
+              @if (conversation.status === "running") {
+                <span>Provider request in progress</span><button (click)="cancelAgent()">Cancel</button>
+              } @else {
+                <label class="visually-hidden" for="chat-reply">Continue conversation</label>
+                <textarea
+                  id="chat-reply"
+                  rows="2"
+                  maxlength="20000"
+                  placeholder="Continue this conversation..."
+                  [value]="chatReplyDraft()"
+                  (input)="chatReplyDraft.set($any($event.target).value)"
+                  (keydown)="handleChatReplyKeydown($event)"
+                ></textarea>
+                <button (click)="sendChatReply()" [disabled]="!chatReplyDraft().trim()">Send</button>
+              }
             </footer>
-          } @else if (repositoryConversations().length > 0) {
+          } @else {
             <div class="chat-history">
-              <header><span class="ai-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 1c0 6.1-4.9 11-11 11 6.1 0 11 4.9 11 11 0-6.1 4.9-11 11-11-6.1 0-11-4.9-11-11Z"/><circle cx="19" cy="5" r="2"/></svg></span><span><strong>Current chats</strong><small>{{ repositoryConversations().length }} conversations in this review</small></span></header>
+              <header><span class="ai-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 1c0 6.1-4.9 11-11 11 6.1 0 11 4.9 11 11 0-6.1 4.9-11 11-11-6.1 0-11-4.9-11-11Z"/><circle cx="19" cy="5" r="2"/></svg></span><span><strong>Conversations</strong><small>Rift and {{ selectedAgentOption()?.label || "provider" }} chats for this repository</small></span></header>
               <div class="chat-history-list">
                 @for (conversation of repositoryConversations(); track conversation.id) {
                   <button (click)="openConversation(conversation.id)">
                     <span class="conversation-status status-{{ conversation.status }}"></span>
-                    <span><strong>{{ conversation.question }}</strong><small>{{ agentLabel(conversation.agent) }} · {{ conversation.model || "default model" }}@if (conversation.context; as context) { · {{ shortName(context.filePath) }}:{{ context.startLine }}{{ context.endLine !== context.startLine ? "-" + context.endLine : "" }}}</small></span>
+                    <span><strong>{{ conversation.title || conversation.question }}</strong><small>{{ agentLabel(conversation.agent) }} · {{ conversation.model || "default model" }}@if (conversation.context; as context) { · {{ shortName(context.filePath) }}:{{ context.startLine }}{{ context.endLine !== context.startLine ? "-" + context.endLine : "" }}}</small></span>
                     <span class="history-arrow">→</span>
                   </button>
                 }
+                @if (providerSessionsLoading()) {
+                  <p class="chat-list-message">Loading {{ selectedAgentOption()?.label }} conversations...</p>
+                } @else if (providerSessionsError()) {
+                  <p class="chat-list-message error">{{ providerSessionsError() }}</p>
+                } @else if (providerSessionsAgent() === selectedAgent()) {
+                  @for (session of providerSessions(); track session.id) {
+                    @if (!isProviderSessionImported(session)) {
+                      <button (click)="resumeProviderSession(session)" [disabled]="providerSessionOpeningId() !== null">
+                        <span class="conversation-status status-complete"></span>
+                        <span><strong>{{ session.title }}</strong><small>{{ selectedAgentOption()?.label }} · {{ providerSessionOpeningId() === session.id ? "Loading conversation..." : sessionUpdatedLabel(session.updatedAt) }}</small></span>
+                        <span class="history-arrow">→</span>
+                      </button>
+                    }
+                  }
+                }
+                @if (repositoryConversations().length === 0 && !providerSessionsLoading() && providerSessions().length === 0) {
+                  <p class="chat-list-message">No conversations found for this repository. Start a new chat to begin.</p>
+                }
               </div>
             </div>
-          } @else {
-            <div class="chat-empty"><span class="ai-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 1c0 6.1-4.9 11-11 11 6.1 0 11 4.9 11 11 0-6.1 4.9-11 11-11-6.1 0-11-4.9-11-11Z"/><circle cx="19" cy="5" r="2"/></svg></span><strong>No chats yet</strong><p>Ask about a selected diff or start with the complete comparison.</p><button class="new-chat-button" (click)="startNewChat()" [disabled]="!selectedAgent()">Start a chat</button></div>
           }
         </section>
       } @else {
@@ -384,18 +429,21 @@
               >
                 <span class="ai-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 1c0 6.1-4.9 11-11 11 6.1 0 11 4.9 11 11 0-6.1 4.9-11 11-11-6.1 0-11-4.9-11-11Z"/><circle cx="19" cy="5" r="2"/></svg></span>{{ agentRunning() ? "Cancel" : "Send to agent" }}
               </button>
-              <button
-                class="clear-session-action"
-                [class.armed]="clearSessionArmed()"
-                [disabled]="agentRunning()"
-                (click)="clearReviewSession()"
-              >{{ clearSessionArmed() ? "Confirm clear session" : "Clear session" }}</button>
             </div>
 
           </div>
         }
       </aside>
     </section>
+
+    @if (fileToolsMenu(); as menu) {
+      <section class="file-tools" [style.left.px]="menu.x" [style.top.px]="menu.y" role="menu" aria-label="File actions">
+        <button role="menuitem" (click)="toggleFileReviewed(menu.path)">
+          <span>{{ isFileReviewed(menu.path) ? "↶" : "✓" }}</span>
+          <span><strong>{{ isFileReviewed(menu.path) ? "Mark unreviewed" : "Mark reviewed" }}</strong><small>{{ shortName(menu.path) }}</small></span>
+        </button>
+      </section>
+    }
 
     @if (toolsMenu(); as menu) {
       <section
@@ -425,6 +473,7 @@
           <label for="explain-question">Question <small>Enter to send · Shift+Enter for a new line</small></label>
           <div class="explain-agent-controls">
             <label><span>Provider</span><select [value]="selectedAgent()" (change)="selectAgent($event)">@for (agent of agents(); track agent.id) { <option [value]="agent.id">{{ agent.label }}</option> }</select></label>
+            <label><span>Conversation</span><select [value]="continuingConversationId() || 'new'" (change)="selectExplainConversation($event)"><option value="new">New conversation</option>@for (conversation of availableConversations(); track conversation.id) { <option [value]="conversation.id">{{ conversation.title || conversation.question }}</option> }</select></label>
             <label class="model-search-field">
               <span>Model</span>
               <div class="model-search-control">
@@ -433,14 +482,14 @@
                   autocomplete="off"
                   [placeholder]="modelsLoading() ? 'Loading models…' : 'Default model'"
                   [value]="modelSearch()"
-                  [disabled]="modelsLoading()"
+                  [disabled]="modelsLoading() || continuingConversationId() !== null"
                   (focus)="modelPickerOpen.set(true)"
                   (input)="updateModelSearch($event)"
                   (keydown)="handleModelSearchKeydown($event)"
                   aria-label="Search models"
                   [attr.aria-expanded]="modelPickerOpen()"
                 >
-                @if (selectedModel()) { <button type="button" (click)="selectModel(null)" title="Use default model" aria-label="Use default model">×</button> }
+                @if (selectedModel() && continuingConversationId() === null) { <button type="button" (click)="selectModel(null)" title="Use default model" aria-label="Use default model">×</button> }
                 @if (modelPickerOpen() && !modelsLoading()) {
                   <div class="model-search-results">
                     <button type="button" [class.selected]="selectedModel() === null && !modelSearch()" (click)="selectModel(null)">Default model</button>
@@ -457,6 +506,7 @@
           <textarea
             id="explain-question"
             rows="6"
+            maxlength="20000"
             autofocus
             placeholder="Explain this"
             [value]="questionDraft()"
@@ -464,7 +514,7 @@
             (keydown)="handleExplainKeydown($event)"
           ></textarea>
           <div class="note-composer-actions">
-            <button (click)="questionComposerOpen.set(false)">Cancel</button>
+            <button (click)="cancelQuestion()">Cancel</button>
             <button class="save-note" (click)="explainSelection()" [disabled]="!selectedAgent() || agentRunning() || modelsLoading()">Explain</button>
           </div>
         } @else {
@@ -511,13 +561,6 @@
       @if (error()) { <span class="status-error" [title]="error()!">{{ error() }}</span> }
       <span class="status-spacer"></span>
       <span>{{ comparisonChanging() ? "Changing comparison..." : "Watching repository" }}</span>
-      <button
-        class="status-clear-session"
-        [class.armed]="clearSessionArmed()"
-        [disabled]="agentRunning()"
-        (click)="clearReviewSession()"
-        title="Clear all notes, chats, reviewed files, and selections"
-      >{{ clearSessionArmed() ? "Confirm clear all" : "Clear session" }}</button>
     </footer>
   </main>
 }

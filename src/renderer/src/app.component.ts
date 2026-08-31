@@ -10,7 +10,7 @@ import {
   viewChild
 } from "@angular/core";
 import { marked } from "marked";
-import type { AgentId, AgentOption, AgentRunResult, AgentStreamEvent, ChangedFile, FilePatch, RepositorySnapshot } from "../../shared/contracts";
+import type { AgentConversationHistory, AgentId, AgentOption, AgentRunResult, AgentSession, AgentStreamEvent, ChangedFile, FilePatch, RepositorySnapshot } from "../../shared/contracts";
 
 type DiffKind = "header" | "hunk" | "context" | "addition" | "deletion" | "meta";
 type DiffMode = "unified" | "split";
@@ -23,6 +23,7 @@ interface DetectedLanguage {
 const PLAIN_TEXT: DetectedLanguage = { id: "plaintext", label: "Plain text" };
 const AGENT_STORAGE_KEY = "rift:last-agent";
 const MODEL_STORAGE_PREFIX = "rift:last-model:";
+const CHAT_FONT_SIZE_KEY = "rift:chat-font-size";
 const LANGUAGES: Readonly<Record<string, DetectedLanguage>> = {
   bash: { id: "bash", label: "Shell" },
   c: { id: "c", label: "C" },
@@ -125,11 +126,16 @@ interface ToolsMenu {
   y: number;
 }
 
+interface FileToolsMenu extends ToolsMenu {
+  path: string;
+}
+
 type ConversationStatus = "running" | "complete" | "error" | "cancelled";
 
 interface Conversation {
   id: number;
   repositoryRoot: string;
+  title?: string;
   agent: AgentId;
   model: string | null;
   question: string;
@@ -138,6 +144,7 @@ interface Conversation {
   result: AgentRunResult | null;
   error: string | null;
   history: ConversationTurn[];
+  providerSessionId?: string;
 }
 
 interface ConversationTurn {
@@ -160,6 +167,7 @@ interface PendingExplain {
   prompt: string;
   question: string;
   context?: ConversationContext;
+  providerSessionId?: string;
 }
 
 interface RowAnnotations {
@@ -207,6 +215,7 @@ function isAgentResult(value: unknown): value is AgentRunResult {
   if (!value || typeof value !== "object") return false;
   const result = value as Record<string, unknown>;
   return typeof result.explanation === "string" && result.explanation.length <= 1_000_000
+    && (result.sessionId === undefined || (typeof result.sessionId === "string" && result.sessionId.length <= 100))
     && Array.isArray(result.tools) && result.tools.length <= 2_000
     && result.tools.every((entry) => {
       if (!entry || typeof entry !== "object") return false;
@@ -231,6 +240,7 @@ function isConversation(value: unknown): value is Conversation {
   const conversation = value as Record<string, unknown>;
   return typeof conversation.id === "number" && Number.isSafeInteger(conversation.id) && conversation.id > 0
     && typeof conversation.repositoryRoot === "string" && conversation.repositoryRoot.length <= 10_000
+    && (conversation.title === undefined || (typeof conversation.title === "string" && conversation.title.length <= 500))
     && (conversation.agent === "opencode" || conversation.agent === "claude")
     && (conversation.model === null || (typeof conversation.model === "string" && conversation.model.length <= 200))
     && typeof conversation.question === "string" && conversation.question.length <= 20_000
@@ -239,7 +249,8 @@ function isConversation(value: unknown): value is Conversation {
     && (conversation.result === null || isAgentResult(conversation.result))
     && (conversation.error === null || (typeof conversation.error === "string" && conversation.error.length <= 20_000))
     && Array.isArray(conversation.history) && conversation.history.length <= 500
-    && conversation.history.every(isConversationTurn);
+    && conversation.history.every(isConversationTurn)
+    && (conversation.providerSessionId === undefined || (typeof conversation.providerSessionId === "string" && conversation.providerSessionId.length <= 100));
 }
 
 function parsePatch(patch: string): DiffRow[] {
@@ -347,6 +358,7 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly error = signal<string | null>(null);
   readonly reviewSidebarOpen = signal(false);
   readonly toolsMenu = signal<ToolsMenu | null>(null);
+  readonly fileToolsMenu = signal<FileToolsMenu | null>(null);
   readonly noteComposerOpen = signal(false);
   readonly questionComposerOpen = signal(false);
   readonly questionDraft = signal("");
@@ -361,6 +373,10 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly clearSessionArmed = signal(false);
   readonly agents = signal<AgentOption[]>([]);
   readonly selectedAgent = signal<AgentId | null>(null);
+  readonly availableConversations = computed(() => {
+    const agent = this.selectedAgent();
+    return this.repositoryConversations().filter((conversation) => conversation.agent === agent && conversation.status !== "running");
+  });
   readonly agentModels = signal<string[]>([]);
   readonly selectedModel = signal<string | null>(null);
   readonly modelSearch = signal("");
@@ -417,6 +433,14 @@ export class AppComponent implements OnInit, OnDestroy {
     }
     return `${count} lines selected`;
   });
+  readonly reviewSessionStarted = computed(() => this.notes().length > 0 || this.reviewedFiles().length > 0 || this.repositoryConversations().length > 0);
+  readonly providerSessions = signal<AgentSession[]>([]);
+  readonly providerSessionsAgent = signal<AgentId | null>(null);
+  readonly providerSessionsLoading = signal(false);
+  readonly providerSessionsError = signal<string | null>(null);
+  readonly providerSessionOpeningId = signal<string | null>(null);
+  readonly chatReplyDraft = signal("");
+  readonly chatFontSize = signal(this.loadChatFontSize());
   readonly rowAnnotations = computed(() => {
     const annotations = new Map<number, RowAnnotations>();
     const path = this.selectedPath();
@@ -451,9 +475,12 @@ export class AppComponent implements OnInit, OnDestroy {
   private highlightRequest = 0;
   private agentRequest = 0;
   private modelRequest = 0;
+  private sessionListRequest = 0;
+  private providerSessionRequest = 0;
   private modelsAgent: AgentId | null = null;
   private activeAgentConversationId: number | null = null;
   private conversationRequest = 0;
+  private pendingProviderSessionId?: string;
   private readonly highlightWorker = new Worker(new URL("./highlight.worker.ts", import.meta.url), { type: "module" });
 
   ngOnInit(): void {
@@ -531,17 +558,47 @@ export class AppComponent implements OnInit, OnDestroy {
   selectAgent(event: Event): void {
     if (event.target instanceof HTMLSelectElement) {
       const id = event.target.value as AgentId;
+      if (id !== this.selectedAgent()) this.pendingProviderSessionId = undefined;
+      if (id !== this.selectedAgent()) this.continuingConversationId.set(null);
       this.selectedAgent.set(id);
       this.selectedModel.set(null);
       this.modelSearch.set("");
       this.modelPickerOpen.set(false);
       this.modelsAgent = null;
       void this.loadAgentModels(id);
+      if (this.chatPageOpen() && !this.activeConversation()) void this.loadProviderSessions(id);
       try {
         localStorage.setItem(AGENT_STORAGE_KEY, id);
       } catch {
         this.reviewMessage.set("Could not remember the selected agent");
       }
+    }
+  }
+
+  updateChatFontSize(event: Event): void {
+    if (!(event.target instanceof HTMLInputElement)) return;
+    const size = Math.max(12, Math.min(20, Number(event.target.value)));
+    this.chatFontSize.set(size);
+    try {
+      localStorage.setItem(CHAT_FONT_SIZE_KEY, String(size));
+    } catch {
+      this.reviewMessage.set("Could not remember the chat text size");
+    }
+  }
+
+  selectExplainConversation(event: Event): void {
+    if (!(event.target instanceof HTMLSelectElement)) return;
+    const id = Number(event.target.value);
+    const conversation = Number.isSafeInteger(id) && id > 0
+      ? this.availableConversations().find((entry) => entry.id === id)
+      : undefined;
+    this.continuingConversationId.set(conversation?.id ?? null);
+    if (conversation) {
+      this.modelRequest += 1;
+      this.modelsLoading.set(false);
+      this.selectedModel.set(conversation.model);
+      this.modelSearch.set(conversation.model ?? "");
+      this.modelPickerOpen.set(false);
     }
   }
 
@@ -587,6 +644,7 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   selectFile(path: string): void {
+    this.fileToolsMenu.set(null);
     this.chatPageOpen.set(false);
     if (path === this.selectedPath()) return;
     this.selectedPath.set(path);
@@ -628,7 +686,7 @@ export class AppComponent implements OnInit, OnDestroy {
     this.questionComposerOpen.set(false);
     this.noteDraft.set("");
     this.toolsMenu.set({
-      x: Math.max(6, Math.min(x, window.innerWidth - 400)),
+      x: Math.max(6, Math.min(x, window.innerWidth - 490)),
       y: Math.max(6, Math.min(y, window.innerHeight - 430))
     });
   }
@@ -650,7 +708,7 @@ export class AppComponent implements OnInit, OnDestroy {
     }
     const bounds = (event.currentTarget as HTMLElement).getBoundingClientRect();
     this.toolsMenu.set({
-      x: Math.max(6, Math.min(bounds.right - 20, window.innerWidth - 400)),
+      x: Math.max(6, Math.min(bounds.right - 20, window.innerWidth - 490)),
       y: bounds.bottom + 7
     });
   }
@@ -686,6 +744,12 @@ export class AppComponent implements OnInit, OnDestroy {
     this.noteDraft.set("");
   }
 
+  cancelQuestion(): void {
+    this.questionComposerOpen.set(false);
+    this.pendingProviderSessionId = undefined;
+    this.continuingConversationId.set(null);
+  }
+
   deleteNote(id: string): void {
     this.notes.update((notes) => notes.filter((note) => note.id !== id));
     this.persistReviewSession();
@@ -698,12 +762,28 @@ export class AppComponent implements OnInit, OnDestroy {
   toggleSelectedFileReviewed(): void {
     const path = this.selectedPath();
     if (!path) return;
+    this.toggleFileReviewed(path);
+  }
+
+  toggleFileReviewed(path: string): void {
     const reviewed = this.isFileReviewed(path);
     this.reviewedFiles.update((paths) => reviewed
       ? paths.filter((entry) => entry !== path)
       : [...paths, path]);
     this.persistReviewSession();
-    this.reviewMessage.set(reviewed ? "File marked for review" : "File marked reviewed");
+    this.reviewMessage.set(reviewed ? "File marked unreviewed" : "File marked reviewed");
+    this.fileToolsMenu.set(null);
+  }
+
+  openFileTools(path: string, event: MouseEvent): void {
+    event.preventDefault();
+    event.stopPropagation();
+    this.toolsMenu.set(null);
+    this.fileToolsMenu.set({
+      path,
+      x: Math.max(6, Math.min(event.clientX, window.innerWidth - 210)),
+      y: Math.max(6, Math.min(event.clientY, window.innerHeight - 90))
+    });
   }
 
   clearReviewSession(): void {
@@ -724,6 +804,10 @@ export class AppComponent implements OnInit, OnDestroy {
     this.agentModalOpen.set(false);
     this.conversationChoiceOpen.set(false);
     this.pendingExplain.set(null);
+    this.providerSessionRequest += 1;
+    this.sessionListRequest += 1;
+    this.providerSessionOpeningId.set(null);
+    this.pendingProviderSessionId = undefined;
     this.continuingConversationId.set(null);
     this.chatPageOpen.set(false);
     this.toolsMenu.set(null);
@@ -795,6 +879,7 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   startExplain(): void {
+    this.continuingConversationId.set(null);
     this.noteComposerOpen.set(false);
     this.questionDraft.set("");
     this.modelSearch.set(this.selectedModel() ?? "");
@@ -820,6 +905,17 @@ export class AppComponent implements OnInit, OnDestroy {
   openChats(): void {
     this.chatPageOpen.set(true);
     this.activeConversationId.set(null);
+    const agent = this.selectedAgent();
+    if (agent) void this.loadProviderSessions(agent);
+  }
+
+  showDiff(): void {
+    this.chatPageOpen.set(false);
+    this.activeConversationId.set(null);
+    this.toolsMenu.set(null);
+    this.fileToolsMenu.set(null);
+    this.questionComposerOpen.set(false);
+    this.pendingProviderSessionId = undefined;
   }
 
   openInlineNote(note: ReviewNote): void {
@@ -830,7 +926,8 @@ export class AppComponent implements OnInit, OnDestroy {
     });
   }
 
-  startNewChat(): void {
+  startNewChat(providerSessionId?: string): void {
+    this.pendingProviderSessionId = providerSessionId;
     this.chatPageOpen.set(true);
     this.continuingConversationId.set(null);
     this.selectedRange.set(null);
@@ -839,11 +936,68 @@ export class AppComponent implements OnInit, OnDestroy {
     this.startExplain();
   }
 
+  async resumeProviderSession(session: AgentSession): Promise<void> {
+    const agent = this.selectedAgent();
+    const repository = this.repository();
+    if (!agent || !repository || this.agentRunning() || this.providerSessionOpeningId()) return;
+    const imported = this.repositoryConversations().find((conversation) => conversation.agent === agent && conversation.providerSessionId === session.id);
+    if (imported) {
+      this.openConversation(imported.id);
+      return;
+    }
+    const request = ++this.providerSessionRequest;
+    this.providerSessionOpeningId.set(session.id);
+    this.providerSessionsError.set(null);
+    try {
+      const history = await window.rift.getAgentSession(agent, session.id);
+      if (request !== this.providerSessionRequest || this.selectedAgent() !== agent || this.repository()?.root !== repository.root) return;
+      const conversation = this.importProviderConversation(agent, history, repository.root);
+      this.conversations.update((conversations) => [...conversations, conversation]);
+      this.activeConversationId.set(conversation.id);
+      this.activeQuestion.set(conversation.question);
+      this.agentResult.set(conversation.result);
+      this.agentError.set(null);
+      this.chatReplyDraft.set("");
+      this.persistReviewSession();
+    } catch (reason) {
+      if (request === this.providerSessionRequest && this.repository()?.root === repository.root) {
+        this.providerSessionsError.set(reason instanceof Error ? reason.message : String(reason));
+      }
+    } finally {
+      if (request === this.providerSessionRequest) this.providerSessionOpeningId.set(null);
+    }
+  }
+
+  leaveChatPage(): void {
+    if (this.activeConversation()) this.openChats();
+    else this.chatPageOpen.set(false);
+  }
+
+  async sendChatReply(): Promise<void> {
+    const conversation = this.activeConversation();
+    const question = this.chatReplyDraft().trim().slice(0, 20_000);
+    if (!conversation || !question || this.agentRunning()) return;
+    this.chatReplyDraft.set("");
+    const pending: PendingExplain = {
+      agent: conversation.agent,
+      model: conversation.model,
+      prompt: question,
+      question,
+      providerSessionId: conversation.providerSessionId
+    };
+    await this.startExplainRequest(pending, conversation.id);
+  }
+
+  handleChatReplyKeydown(event: KeyboardEvent): void {
+    if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
+    event.preventDefault();
+    void this.sendChatReply();
+  }
+
   continueConversation(): void {
     const conversation = this.activeConversation();
     if (!conversation || conversation.status === "running") return;
     const agentChanged = this.selectedAgent() !== conversation.agent;
-    this.continuingConversationId.set(conversation.id);
     this.selectedAgent.set(conversation.agent);
     this.selectedModel.set(conversation.model);
     if (agentChanged) void this.loadAgentModels(conversation.agent, conversation.model);
@@ -851,6 +1005,7 @@ export class AppComponent implements OnInit, OnDestroy {
     this.allChangesSelected.set(true);
     this.toolsMenu.set({ x: Math.max(12, window.innerWidth / 2 - 195), y: 94 });
     this.startExplain();
+    this.continuingConversationId.set(conversation.id);
   }
 
   async explainSelection(): Promise<void> {
@@ -858,7 +1013,7 @@ export class AppComponent implements OnInit, OnDestroy {
     const repository = this.repository();
     const agent = this.selectedAgent();
     if ((!context && !this.allChangesSelected()) || !repository || !agent || this.agentRunning()) return;
-    const question = this.questionDraft().trim() || "Explain this";
+    const question = (this.questionDraft().trim() || "Explain this").slice(0, 20_000);
     const scope = this.allChangesSelected()
       ? [
           "Scope: the complete comparison.",
@@ -893,15 +1048,19 @@ export class AppComponent implements OnInit, OnDestroy {
       endLine: context.endLine,
       diff: context.diff
     } : undefined;
-    const pending: PendingExplain = { agent, model: this.selectedModel(), prompt, question, context: conversationContext };
+    const pending: PendingExplain = {
+      agent,
+      model: this.selectedModel(),
+      prompt,
+      question,
+      context: conversationContext,
+      providerSessionId: this.pendingProviderSessionId
+    };
+    this.pendingProviderSessionId = undefined;
     this.pendingExplain.set(pending);
     this.chatPageOpen.set(true);
     const conversationId = this.continuingConversationId();
     this.continuingConversationId.set(null);
-    if (conversationId === null && this.repositoryConversations().length > 0) {
-      this.conversationChoiceOpen.set(true);
-      return;
-    }
     await this.startExplainRequest(pending, conversationId ?? undefined);
   }
 
@@ -920,22 +1079,23 @@ export class AppComponent implements OnInit, OnDestroy {
           error: existing.error
         }]
       : [];
-    const prompt = existing?.result
+    const prompt = existing?.result && !existing.providerSessionId
       ? [
           pending.prompt,
           "Continue the existing review conversation.",
           "Conversation so far:",
-          ...previousTurns.flatMap((turn, index) => [
-            `Question ${index + 1}: ${turn.question}`,
-            `Response ${index + 1}: ${turn.result?.explanation ?? turn.error ?? "No response"}`
+          ...previousTurns.slice(-10).flatMap((turn, index) => [
+            `Question ${index + 1}: ${turn.question.slice(0, 1_000)}`,
+            `Response ${index + 1}: ${(turn.result?.explanation ?? turn.error ?? "No response").slice(0, 6_000)}`
           ])
         ].join("\n\n")
       : pending.prompt;
     this.conversationChoiceOpen.set(false);
     this.pendingExplain.set(null);
+    this.pendingProviderSessionId = undefined;
     this.activeQuestion.set(pending.question);
     this.selectedAgent.set(agent);
-    await this.sendToAgent(agent, model, prompt, pending.context, conversationId);
+    await this.sendToAgent(agent, model, prompt, pending.context, conversationId, existing?.providerSessionId ?? pending.providerSessionId);
   }
 
   cancelConversationChoice(): void {
@@ -970,6 +1130,7 @@ export class AppComponent implements OnInit, OnDestroy {
     this.activeQuestion.set(conversation.question);
     this.agentResult.set(conversation.result);
     this.agentError.set(conversation.error);
+    this.chatReplyDraft.set("");
     this.chatPageOpen.set(true);
   }
 
@@ -1021,17 +1182,30 @@ export class AppComponent implements OnInit, OnDestroy {
 
   @HostListener("document:pointerdown", ["$event"])
   dismissTools(event: PointerEvent): void {
-    if (!this.toolsMenu()) return;
+    if (!this.toolsMenu() && !this.fileToolsMenu()) return;
     const target = event.target;
-    if (target instanceof Element && !target.closest(".selection-tools")) this.toolsMenu.set(null);
+    if (target instanceof Element && !target.closest(".selection-tools") && !target.closest(".file-tools")) {
+      this.toolsMenu.set(null);
+      this.fileToolsMenu.set(null);
+      this.noteComposerOpen.set(false);
+      this.questionComposerOpen.set(false);
+      this.pendingProviderSessionId = undefined;
+      this.continuingConversationId.set(null);
+    }
   }
 
   @HostListener("document:keydown.escape")
   closeTools(): void {
     if (this.agentModalOpen()) this.closeAgentModal();
     else if (this.noteComposerOpen()) this.cancelNote();
-    else if (this.questionComposerOpen()) this.questionComposerOpen.set(false);
-    else this.toolsMenu.set(null);
+    else if (this.questionComposerOpen()) {
+      this.questionComposerOpen.set(false);
+      this.pendingProviderSessionId = undefined;
+    }
+    else {
+      this.toolsMenu.set(null);
+      this.fileToolsMenu.set(null);
+    }
   }
 
   extendSelection(index: number, event: PointerEvent): void {
@@ -1090,12 +1264,26 @@ export class AppComponent implements OnInit, OnDestroy {
     return this.agents().find((agent) => agent.id === id)?.label ?? id;
   }
 
+  sessionUpdatedLabel(updatedAt: number): string {
+    const elapsed = Math.max(0, Date.now() - updatedAt);
+    if (elapsed < 60_000) return "Just now";
+    if (elapsed < 3_600_000) return `${Math.floor(elapsed / 60_000)}m ago`;
+    if (elapsed < 86_400_000) return `${Math.floor(elapsed / 3_600_000)}h ago`;
+    return `${Math.floor(elapsed / 86_400_000)}d ago`;
+  }
+
+  isProviderSessionImported(session: AgentSession): boolean {
+    const agent = this.selectedAgent();
+    return this.repositoryConversations().some((conversation) => conversation.agent === agent && conversation.providerSessionId === session.id);
+  }
+
   directory(path: string): string {
     return path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : ".";
   }
 
   renderMarkdown(markdown: string): string {
-    return marked.parse(markdown, { async: false, breaks: true });
+    const escaped = markdown.replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+    return marked.parse(escaped, { async: false, breaks: true });
   }
 
   private resolveAnchorIndex(startLine: number, diff: string): number {
@@ -1116,11 +1304,18 @@ export class AppComponent implements OnInit, OnDestroy {
     const previousBranch = this.repository()?.branch;
     this.repository.set(repository);
     if (previousRoot !== repository.root) {
+      this.sessionListRequest += 1;
+      this.providerSessionRequest += 1;
       this.activeConversationId.set(null);
       this.agentModalOpen.set(false);
       this.conversationChoiceOpen.set(false);
       this.pendingExplain.set(null);
       this.chatPageOpen.set(false);
+      this.providerSessions.set([]);
+      this.providerSessionsAgent.set(null);
+      this.providerSessionsLoading.set(false);
+      this.providerSessionOpeningId.set(null);
+      this.providerSessionsError.set(null);
     }
     if (
       previousRoot !== repository.root
@@ -1355,6 +1550,71 @@ export class AppComponent implements OnInit, OnDestroy {
     }
   }
 
+  private async loadProviderSessions(agent: AgentId): Promise<void> {
+    const request = ++this.sessionListRequest;
+    this.providerSessionsLoading.set(true);
+    this.providerSessionsError.set(null);
+    this.providerSessions.set([]);
+    this.providerSessionsAgent.set(null);
+    try {
+      const sessions = await window.rift.listAgentSessions(agent);
+      if (request === this.sessionListRequest && this.selectedAgent() === agent) {
+        this.providerSessions.set(sessions);
+        this.providerSessionsAgent.set(agent);
+      }
+    } catch (reason) {
+      if (request === this.sessionListRequest && this.selectedAgent() === agent) {
+        this.providerSessionsError.set(reason instanceof Error ? reason.message : String(reason));
+      }
+    } finally {
+      if (request === this.sessionListRequest && this.selectedAgent() === agent) this.providerSessionsLoading.set(false);
+    }
+  }
+
+  private loadChatFontSize(): number {
+    try {
+      const stored = Number(localStorage.getItem(CHAT_FONT_SIZE_KEY));
+      return stored >= 12 && stored <= 20 ? stored : 14;
+    } catch {
+      return 14;
+    }
+  }
+
+  private importProviderConversation(agent: AgentId, history: AgentConversationHistory, repositoryRoot: string): Conversation {
+    const exchanges: Array<{ question: string; result: AgentRunResult | null }> = [];
+    for (const message of history.messages) {
+      if (message.role === "user") {
+        exchanges.push({ question: message.content.slice(0, 20_000), result: null });
+      } else if (exchanges.length > 0) {
+        const exchange = exchanges.at(-1)!;
+        exchange.result = {
+          tools: [],
+          explanation: [exchange.result?.explanation, message.content].filter(Boolean).join("\n\n").slice(0, 1_000_000)
+        };
+      }
+    }
+    if (exchanges.length === 0) exchanges.push({ question: history.title.slice(0, 20_000), result: null });
+    const retainedExchanges = exchanges.slice(-500);
+    const current = retainedExchanges.at(-1)!;
+    return {
+      id: ++this.conversationRequest,
+      repositoryRoot,
+      title: history.title.slice(0, 500),
+      agent,
+      model: history.model?.slice(0, 200) ?? null,
+      question: current.question,
+      status: "complete",
+      result: current.result,
+      error: null,
+      history: retainedExchanges.slice(0, -1).map((exchange) => ({
+        question: exchange.question,
+        result: exchange.result,
+        error: null
+      })),
+      providerSessionId: history.id
+    };
+  }
+
   private acceptAgentEvent(event: AgentStreamEvent): void {
     if (event.runId !== String(this.agentRequest)) return;
     const conversationId = this.activeAgentConversationId;
@@ -1363,7 +1623,11 @@ export class AppComponent implements OnInit, OnDestroy {
     }
     this.conversations.update((conversations) => conversations.map((conversation) => (
       conversation.id === conversationId
-        ? { ...conversation, result: this.mergeAgentResult(conversation.result, event.result) }
+        ? {
+            ...conversation,
+            result: this.mergeAgentResult(conversation.result, event.result),
+            providerSessionId: conversation.providerSessionId ?? event.result.sessionId
+          }
         : conversation
     )));
   }
@@ -1380,12 +1644,13 @@ export class AppComponent implements OnInit, OnDestroy {
       });
     }
     return {
-      tools: [...tools.values()],
-      explanation: `${current?.explanation ?? ""}${update.explanation}`
+      tools: [...tools.values()].slice(0, 2_000),
+      explanation: `${current?.explanation ?? ""}${update.explanation}`.slice(0, 1_000_000),
+      sessionId: update.sessionId ?? current?.sessionId
     };
   }
 
-  private async sendToAgent(agent: AgentId, model: string | null, prompt: string, context?: ConversationContext, existingConversationId?: number): Promise<void> {
+  private async sendToAgent(agent: AgentId, model: string | null, prompt: string, context?: ConversationContext, existingConversationId?: number, providerSessionId?: string): Promise<void> {
     const repository = this.repository();
     if (!repository) return;
     const request = ++this.agentRequest;
@@ -1403,12 +1668,13 @@ export class AppComponent implements OnInit, OnDestroy {
             status: "running",
             result: null,
             error: null,
+            providerSessionId,
             history: [...conversation.history, {
               question: conversation.question,
               context: conversation.context,
               result: conversation.result,
               error: conversation.error
-            }]
+            }].slice(-500)
           }
         : conversation)
       : [...conversations, {
@@ -1421,7 +1687,8 @@ export class AppComponent implements OnInit, OnDestroy {
           status: "running",
           result: null,
           error: null,
-          history: []
+          history: [],
+          providerSessionId
         }]);
     this.activeConversationId.set(conversationId);
     this.agentRunning.set(true);
@@ -1429,11 +1696,18 @@ export class AppComponent implements OnInit, OnDestroy {
     this.agentError.set(null);
     this.reviewMessage.set(`Waiting for ${this.agents().find((option) => option.id === agent)?.label ?? agent}`);
     try {
-      const result = await window.rift.runAgent(String(request), agent, model, prompt);
+      const agentResult = await window.rift.runAgent(String(request), agent, model, prompt, providerSessionId);
+      const result = this.mergeAgentResult(null, agentResult);
       if (request === this.agentRequest) {
         if (this.activeConversationId() === conversationId) this.agentResult.set(result);
         this.conversations.update((conversations) => conversations.map((conversation) => (
-          conversation.id === conversationId ? { ...conversation, status: "complete", result, error: null } : conversation
+          conversation.id === conversationId ? {
+            ...conversation,
+            status: "complete",
+            result,
+            error: null,
+            providerSessionId: conversation.providerSessionId ?? result.sessionId
+          } : conversation
         )));
         this.reviewMessage.set("Explanation ready");
       }
