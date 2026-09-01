@@ -561,6 +561,15 @@ async function openRepository(path: string): Promise<RepositorySnapshot> {
 }
 
 function registerIpc(): void {
+  ipcMain.handle("window:set-theme", (event, theme: unknown) => {
+    assertTrustedSender(event);
+    if (theme !== "dark" && theme !== "light") throw new Error("Invalid window theme.");
+    if (process.platform !== "win32" || !mainWindow) return;
+    mainWindow.setTitleBarOverlay(theme === "dark"
+      ? { color: "#0f1216", symbolColor: "#d9dde5", height: 44 }
+      : { color: "#f7f9fb", symbolColor: "#20262d", height: 44 });
+  });
+
   ipcMain.handle("repository:open", async (_event, path?: string) => {
     return openRepository(path || initialRepository || process.cwd());
   });
