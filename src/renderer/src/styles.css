@@ -184,8 +184,11 @@ button { color: inherit; font: inherit; }
 .agent-control label { color: #687381; font-size: 9px; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
 .agent-control select { min-width: 0; border: 1px solid #303945; border-radius: 5px; outline: 0; padding: 5px 7px; color: #aeb6c1; background: #151a20; font-size: 10px; }
 .agent-control > span { color: #687381; font-size: 10px; }
-.notes-heading { display: flex; align-items: baseline; justify-content: space-between; margin: 17px 0 8px; color: #aeb6c1; font-size: 10px; font-weight: 700; text-transform: uppercase; }
+.notes-heading { display: flex; align-items: center; justify-content: space-between; margin: 17px 0 8px; color: #aeb6c1; font-size: 10px; font-weight: 700; text-transform: uppercase; }
 .notes-heading small { overflow: hidden; max-width: 155px; color: #65717e; font-size: 9px; font-weight: 500; text-overflow: ellipsis; text-transform: none; white-space: nowrap; }
+.notes-heading-actions { min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 7px; }
+.select-all-notes { display: flex; align-items: center; gap: 5px; color: #737e89; font-size: 8px; font-weight: 600; letter-spacing: 0; text-transform: none; cursor: pointer; }
+.select-all-notes input, .note-select input { accent-color: #8eb64f; cursor: pointer; }
 .conversation-list { display: flex; gap: 5px; margin-bottom: 9px; overflow-x: auto; padding-bottom: 2px; }
 .conversation-item { min-width: 130px; max-width: 180px; display: flex; align-items: center; gap: 6px; overflow: hidden; border: 1px solid #29313a; border-radius: 5px; padding: 6px 7px; color: #89939f; background: #14191f; font-size: 9px; text-align: left; cursor: pointer; }
 .conversation-item span:not(.conversation-status) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -196,9 +199,11 @@ button { color: inherit; font: inherit; }
 .conversation-status.status-error, .conversation-status.status-cancelled { background: #e1847c; }
 .mini-spinner { width: 10px; height: 10px; flex: none; border: 1px solid #596a45; border-top-color: #c8ff63; border-radius: 50%; animation: spinner .8s linear infinite; }
 .notes-list { min-height: 0; flex: 1; overflow: auto; display: flex; flex-direction: column; gap: 7px; }
-.review-note { position: relative; border: 1px solid #29313a; border-radius: 7px; padding: 9px 30px 10px 10px; background: #14191f; }
+.review-note { position: relative; border: 1px solid #29313a; border-radius: 7px; padding: 9px 30px 10px 34px; background: #14191f; }
 .review-note:hover { border-color: #39434f; }
+.review-note.selected { border-color: #43533a; background: #151c16; }
 .review-note.linked-active { border-color: #718b50; box-shadow: inset 2px 0 #c8ff63, 0 0 16px rgba(200, 255, 99, .05); }
+.note-select { position: absolute; top: 8px; left: 9px; display: grid; place-items: center; cursor: pointer; }
 .note-location { max-width: 100%; display: flex; align-items: baseline; gap: 7px; border: 0; padding: 0; color: #b8c0ca; background: transparent; cursor: pointer; }
 .note-location strong { overflow: hidden; font: 650 10px ui-monospace, monospace; text-overflow: ellipsis; white-space: nowrap; }
 .note-location span { flex: none; color: #6f7b88; font-size: 9px; }
@@ -345,6 +350,7 @@ button { color: inherit; font: inherit; }
 .selection-tools > label small { color: #56616d; font-size: 8px; font-weight: 500; }
 .selection-tools textarea { width: 100%; resize: vertical; border: 1px solid #35404b; border-radius: 6px; outline: 0; padding: 8px; color: #d1d6dd; background: #0e1216; font: 11px/1.45 ui-sans-serif, sans-serif; }
 .selection-tools textarea:focus { border-color: #66764c; }
+.composer-hint { display: block; padding: 5px 7px 0; color: #5f6a76; font: 8px ui-monospace, monospace; text-align: right; }
 .explain-agent-controls { display: grid; grid-template-columns: 1fr 1.35fr 1.25fr; gap: 7px; padding: 4px 0 8px; }
 .explain-agent-controls label { min-width: 0; display: flex; flex-direction: column; gap: 4px; color: #697582; font-size: 8px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
 .explain-agent-controls select { min-width: 0; width: 100%; border: 1px solid #35404b; border-radius: 5px; outline: 0; padding: 6px 7px; color: #b8c1cb; background: #101419; font-size: 10px; text-transform: none; }
@@ -536,6 +542,7 @@ button { color: inherit; font: inherit; }
 :root[data-theme="light"] .review-rail.active { color: #4f6d29; background: #edf4e7; box-shadow: inset 1px 0 #719f2e; }
 :root[data-theme="light"] .conversation-item.active { color: #574585; border-color: #aaa0c4; background: #f0edf7; }
 :root[data-theme="light"] .review-note:hover { border-color: #aeb8c1; }
+:root[data-theme="light"] .review-note.selected { border-color: #a9bd99; background: #f4f8f1; }
 :root[data-theme="light"] .back-to-diff { color: #56616c; border-color: #bdc6ce; background: #fff; }
 :root[data-theme="light"] .back-to-diff:hover { color: #29333c; border-color: #929da7; background: #edf1f4; }
 :root[data-theme="light"] .new-chat-button { color: #3f5d1c; border-color: #9eb77a; background: #edf5e4; }

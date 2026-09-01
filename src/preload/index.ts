@@ -3,6 +3,7 @@ import type { RiftApi } from "../shared/contracts";
 
 const api: RiftApi = {
   platform: process.platform as RiftApi["platform"],
+  setTheme: (theme) => ipcRenderer.invoke("window:set-theme", theme),
   openRepository: (path) => ipcRenderer.invoke("repository:open", path),
   refreshRepository: () => ipcRenderer.invoke("repository:refresh"),
   getFilePatch: (path) => ipcRenderer.invoke("repository:patch", path),

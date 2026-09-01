@@ -84,6 +84,7 @@ export interface AgentStreamEvent {
 
 export interface RiftApi {
   platform: "darwin" | "linux" | "win32";
+  setTheme(theme: "dark" | "light"): Promise<void>;
   openRepository(path?: string): Promise<RepositorySnapshot>;
   refreshRepository(): Promise<RepositorySnapshot>;
   getFilePatch(path: string): Promise<FilePatch>;

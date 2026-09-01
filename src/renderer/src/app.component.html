@@ -307,6 +307,7 @@
                 [attr.role]="isSelectable(row) ? 'option' : null"
                 [attr.aria-selected]="isSelectable(row) ? isRowSelected($index, row) : null"
                 (pointerdown)="beginSelection($index, row, $event)"
+                (dblclick)="openNoteForRow($index, row, $event)"
                 (pointerenter)="extendSelection($index, $event)"
                 (keydown)="handleRowKeydown($index, row, $event)"
                 (contextmenu)="openTools($index, row, $event)"
@@ -357,6 +358,7 @@
                         role="option"
                         [attr.aria-selected]="isRowSelected(left.index, left.row)"
                         (pointerdown)="beginSelection(left.index, left.row, $event)"
+                        (dblclick)="openNoteForRow(left.index, left.row, $event)"
                         (pointerenter)="extendSelection(left.index, $event)"
                         (keydown)="handleRowKeydown(left.index, left.row, $event)"
                         (contextmenu)="openTools(left.index, left.row, $event)"
@@ -390,6 +392,7 @@
                         [attr.role]="pair.left?.index === right.index ? null : 'option'"
                         [attr.aria-selected]="pair.left?.index === right.index ? null : isRowSelected(right.index, right.row)"
                         (pointerdown)="beginSelection(right.index, right.row, $event)"
+                        (dblclick)="openNoteForRow(right.index, right.row, $event)"
                         (pointerenter)="extendSelection(right.index, $event)"
                         (keydown)="handleRowKeydown(right.index, right.row, $event)"
                         (contextmenu)="openTools(right.index, right.row, $event)"
@@ -460,12 +463,24 @@
 
             <div class="notes-heading">
               <span>{{ notes().length }} {{ notes().length === 1 ? "note" : "notes" }}</span>
-              @if (reviewMessage()) { <small>{{ reviewMessage() }}</small> }
+              <span class="notes-heading-actions">
+                @if (reviewMessage()) { <small>{{ reviewMessage() }}</small> }
+                @if (notes().length > 0) {
+                  <label class="select-all-notes">
+                    <input type="checkbox" [checked]="allNotesSelected()" [indeterminate]="someNotesSelected()" (change)="toggleAllNotes()">
+                    <span>Select all</span>
+                  </label>
+                }
+              </span>
             </div>
 
             <div class="notes-list">
               @for (note of notes(); track note.id) {
-                <article id="review-note-{{ note.id }}" class="review-note" [class.linked-active]="activeLinkedNoteId() === note.id">
+                <article id="review-note-{{ note.id }}" class="review-note" [class.selected]="isNoteSelected(note.id)" [class.linked-active]="activeLinkedNoteId() === note.id">
+                  <label class="note-select" title="Include note when sending to agent">
+                    <input type="checkbox" [checked]="isNoteSelected(note.id)" (change)="toggleNoteSelection(note.id)">
+                    <span class="visually-hidden">Select note</span>
+                  </label>
                   <button class="note-location" (click)="navigateToNote(note)">
                     <strong>{{ shortName(note.filePath) }}</strong>
                     <span>Lines {{ note.startLine }}{{ note.endLine !== note.startLine ? "-" + note.endLine : "" }}</span>
@@ -487,9 +502,9 @@
               <button
                 class="primary-agent-action"
                 (click)="agentRunning() ? cancelAgent() : sendNotesToAgent()"
-                [disabled]="notes().length === 0 || !selectedAgent()"
+                [disabled]="selectedNotes().length === 0 || !selectedAgent()"
               >
-                <span class="ai-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 1c0 6.1-4.9 11-11 11 6.1 0 11 4.9 11 11 0-6.1 4.9-11 11-11-6.1 0-11-4.9-11-11Z"/><circle cx="19" cy="5" r="2"/></svg></span>{{ agentRunning() ? "Cancel" : "Send to agent" }}
+                <span class="ai-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 1c0 6.1-4.9 11-11 11 6.1 0 11 4.9 11 11 0-6.1 4.9-11 11-11-6.1 0-11-4.9-11-11Z"/><circle cx="19" cy="5" r="2"/></svg></span>{{ agentRunning() ? "Cancel" : "Send " + selectedNotes().length + " to agent" }}
               </button>
             </div>
 
@@ -526,7 +541,9 @@
             placeholder="What should be checked or changed?"
             [value]="noteDraft()"
             (input)="noteDraft.set($any($event.target).value)"
+            (keydown)="handleNoteKeydown($event)"
           ></textarea>
+          <small class="composer-hint">Enter to add · Shift+Enter for a new line</small>
           <div class="note-composer-actions">
             <button (click)="cancelNote()">Cancel</button>
             <button class="save-note" (click)="saveNote()" [disabled]="!noteDraft().trim()">Add note</button>
@@ -598,16 +615,16 @@
             <strong id="conversation-choice-title">Choose conversation</strong>
             <button (click)="cancelConversationChoice()" title="Cancel" aria-label="Cancel">×</button>
           </header>
-          <p>Start a new chat or continue this explanation in an existing review conversation.</p>
+          <p>Start a new session or continue in an existing review conversation.</p>
           <div class="conversation-choice-actions">
             <button class="new-conversation" (click)="startExplainRequest(pending)">
               <span class="session-choice-mark">+</span>
               <span><strong>New conversation</strong><small>Create a separate review thread</small></span>
             </button>
-            @for (conversation of repositoryConversations(); track conversation.id) {
+            @for (conversation of availableConversations(); track conversation.id) {
               <button (click)="startExplainRequest(pending, conversation.id)" [disabled]="conversation.status === 'running'">
                 <span class="conversation-status status-{{ conversation.status }}"></span>
-                <span><strong>{{ conversation.question }}</strong><small>{{ agentLabel(conversation.agent) }} · {{ conversation.history.length + 1 }} {{ conversation.history.length === 0 ? "message" : "messages" }}</small></span>
+                <span><strong>{{ conversation.title || conversation.question || "New chat" }}</strong><small>{{ agentLabel(conversation.agent) }} · {{ conversation.history.length + 1 }} {{ conversation.history.length === 0 ? "message" : "messages" }}</small></span>
               </button>
             }
           </div>

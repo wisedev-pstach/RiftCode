@@ -366,6 +366,13 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly questionDraft = signal("");
   readonly noteDraft = signal("");
   readonly notes = signal<ReviewNote[]>([]);
+  readonly selectedNoteIds = signal<string[]>([]);
+  readonly selectedNotes = computed(() => {
+    const selected = new Set(this.selectedNoteIds());
+    return this.notes().filter((note) => selected.has(note.id));
+  });
+  readonly allNotesSelected = computed(() => this.notes().length > 0 && this.selectedNotes().length === this.notes().length);
+  readonly someNotesSelected = computed(() => this.selectedNotes().length > 0 && !this.allNotesSelected());
   readonly activeLinkedNoteId = signal<string | null>(null);
   readonly reviewedFiles = signal<string[]>([]);
   readonly reviewedFileCount = computed(() => {
@@ -723,6 +730,7 @@ export class AppComponent implements OnInit, OnDestroy {
     if (event.button !== 0 || !this.isSelectable(row)) return;
     event.preventDefault();
     (event.currentTarget as HTMLElement).focus({ preventScroll: true });
+    if (event.detail > 1 && this.isRowSelected(index, row)) return;
     this.allChangesSelected.set(false);
     const current = this.selectedRange();
     const anchor = event.shiftKey && current ? current.anchor : index;
@@ -759,6 +767,20 @@ export class AppComponent implements OnInit, OnDestroy {
   startNote(): void {
     this.questionComposerOpen.set(false);
     this.noteComposerOpen.set(true);
+    requestAnimationFrame(() => document.getElementById("review-note")?.focus());
+  }
+
+  openNoteForRow(index: number, row: DiffRow, event: MouseEvent): void {
+    if (!this.isSelectable(row)) return;
+    event.preventDefault();
+    this.showTools(index, row, event.clientX, event.clientY);
+    this.startNote();
+  }
+
+  handleNoteKeydown(event: KeyboardEvent): void {
+    if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
+    event.preventDefault();
+    this.saveNote();
   }
 
   toggleAllChanges(event: MouseEvent): void {
@@ -796,6 +818,7 @@ export class AppComponent implements OnInit, OnDestroy {
       createdAt: Date.now()
     };
     this.notes.update((notes) => [...notes, note]);
+    this.selectedNoteIds.update((ids) => [...ids, note.id]);
     this.persistReviewSession();
     this.toolsMenu.set(null);
     this.noteComposerOpen.set(false);
@@ -817,7 +840,22 @@ export class AppComponent implements OnInit, OnDestroy {
 
   deleteNote(id: string): void {
     this.notes.update((notes) => notes.filter((note) => note.id !== id));
+    this.selectedNoteIds.update((ids) => ids.filter((noteId) => noteId !== id));
     this.persistReviewSession();
+  }
+
+  isNoteSelected(id: string): boolean {
+    return this.selectedNoteIds().includes(id);
+  }
+
+  toggleNoteSelection(id: string): void {
+    this.selectedNoteIds.update((ids) => ids.includes(id)
+      ? ids.filter((noteId) => noteId !== id)
+      : [...ids, id]);
+  }
+
+  toggleAllNotes(): void {
+    this.selectedNoteIds.set(this.allNotesSelected() ? [] : this.notes().map((note) => note.id));
   }
 
   isFileReviewed(path: string): boolean {
@@ -859,6 +897,7 @@ export class AppComponent implements OnInit, OnDestroy {
     }
     const root = this.repository()?.root;
     this.notes.set([]);
+    this.selectedNoteIds.set([]);
     this.reviewedFiles.set([]);
     this.conversations.update((conversations) => conversations.filter((conversation) => conversation.repositoryRoot !== root));
     this.activeConversationId.set(null);
@@ -1183,6 +1222,7 @@ export class AppComponent implements OnInit, OnDestroy {
     this.pendingExplain.set(null);
     this.pendingProviderSessionId = undefined;
     this.activeQuestion.set(pending.question);
+    this.chatPageOpen.set(true);
     this.selectedAgent.set(agent);
     await this.sendToAgent(agent, model, prompt, pending.context, conversationId, existing?.providerSessionId ?? pending.providerSessionId);
   }
@@ -1192,20 +1232,21 @@ export class AppComponent implements OnInit, OnDestroy {
     this.pendingExplain.set(null);
   }
 
-  async sendNotesToAgent(): Promise<void> {
+  sendNotesToAgent(): void {
     const agent = this.selectedAgent();
-    if (!agent || this.notes().length === 0 || this.agentRunning()) return;
+    const notes = this.selectedNotes();
+    if (!agent || notes.length === 0 || this.agentRunning()) return;
     const prompt = [
       "You are in read-only review mode. Do not edit files or run mutating commands.",
       "Respond with analysis only.",
       "Review these code-anchored notes.",
       "Inspect the referenced code and respond with concrete recommendations for each note.",
       "",
-      this.formatNotes()
+      this.formatNotes(notes)
     ].join("\n");
-    this.activeQuestion.set(`Review ${this.notes().length} code note${this.notes().length === 1 ? "" : "s"}`);
-    this.chatPageOpen.set(true);
-    await this.sendToAgent(agent, this.selectedModel(), prompt);
+    const question = `Review ${notes.length} code note${notes.length === 1 ? "" : "s"}`;
+    this.pendingExplain.set({ agent, model: this.selectedModel(), prompt, question });
+    this.conversationChoiceOpen.set(true);
   }
 
   closeAgentModal(): void {
@@ -1566,7 +1607,9 @@ export class AppComponent implements OnInit, OnDestroy {
       if (raw) {
         const stored: unknown = JSON.parse(raw);
         if (!isReviewSessionData(stored)) throw new Error("Invalid review session");
-        this.notes.set(stored.notes.filter(isReviewNote).slice(0, 500));
+        const notes = stored.notes.filter(isReviewNote).slice(0, 500);
+        this.notes.set(notes);
+        this.selectedNoteIds.set(notes.map((note) => note.id));
         this.reviewedFiles.set([...new Set(stored.reviewedFiles)].slice(0, 5_000));
         const root = this.repository()!.root;
         const restored = (stored.conversations ?? []).filter(isConversation).slice(-100).map((conversation) => (
@@ -1584,7 +1627,9 @@ export class AppComponent implements OnInit, OnDestroy {
       }
       const legacyKey = this.legacyNotesStorageKey();
       const legacy: unknown = JSON.parse(legacyKey ? localStorage.getItem(legacyKey) ?? "[]" : "[]");
-      this.notes.set(Array.isArray(legacy) ? legacy.filter(isReviewNote).slice(0, 500) : []);
+      const notes = Array.isArray(legacy) ? legacy.filter(isReviewNote).slice(0, 500) : [];
+      this.notes.set(notes);
+      this.selectedNoteIds.set(notes.map((note) => note.id));
       this.reviewedFiles.set([]);
       const root = this.repository()!.root;
       this.conversations.update((conversations) => conversations.filter((conversation) => conversation.repositoryRoot !== root));
@@ -1595,6 +1640,7 @@ export class AppComponent implements OnInit, OnDestroy {
       }
     } catch {
       this.notes.set([]);
+      this.selectedNoteIds.set([]);
       this.reviewedFiles.set([]);
       const root = this.repository()?.root;
       this.conversations.update((conversations) => conversations.filter((conversation) => conversation.repositoryRoot !== root));
@@ -1618,9 +1664,9 @@ export class AppComponent implements OnInit, OnDestroy {
     }
   }
 
-  private formatNotes(): string {
+  private formatNotes(notes = this.notes()): string {
     const repository = this.repository()!;
-    const sections = this.notes().map((note, index) => [
+    const sections = notes.map((note, index) => [
       `## ${index + 1}. ${note.filePath}:${note.startLine}-${note.endLine}`,
       note.content,
       "",
@@ -1702,8 +1748,12 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   private applyTheme(): void {
-    document.documentElement.dataset["theme"] = this.darkTheme() ? "dark" : "light";
-    document.documentElement.style.colorScheme = this.darkTheme() ? "dark" : "light";
+    const theme = this.darkTheme() ? "dark" : "light";
+    document.documentElement.dataset["theme"] = theme;
+    document.documentElement.style.colorScheme = theme;
+    void window.rift.setTheme(theme).catch(() => {
+      this.reviewMessage.set("Could not update the window theme");
+    });
   }
 
   private importProviderConversation(agent: AgentId, history: AgentConversationHistory, repositoryRoot: string): Conversation {
