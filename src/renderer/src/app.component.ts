@@ -459,6 +459,10 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly reviewMessage = signal<string | null>(null);
   readonly reviewTone = signal<ReviewTone>("professional");
   readonly reviewDraft = signal("");
+  readonly reviewQuestion = signal("");
+  readonly reviewResult = signal<AgentRunResult | null>(null);
+  readonly reviewError = signal<string | null>(null);
+  readonly reconsiderDraft = signal("");
   readonly contextDialogOpen = signal(false);
   readonly workspaceContext = signal<WorkspaceContext>({ details: "", links: [], resources: [] });
   readonly contextDetailsDraft = signal("");
@@ -560,6 +564,7 @@ export class AppComponent implements OnInit, OnDestroy {
   private providerSessionRequest = 0;
   private modelsAgent: AgentId | null = null;
   private activeAgentConversationId: number | null = null;
+  private reviewRunActive = false;
   private conversationRequest = 0;
   private pendingProviderSessionId?: string;
   private readonly highlightWorker = new Worker(new URL("./highlight.worker.ts", import.meta.url), { type: "module" });
@@ -1109,6 +1114,10 @@ export class AppComponent implements OnInit, OnDestroy {
     this.activeQuestion.set("");
     this.agentResult.set(null);
     this.agentError.set(null);
+    this.reviewQuestion.set("");
+    this.reviewResult.set(null);
+    this.reviewError.set(null);
+    this.reconsiderDraft.set("");
     this.agentModalOpen.set(false);
     this.conversationChoiceOpen.set(false);
     this.pendingExplain.set(null);
@@ -1329,10 +1338,44 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   async startReview(): Promise<void> {
-    const repository = this.repository();
     const agent = this.selectedAgent();
-    if (!repository || !agent || this.agentRunning()) return;
+    if (!this.repository() || !agent || this.agentRunning()) return;
     const request = this.reviewDraft().trim().slice(0, 20_000) || "Review the complete comparison and report the findings that matter.";
+    this.reviewDraft.set("");
+    await this.runReview(this.buildReviewPrompt(request), request);
+  }
+
+  async reconsiderReview(): Promise<void> {
+    const previous = this.reviewResult()?.explanation;
+    if (!previous || this.agentRunning()) return;
+    await this.refreshRepository();
+    const request = this.reconsiderDraft().trim().slice(0, 20_000) || "Reconsider the review after the latest code changes.";
+    this.reconsiderDraft.set("");
+    await this.runReview(this.buildReviewPrompt(request, previous), request);
+  }
+
+  resetReview(): void {
+    if (this.agentRunning()) return;
+    this.reviewQuestion.set("");
+    this.reviewResult.set(null);
+    this.reviewError.set(null);
+    this.reconsiderDraft.set("");
+  }
+
+  async saveReviewMarkdown(): Promise<void> {
+    const repository = this.repository();
+    const result = this.reviewResult();
+    if (!repository || !result?.explanation) return;
+    try {
+      const saved = await window.rift.saveMarkdown(`${repository.name}-${repository.branch}-review.md`, result.explanation);
+      this.reviewMessage.set(saved ? "Review saved as Markdown" : "Save cancelled");
+    } catch (reason) {
+      this.reviewMessage.set(reason instanceof Error ? reason.message : String(reason));
+    }
+  }
+
+  private buildReviewPrompt(request: string, previousReview?: string): string {
+    const repository = this.repository()!;
     const style = this.reviewTone() === "honest"
       ? [
           "# Honest review",
@@ -1360,16 +1403,52 @@ export class AppComponent implements OnInit, OnDestroy {
       "",
       "# User said",
       request,
+      ...(previousReview ? [
+        "",
+        "# Previous review to reconsider",
+        previousReview.slice(0, 30_000),
+        "",
+        "Re-read the current diff and surrounding code from scratch. Identify which prior findings were fixed, which remain, and any new issues introduced. Do not repeat resolved findings as current problems."
+      ] : []),
       "",
       "Return analysis only. Do not edit files. Lead with findings; do not bury them under a summary."
     ].join("\n");
-    this.reviewDraft.set("");
-    this.activeQuestion.set(request);
-    const pending: PendingExplain = { agent, mode: "review", model: this.selectedModel(), prompt, question: request };
-    this.pendingExplain.set(pending);
-    this.reviewPageOpen.set(false);
-    this.chatPageOpen.set(true);
-    await this.startExplainRequest(pending);
+    return prompt;
+  }
+
+  private async runReview(prompt: string, question: string): Promise<void> {
+    const agent = this.selectedAgent();
+    if (!agent || this.agentRunning()) return;
+    const request = ++this.agentRequest;
+    this.activeAgentConversationId = null;
+    this.reviewRunActive = true;
+    this.reviewQuestion.set(question);
+    this.reviewResult.set(null);
+    this.reviewError.set(null);
+    this.reviewPageOpen.set(true);
+    this.chatPageOpen.set(false);
+    this.agentRunning.set(true);
+    this.reviewMessage.set(`Waiting for ${this.agentLabel(agent)}`);
+    try {
+      const resources = this.workspaceContext().resources.map((resource) => resource.path).slice(0, 28);
+      const result = await window.rift.runAgent(String(request), agent, this.selectedModel(), "review", this.withWorkspaceContext(prompt), resources);
+      if (request === this.agentRequest) {
+        this.reviewResult.set(this.mergeAgentResult(null, result));
+        this.reviewMessage.set("Review ready");
+      }
+    } catch (reason) {
+      if (request === this.agentRequest) {
+        const rawError = reason instanceof Error ? reason.message : String(reason);
+        const authenticationStart = rawError.indexOf("Authentication required.");
+        this.reviewError.set(authenticationStart >= 0 ? rawError.slice(authenticationStart) : rawError);
+        this.reviewMessage.set(rawError.toLowerCase().includes("cancel") ? "Review cancelled" : "Review failed");
+      }
+    } finally {
+      if (request === this.agentRequest) {
+        this.reviewRunActive = false;
+        this.agentRunning.set(false);
+      }
+    }
   }
 
   showDiff(): void {
@@ -1869,6 +1948,31 @@ export class AppComponent implements OnInit, OnDestroy {
     return marked.parse(escaped, { async: false, breaks: true });
   }
 
+  renderReviewMarkdown(markdown: string): string {
+    let linked = markdown;
+    const replacements: Array<[string, string]> = [];
+    const paths = [...(this.repository()?.files.map((file) => file.path) ?? [])].sort((left, right) => right.length - left.length);
+    for (const [index, path] of paths.entries()) {
+      if (!linked.includes(path)) continue;
+      const token = `RIFTFILETOKEN${index}X`;
+      linked = linked.split(path).join(token);
+      replacements.push([token, `[${path}](rift-file:${encodeURIComponent(path)})`]);
+    }
+    linked = linked.replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+    for (const [token, link] of replacements) linked = linked.replaceAll(token, link);
+    return marked.parse(linked, { async: false, breaks: true });
+  }
+
+  openReviewFile(event: MouseEvent): void {
+    if (!(event.target instanceof Element)) return;
+    const link = event.target.closest<HTMLAnchorElement>("a[href^='rift-file:']");
+    if (!link) return;
+    event.preventDefault();
+    const path = decodeURIComponent(link.getAttribute("href")!.slice("rift-file:".length));
+    if (!this.repository()?.files.some((file) => file.path === path)) return;
+    this.selectFile(path);
+  }
+
   private resolveAnchorIndex(startLine: number, diff: string): number {
     const firstDiffLine = diff.split("\n", 1)[0] ?? "";
     const expectedKind = firstDiffLine.startsWith("+")
@@ -1904,7 +2008,13 @@ export class AppComponent implements OnInit, OnDestroy {
       previousRoot !== repository.root
       || previousBranch !== repository.branch
       || previousComparison !== repository.comparisonId
-    ) this.loadReviewSession();
+    ) {
+      this.reviewQuestion.set("");
+      this.reviewResult.set(null);
+      this.reviewError.set(null);
+      this.reconsiderDraft.set("");
+      this.loadReviewSession();
+    }
     this.error.set(null);
     const current = this.selectedPath();
     const nextPath = repository.files.some((file) => file.path === current) ? current : repository.files[0]?.path ?? null;
@@ -2288,6 +2398,10 @@ export class AppComponent implements OnInit, OnDestroy {
 
   private acceptAgentEvent(event: AgentStreamEvent): void {
     if (event.runId !== String(this.agentRequest)) return;
+    if (this.reviewRunActive) {
+      this.reviewResult.update((result) => this.mergeAgentResult(result, event.result));
+      return;
+    }
     const conversationId = this.activeAgentConversationId;
     if (this.activeConversationId() === conversationId) {
       this.agentResult.update((result) => this.mergeAgentResult(result, event.result));
