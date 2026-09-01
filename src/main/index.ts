@@ -2,18 +2,19 @@ import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu } from "electron";
 import { execFile, spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { existsSync, watch, type FSWatcher } from "node:fs";
-import { open, readFile, readdir, stat } from "node:fs/promises";
+import { mkdir, open, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { loadFilePatch, loadRepository } from "./git";
 import type { IpcMainInvokeEvent } from "electron";
-import type { AgentConversationHistory, AgentConversationMessage, AgentId, AgentOption, AgentRunResult, AgentSession, AgentStreamEvent, AgentToolEvent, RepositorySnapshot } from "../shared/contracts";
+import type { AgentConversationHistory, AgentConversationMessage, AgentId, AgentMode, AgentOption, AgentRunResult, AgentSession, AgentStreamEvent, AgentToolEvent, RepositorySnapshot } from "../shared/contracts";
 
-const AGENTS: Readonly<Record<AgentId, { label: string; args: (prompt: string, model: string | null, sessionId?: string) => string[]; promptViaStdin?: boolean }>> = {
-  opencode: { label: "OpenCode", args: (prompt, model, sessionId) => ["run", "--pure", "--agent", "plan", "--format", "json", "--auto", ...(model ? ["--model", model] : []), ...(sessionId ? ["--session", sessionId] : []), prompt] },
+const AGENTS: Readonly<Record<AgentId, { label: string; args: (prompt: string, model: string | null, mode: AgentMode, sessionId: string | undefined, attachmentPaths: string[]) => string[]; promptViaStdin?: boolean }>> = {
+  opencode: { label: "OpenCode", args: (prompt, model, mode, sessionId, attachmentPaths) => ["run", "--pure", "--agent", mode === "edit" ? "build" : "plan", "--format", "json", "--auto", ...(model ? ["--model", model] : []), ...(sessionId ? ["--session", sessionId] : []), ...attachmentPaths.flatMap((path) => ["--file", path]), prompt] },
   claude: {
     label: "Claude Code",
-    args: (_prompt, model, sessionId) => ["--print", "--verbose", "--output-format", "stream-json", "--include-partial-messages", "--permission-mode", "plan", "--tools", "Read,Grep,Glob,Bash", ...(model ? ["--model", model] : []), ...(sessionId ? ["--resume", sessionId] : [])],
+    args: (_prompt, model, mode, sessionId, attachmentPaths) => ["--print", "--verbose", "--output-format", "stream-json", "--include-partial-messages", "--permission-mode", mode === "edit" ? "auto" : "plan", "--tools", mode === "edit" ? "Read,Grep,Glob,Bash,Edit,Write" : "Read,Grep,Glob,Bash", ...(attachmentPaths.length > 0 && attachmentDirectory ? ["--add-dir", attachmentDirectory] : []), ...(model ? ["--model", model] : []), ...(sessionId ? ["--resume", sessionId] : [])],
     promptViaStdin: true
   }
 };
@@ -30,6 +31,8 @@ let currentRepositoryPath: string | null = null;
 let activeAgentProcess: ChildProcess | null = null;
 let agentCancellationRequested = false;
 let activePatchController: AbortController | null = null;
+let attachmentDirectory: string | null = null;
+const AGENT_INACTIVITY_TIMEOUT_MS = 15 * 60 * 1000;
 const initialRepository = repositoryArgument(process.argv);
 
 function repositoryArgument(argv: string[]): string | undefined {
@@ -63,10 +66,16 @@ function executeAgent(command: string, args: string[], cwd: string, onOutput: (c
     let stderr = "";
     let settled = false;
     const child = spawn(command, args, { cwd, windowsHide: true, shell: false, stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"] });
-    const timer = setTimeout(() => {
+    let timer = setTimeout(() => {
       if (settled) return;
       child.kill("SIGKILL");
-    }, 120_000);
+    }, AGENT_INACTIVITY_TIMEOUT_MS);
+    const resetTimer = (): void => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (!settled) child.kill("SIGKILL");
+      }, AGENT_INACTIVITY_TIMEOUT_MS);
+    };
     const finish = (error?: Error): void => {
       if (settled) return;
       settled = true;
@@ -76,6 +85,7 @@ function executeAgent(command: string, args: string[], cwd: string, onOutput: (c
       else resolvePromise(stdout.trim());
     };
     child.stdout?.on("data", (chunk: Buffer) => {
+      resetTimer();
       const text = chunk.toString();
       stdout += text;
       onOutput(text);
@@ -84,7 +94,10 @@ function executeAgent(command: string, args: string[], cwd: string, onOutput: (c
         finish(new Error("Agent output exceeded the 10 MB limit."));
       }
     });
-    child.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      resetTimer();
+      stderr += chunk.toString();
+    });
     child.stdin?.on("error", () => {});
     child.stdin?.end(input);
     child.once("error", (error) => finish(error));
@@ -92,7 +105,7 @@ function executeAgent(command: string, args: string[], cwd: string, onOutput: (c
       if (agentCancellationRequested) {
         finish(new Error("Agent request was cancelled."));
       } else if (signal) {
-        finish(new Error("Agent request timed out after 120 seconds."));
+        finish(new Error("Agent request timed out after 15 minutes without output."));
       } else if (code !== 0) {
         finish(new Error(stderr.trim() || stdout.trim() || `Agent exited with code ${code}.`));
       } else {
@@ -346,7 +359,7 @@ async function assertAgentSessionRepository(id: AgentId, sessionId: string, repo
   }
 }
 
-async function runAgent(runId: string, id: AgentId, model: string | null, prompt: string, sessionId?: string): Promise<AgentRunResult> {
+async function runAgent(runId: string, id: AgentId, model: string | null, mode: AgentMode, prompt: string, attachmentPaths: string[], sessionId?: string): Promise<AgentRunResult> {
   const repositoryRoot = snapshot?.root;
   if (!repositoryRoot) throw new Error("No repository is open.");
   if (sessionId) await assertAgentSessionRepository(id, sessionId, repositoryRoot);
@@ -369,7 +382,7 @@ async function runAgent(runId: string, id: AgentId, model: string | null, prompt
   const agent = AGENTS[id];
   let output: string;
   try {
-    output = await executeAgent(command, agent.args(prompt, model, sessionId), repositoryRoot, (chunk) => {
+    output = await executeAgent(command, agent.args(prompt, model, mode, sessionId, attachmentPaths), repositoryRoot, (chunk) => {
       lineBuffer += chunk;
       const lastNewline = Math.max(lineBuffer.lastIndexOf("\n"), lineBuffer.lastIndexOf("\r"));
       if (lastNewline < 0) return;
@@ -399,9 +412,16 @@ function mergeAgentResults(current: AgentRunResult, update: AgentRunResult): Age
   }
   return {
     tools: [...tools.values()],
-    explanation: [current.explanation, update.explanation].filter(Boolean).join(""),
+    explanation: mergeAgentText(current.explanation, update.explanation),
     sessionId: update.sessionId ?? current.sessionId
   };
+}
+
+function mergeAgentText(current: string, update: string): string {
+  if (!current) return update;
+  if (!update) return current;
+  const separator = /[.!?)]$/.test(current) && /^[A-Z][a-z]/.test(update) ? "\n\n" : "";
+  return `${current}${separator}${update}`;
 }
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -412,7 +432,7 @@ function toolDetail(value: unknown): string | undefined {
   if (value === undefined) return undefined;
   try {
     const serialized = typeof value === "string" ? value : JSON.stringify(value);
-    return serialized.length > 180 ? `${serialized.slice(0, 177)}...` : serialized;
+    return serialized.length > 20_000 ? `${serialized.slice(0, 19_980)}\n...[truncated]` : serialized;
   } catch {
     return undefined;
   }
@@ -537,6 +557,13 @@ function queueRepositoryLoad(path: string, comparisonId: string, generation: num
   });
 }
 
+function repositoryFilePath(path: unknown): string {
+  if (!snapshot || typeof path !== "string" || !snapshot.files.some((file) => file.path === path)) {
+    throw new Error("The file is not part of the active comparison.");
+  }
+  return join(snapshot.root, ...path.split("/"));
+}
+
 async function openRepository(path: string): Promise<RepositorySnapshot> {
   const previousPath = currentRepositoryPath;
   const previousComparisonId = activeComparisonId;
@@ -570,8 +597,42 @@ function registerIpc(): void {
       : { color: "#f7f9fb", symbolColor: "#20262d", height: 44 });
   });
 
+  ipcMain.handle("attachment:save-image", async (event, name: unknown, type: unknown, data: unknown) => {
+    assertTrustedSender(event);
+    const extensions: Readonly<Record<string, string>> = {
+      "image/gif": ".gif",
+      "image/jpeg": ".jpg",
+      "image/png": ".png",
+      "image/webp": ".webp"
+    };
+    if (typeof name !== "string" || name.length > 255 || typeof type !== "string" || !Object.hasOwn(extensions, type)) {
+      throw new Error("Unsupported image attachment.");
+    }
+    if (!(data instanceof Uint8Array) || data.byteLength === 0 || data.byteLength > 10 * 1024 * 1024) {
+      throw new Error("Image attachments must be smaller than 10 MB.");
+    }
+    attachmentDirectory ??= join(app.getPath("temp"), `rift-code-${process.pid}`);
+    await mkdir(attachmentDirectory, { recursive: true });
+    const path = join(attachmentDirectory, `${randomUUID()}${extensions[type]}`);
+    await writeFile(path, data);
+    return path;
+  });
+
   ipcMain.handle("repository:open", async (_event, path?: string) => {
     return openRepository(path || initialRepository || process.cwd());
+  });
+
+  ipcMain.handle("repository:read-file", async (event, path: unknown) => {
+    assertTrustedSender(event);
+    const content = await readFile(repositoryFilePath(path), "utf8");
+    if (content.length > 20 * 1024 * 1024) throw new Error("The file is too large to edit in Rift.");
+    return content;
+  });
+
+  ipcMain.handle("repository:write-file", async (event, path: unknown, content: unknown) => {
+    assertTrustedSender(event);
+    if (typeof content !== "string" || content.length > 20 * 1024 * 1024) throw new Error("The file content is too large.");
+    await writeFile(repositoryFilePath(path), content, "utf8");
   });
 
   ipcMain.handle("repository:refresh", async () => {
@@ -643,18 +704,23 @@ function registerIpc(): void {
     return getAgentSession(id as AgentId, sessionId);
   });
 
-  ipcMain.handle("agent:run", (event, runId: unknown, id: unknown, model: unknown, prompt: unknown, sessionId: unknown) => {
+  ipcMain.handle("agent:run", (event, runId: unknown, id: unknown, model: unknown, mode: unknown, prompt: unknown, attachmentPaths: unknown, sessionId: unknown) => {
     assertTrustedSender(event);
     if (typeof runId !== "string" || !runId || runId.length > 100) throw new Error("Invalid agent run identifier.");
     if (typeof id !== "string" || !Object.hasOwn(AGENTS, id)) throw new Error(`Unsupported agent: ${String(id)}`);
     if (model !== null && (typeof model !== "string" || model.length > 200)) throw new Error("Invalid agent model.");
+    if (mode !== "review" && mode !== "edit") throw new Error("Invalid agent mode.");
     if (typeof prompt !== "string" || !prompt.trim() || prompt.length > 100_000) {
       throw new Error("The agent prompt is empty or too large.");
     }
+    const attachmentRoot = attachmentDirectory ? `${resolve(attachmentDirectory)}${sep}` : null;
+    if (!Array.isArray(attachmentPaths) || attachmentPaths.length > 8 || attachmentPaths.some((path) => (
+      typeof path !== "string" || !attachmentRoot || !resolve(path).startsWith(attachmentRoot)
+    ))) throw new Error("Invalid agent attachments.");
     if (sessionId !== undefined && (typeof sessionId !== "string" || !/^[a-zA-Z0-9_-]{8,100}$/.test(sessionId))) {
       throw new Error("Invalid agent session identifier.");
     }
-    return runAgent(runId, id as AgentId, model as string | null, prompt, sessionId as string | undefined);
+    return runAgent(runId, id as AgentId, model as string | null, mode, prompt, attachmentPaths, sessionId as string | undefined);
   });
 
   ipcMain.handle("agent:cancel", (event) => {
@@ -744,4 +810,5 @@ app.on("window-all-closed", () => {
 
 app.on("before-quit", () => {
   watcher?.close();
+  if (attachmentDirectory) void rm(attachmentDirectory, { recursive: true, force: true });
 });

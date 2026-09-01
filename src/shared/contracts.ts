@@ -40,6 +40,7 @@ export interface FilePatch {
 }
 
 export type AgentId = "opencode" | "claude";
+export type AgentMode = "review" | "edit";
 
 export interface AgentOption {
   id: AgentId;
@@ -85,6 +86,9 @@ export interface AgentStreamEvent {
 export interface RiftApi {
   platform: "darwin" | "linux" | "win32";
   setTheme(theme: "dark" | "light"): Promise<void>;
+  saveImageAttachment(name: string, type: string, data: Uint8Array): Promise<string>;
+  readRepositoryFile(path: string): Promise<string>;
+  writeRepositoryFile(path: string, content: string): Promise<void>;
   openRepository(path?: string): Promise<RepositorySnapshot>;
   refreshRepository(): Promise<RepositorySnapshot>;
   getFilePatch(path: string): Promise<FilePatch>;
@@ -94,7 +98,7 @@ export interface RiftApi {
   listAgentModels(id: AgentId): Promise<string[]>;
   listAgentSessions(id: AgentId): Promise<AgentSession[]>;
   getAgentSession(id: AgentId, sessionId: string): Promise<AgentConversationHistory>;
-  runAgent(runId: string, id: AgentId, model: string | null, prompt: string, sessionId?: string): Promise<AgentRunResult>;
+  runAgent(runId: string, id: AgentId, model: string | null, mode: AgentMode, prompt: string, attachmentPaths: string[], sessionId?: string): Promise<AgentRunResult>;
   cancelAgent(): Promise<void>;
   copyText(text: string): Promise<void>;
   onRepositoryChanged(listener: () => void): () => void;
