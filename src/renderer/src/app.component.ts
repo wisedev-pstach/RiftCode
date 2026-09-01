@@ -10,7 +10,7 @@ import {
   viewChild
 } from "@angular/core";
 import { marked } from "marked";
-import type { AgentConversationHistory, AgentId, AgentOption, AgentRunResult, AgentSession, AgentStreamEvent, ChangedFile, FilePatch, RepositorySnapshot } from "../../shared/contracts";
+import type { AgentConversationHistory, AgentId, AgentMode, AgentOption, AgentRunResult, AgentSession, AgentStreamEvent, AgentToolEvent, ChangedFile, FilePatch, RepositorySnapshot } from "../../shared/contracts";
 
 type DiffKind = "header" | "hunk" | "context" | "addition" | "deletion" | "meta";
 type DiffMode = "unified" | "split";
@@ -138,6 +138,7 @@ interface Conversation {
   repositoryRoot: string;
   title?: string;
   agent: AgentId;
+  mode?: AgentMode;
   model: string | null;
   question: string;
   context?: ConversationContext;
@@ -146,6 +147,7 @@ interface Conversation {
   error: string | null;
   history: ConversationTurn[];
   providerSessionId?: string;
+  updatedAt?: number;
 }
 
 interface ConversationTurn {
@@ -164,8 +166,10 @@ interface ConversationContext {
 
 interface PendingExplain {
   agent: AgentId;
+  mode: AgentMode;
   model: string | null;
   prompt: string;
+  attachmentPaths?: string[];
   question: string;
   context?: ConversationContext;
   providerSessionId?: string;
@@ -174,6 +178,13 @@ interface PendingExplain {
 interface RowAnnotations {
   notes: ReviewNote[];
   conversations: Conversation[];
+}
+
+interface ImageAttachment {
+  id: string;
+  name: string;
+  path: string;
+  previewUrl: string;
 }
 
 function isReviewNote(value: unknown): value is ReviewNote {
@@ -243,6 +254,7 @@ function isConversation(value: unknown): value is Conversation {
     && typeof conversation.repositoryRoot === "string" && conversation.repositoryRoot.length <= 10_000
     && (conversation.title === undefined || (typeof conversation.title === "string" && conversation.title.length <= 500))
     && (conversation.agent === "opencode" || conversation.agent === "claude")
+    && (conversation.mode === undefined || conversation.mode === "review" || conversation.mode === "edit")
     && (conversation.model === null || (typeof conversation.model === "string" && conversation.model.length <= 200))
     && typeof conversation.question === "string" && conversation.question.length <= 20_000
     && (conversation.context === undefined || isConversationContext(conversation.context))
@@ -251,7 +263,8 @@ function isConversation(value: unknown): value is Conversation {
     && (conversation.error === null || (typeof conversation.error === "string" && conversation.error.length <= 20_000))
     && Array.isArray(conversation.history) && conversation.history.length <= 500
     && conversation.history.every(isConversationTurn)
-    && (conversation.providerSessionId === undefined || (typeof conversation.providerSessionId === "string" && conversation.providerSessionId.length <= 100));
+    && (conversation.providerSessionId === undefined || (typeof conversation.providerSessionId === "string" && conversation.providerSessionId.length <= 100))
+    && (conversation.updatedAt === undefined || (typeof conversation.updatedAt === "number" && Number.isFinite(conversation.updatedAt)));
 }
 
 function parsePatch(patch: string): DiffRow[] {
@@ -364,6 +377,7 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly noteComposerOpen = signal(false);
   readonly questionComposerOpen = signal(false);
   readonly questionDraft = signal("");
+  readonly questionImageAttachments = signal<ImageAttachment[]>([]);
   readonly noteDraft = signal("");
   readonly notes = signal<ReviewNote[]>([]);
   readonly selectedNoteIds = signal<string[]>([]);
@@ -398,6 +412,8 @@ export class AppComponent implements OnInit, OnDestroy {
       : this.agentModels()).slice(0, 100);
   });
   readonly agentRunning = signal(false);
+  readonly activityExpanded = signal(false);
+  readonly selectedToolCall = signal<AgentToolEvent | null>(null);
   readonly agentResult = signal<AgentRunResult | null>(null);
   readonly agentError = signal<string | null>(null);
   readonly agentModalOpen = signal(false);
@@ -423,6 +439,7 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly rows = computed(() => this.highlightedRows() ?? this.parsedRows());
   readonly splitRows = computed(() => pairSplitRows(this.rows()));
   readonly diffScroll = viewChild<ElementRef<HTMLDivElement>>("diffScroll");
+  readonly chatThread = viewChild<ElementRef<HTMLDivElement>>("chatThread");
   readonly selectedLineCount = computed(() => {
     const range = this.selectedRange();
     if (!range) return 0;
@@ -449,6 +466,7 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly providerSessionsError = signal<string | null>(null);
   readonly providerSessionOpeningId = signal<string | null>(null);
   readonly chatReplyDraft = signal("");
+  readonly chatImageAttachments = signal<ImageAttachment[]>([]);
   readonly chatModelSearch = signal("");
   readonly chatModelPickerOpen = signal(false);
   readonly filteredChatModels = computed(() => {
@@ -458,6 +476,14 @@ export class AppComponent implements OnInit, OnDestroy {
       : this.agentModels()).slice(0, 100);
   });
   readonly chatFontSize = signal(this.loadChatFontSize());
+  readonly editMode = signal(false);
+  readonly fileContents = signal<ReadonlyMap<string, string>>(new Map());
+  readonly fileEdits = signal<ReadonlyMap<string, ReadonlyMap<number, string>>>(new Map());
+  readonly fileSaving = signal(false);
+  readonly selectedFileHasEdits = computed(() => {
+    const path = this.selectedPath();
+    return path ? (this.fileEdits().get(path)?.size ?? 0) > 0 : false;
+  });
   readonly rowAnnotations = computed(() => {
     const annotations = new Map<number, RowAnnotations>();
     const path = this.selectedPath();
@@ -484,6 +510,7 @@ export class AppComponent implements OnInit, OnDestroy {
 
   private removeRepositoryListener?: () => void;
   private removeAgentListener?: () => void;
+  private readonly loadingStartedAt = performance.now();
   private refreshing = false;
   private refreshDirty = false;
   private selecting = false;
@@ -513,7 +540,10 @@ export class AppComponent implements OnInit, OnDestroy {
       .catch((reason: Error) => {
         if (request === this.repositoryRequest) this.error.set(reason.message);
       })
-      .finally(() => this.loading.set(false));
+      .finally(() => {
+        const remaining = Math.max(0, 2_000 - (performance.now() - this.loadingStartedAt));
+        setTimeout(() => this.loading.set(false), remaining);
+      });
 
     this.removeRepositoryListener = window.rift.onRepositoryChanged(() => void this.refreshRepository());
     this.removeAgentListener = window.rift.onAgentEvent((event) => this.acceptAgentEvent(event));
@@ -532,6 +562,8 @@ export class AppComponent implements OnInit, OnDestroy {
     this.removeRepositoryListener?.();
     this.removeAgentListener?.();
     this.highlightWorker.terminate();
+    this.revokeImagePreviews(this.questionImageAttachments());
+    this.revokeImagePreviews(this.chatImageAttachments());
   }
 
   async chooseRepository(): Promise<void> {
@@ -616,18 +648,32 @@ export class AppComponent implements OnInit, OnDestroy {
 
   selectExplainConversation(event: Event): void {
     if (!(event.target instanceof HTMLSelectElement)) return;
+    if (event.target.value.startsWith("provider:")) {
+      const sessionId = event.target.value.slice("provider:".length);
+      const session = this.providerSessions().find((entry) => entry.id === sessionId);
+      if (session) void this.selectProviderExplainConversation(session);
+      return;
+    }
     const id = Number(event.target.value);
     const conversation = Number.isSafeInteger(id) && id > 0
       ? this.availableConversations().find((entry) => entry.id === id)
       : undefined;
+    this.useExplainConversation(conversation);
+  }
+
+  private async selectProviderExplainConversation(session: AgentSession): Promise<void> {
+    const conversation = await this.loadProviderConversation(session);
+    if (conversation) this.useExplainConversation(conversation);
+  }
+
+  private useExplainConversation(conversation?: Conversation): void {
     this.continuingConversationId.set(conversation?.id ?? null);
-    if (conversation) {
-      this.modelRequest += 1;
-      this.modelsLoading.set(false);
-      this.selectedModel.set(conversation.model);
-      this.modelSearch.set(conversation.model ?? "");
-      this.modelPickerOpen.set(false);
-    }
+    if (!conversation) return;
+    this.modelRequest += 1;
+    this.modelsLoading.set(false);
+    this.selectedModel.set(conversation.model);
+    this.modelSearch.set(conversation.model ?? "");
+    this.modelPickerOpen.set(false);
   }
 
   updateModelSearch(event: Event): void {
@@ -724,6 +770,86 @@ export class AppComponent implements OnInit, OnDestroy {
     this.allChangesSelected.set(false);
     this.resetHorizontalScroll();
     void this.loadPatch(path);
+    void this.loadEditableFile(path);
+  }
+
+  toggleEditMode(): void {
+    const active = !this.editMode();
+    this.editMode.set(active);
+    const path = this.selectedPath();
+    if (active && path && !this.fileContents().has(path)) void this.loadEditableFile(path, true);
+  }
+
+  canEditRow(row: DiffRow): boolean {
+    const path = this.selectedPath();
+    return this.editMode() && !!path && this.fileContents().has(path) && row.newLine !== undefined && row.kind !== "deletion";
+  }
+
+  editableLineContent(row: DiffRow): string {
+    const path = this.selectedPath();
+    if (!path || row.newLine === undefined) return row.content;
+    return this.fileEdits().get(path)?.get(row.newLine) ?? row.content;
+  }
+
+  beginLineEdit(row: DiffRow, event: PointerEvent): void {
+    if (this.canEditRow(row)) event.stopPropagation();
+  }
+
+  handleLineEditKeydown(event: KeyboardEvent): void {
+    event.stopPropagation();
+    if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "s") return;
+    event.preventDefault();
+    void this.saveCurrentFile();
+  }
+
+  updateEditedLine(row: DiffRow, event: Event): void {
+    const path = this.selectedPath();
+    if (!path || row.newLine === undefined || !(event.currentTarget instanceof HTMLElement)) return;
+    const content = event.currentTarget.innerText.replace(/\n$/, "");
+    const pathEdits = new Map(this.fileEdits().get(path) ?? []);
+    if (content === row.content) pathEdits.delete(row.newLine);
+    else pathEdits.set(row.newLine, content);
+    const edits = new Map(this.fileEdits());
+    if (pathEdits.size > 0) edits.set(path, pathEdits);
+    else edits.delete(path);
+    this.fileEdits.set(edits);
+  }
+
+  @HostListener("document:keydown", ["$event"])
+  handleSaveShortcut(event: KeyboardEvent): void {
+    if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "s") return;
+    if (!this.selectedFileHasEdits()) return;
+    event.preventDefault();
+    void this.saveCurrentFile();
+  }
+
+  async saveCurrentFile(): Promise<void> {
+    const path = this.selectedPath();
+    const original = path ? this.fileContents().get(path) : undefined;
+    const edits = path ? this.fileEdits().get(path) : undefined;
+    if (!path || original === undefined || !edits || edits.size === 0 || this.fileSaving()) return;
+    const eol = original.includes("\r\n") ? "\r\n" : "\n";
+    const lines = original.split(/\r?\n/);
+    for (const [line, content] of [...edits.entries()].sort(([left], [right]) => right - left)) {
+      lines.splice(line - 1, 1, ...content.split(/\r?\n/));
+    }
+    const updated = lines.join(eol);
+    this.fileSaving.set(true);
+    try {
+      await window.rift.writeRepositoryFile(path, updated);
+      this.fileContents.update((contents) => new Map(contents).set(path, updated));
+      this.fileEdits.update((current) => {
+        const next = new Map(current);
+        next.delete(path);
+        return next;
+      });
+      this.reviewMessage.set("File saved");
+      await this.refreshRepository();
+    } catch (reason) {
+      this.reviewMessage.set(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      this.fileSaving.set(false);
+    }
   }
 
   beginSelection(index: number, row: DiffRow, event: PointerEvent): void {
@@ -834,6 +960,7 @@ export class AppComponent implements OnInit, OnDestroy {
 
   cancelQuestion(): void {
     this.questionComposerOpen.set(false);
+    this.clearImageAttachments("question");
     this.pendingProviderSessionId = undefined;
     this.continuingConversationId.set(null);
   }
@@ -937,6 +1064,7 @@ export class AppComponent implements OnInit, OnDestroy {
       this.reviewMessage.set("File is no longer in this comparison");
       return;
     }
+    this.chatPageOpen.set(false);
     if (this.selectedPath() !== note.filePath) {
       this.selectedPath.set(note.filePath);
       await this.loadPatch(note.filePath);
@@ -982,15 +1110,22 @@ export class AppComponent implements OnInit, OnDestroy {
     }
   }
 
-  startExplain(): void {
-    this.continuingConversationId.set(null);
+  startExplain(useLatestConversation = true): void {
+    const latestConversation = useLatestConversation
+      ? [...this.availableConversations()].sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0) || right.id - left.id)[0]
+      : undefined;
+    this.useExplainConversation(latestConversation);
     this.noteComposerOpen.set(false);
     this.questionDraft.set("");
+    this.clearImageAttachments("question");
     this.modelSearch.set(this.selectedModel() ?? "");
     this.modelPickerOpen.set(false);
     this.questionComposerOpen.set(true);
     const agent = this.selectedAgent();
-    if (agent && this.modelsAgent !== agent && !this.modelsLoading()) void this.loadAgentModels(agent);
+    if (agent) {
+      if (this.modelsAgent !== agent && !this.modelsLoading()) void this.loadAgentModels(agent);
+      void this.loadProviderSessions(agent);
+    }
   }
 
   startSidebarExplain(): void {
@@ -1038,12 +1173,14 @@ export class AppComponent implements OnInit, OnDestroy {
       id: ++this.conversationRequest,
       repositoryRoot: repository.root,
       agent,
+      mode: "edit",
       model: this.selectedModel(),
       question: "",
       status: "complete",
       result: null,
       error: null,
-      history: []
+      history: [],
+      updatedAt: Date.now()
     };
     this.pendingProviderSessionId = undefined;
     this.chatPageOpen.set(true);
@@ -1057,6 +1194,7 @@ export class AppComponent implements OnInit, OnDestroy {
     this.agentResult.set(null);
     this.agentError.set(null);
     this.chatReplyDraft.set("");
+    this.clearImageAttachments("chat");
     this.chatModelPickerOpen.set(false);
     this.chatModelSearch.set("");
     this.conversations.update((conversations) => [...conversations, conversation]);
@@ -1065,32 +1203,36 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   async resumeProviderSession(session: AgentSession): Promise<void> {
+    const conversation = await this.loadProviderConversation(session);
+    if (conversation) this.openConversation(conversation.id);
+  }
+
+  async continuePendingProviderSession(pending: PendingExplain, session: AgentSession): Promise<void> {
+    const conversation = await this.loadProviderConversation(session);
+    if (conversation) await this.startExplainRequest(pending, conversation.id);
+  }
+
+  private async loadProviderConversation(session: AgentSession): Promise<Conversation | null> {
     const agent = this.selectedAgent();
     const repository = this.repository();
-    if (!agent || !repository || this.agentRunning() || this.providerSessionOpeningId()) return;
+    if (!agent || !repository || this.agentRunning() || this.providerSessionOpeningId()) return null;
     const imported = this.repositoryConversations().find((conversation) => conversation.agent === agent && conversation.providerSessionId === session.id);
-    if (imported) {
-      this.openConversation(imported.id);
-      return;
-    }
+    if (imported) return imported;
     const request = ++this.providerSessionRequest;
     this.providerSessionOpeningId.set(session.id);
     this.providerSessionsError.set(null);
     try {
       const history = await window.rift.getAgentSession(agent, session.id);
-      if (request !== this.providerSessionRequest || this.selectedAgent() !== agent || this.repository()?.root !== repository.root) return;
-      const conversation = this.importProviderConversation(agent, history, repository.root);
+      if (request !== this.providerSessionRequest || this.selectedAgent() !== agent || this.repository()?.root !== repository.root) return null;
+      const conversation = this.importProviderConversation(agent, history, repository.root, session.updatedAt);
       this.conversations.update((conversations) => [...conversations, conversation]);
-      this.activeConversationId.set(conversation.id);
-      this.activeQuestion.set(conversation.question);
-      this.agentResult.set(conversation.result);
-      this.agentError.set(null);
-      this.chatReplyDraft.set("");
       this.persistReviewSession();
+      return conversation;
     } catch (reason) {
       if (request === this.providerSessionRequest && this.repository()?.root === repository.root) {
         this.providerSessionsError.set(reason instanceof Error ? reason.message : String(reason));
       }
+      return null;
     } finally {
       if (request === this.providerSessionRequest) this.providerSessionOpeningId.set(null);
     }
@@ -1103,13 +1245,18 @@ export class AppComponent implements OnInit, OnDestroy {
 
   async sendChatReply(): Promise<void> {
     const conversation = this.activeConversation();
-    const question = this.chatReplyDraft().trim().slice(0, 20_000);
-    if (!conversation || !question || this.agentRunning()) return;
+    const attachments = this.chatImageAttachments();
+    const text = this.chatReplyDraft().trim().slice(0, 20_000);
+    const question = text || (attachments.length === 1 ? "Review the attached image" : "Review the attached images");
+    if (!conversation || (!text && attachments.length === 0) || this.agentRunning()) return;
     this.chatReplyDraft.set("");
+    this.clearImageAttachments("chat");
     const pending: PendingExplain = {
       agent: conversation.agent,
+      mode: conversation.mode ?? "edit",
       model: conversation.model,
-      prompt: question,
+      prompt: this.withImageAttachments(question, attachments),
+      attachmentPaths: attachments.map((attachment) => attachment.path),
       question,
       providerSessionId: conversation.providerSessionId
     };
@@ -1122,6 +1269,42 @@ export class AppComponent implements OnInit, OnDestroy {
     void this.sendChatReply();
   }
 
+  async pasteImages(event: ClipboardEvent, destination: "chat" | "question"): Promise<void> {
+    const files = [...(event.clipboardData?.items ?? [])]
+      .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => file !== null);
+    if (files.length === 0) return;
+    event.preventDefault();
+    const target = destination === "chat" ? this.chatImageAttachments : this.questionImageAttachments;
+    const remaining = Math.max(0, 8 - target().length);
+    if (remaining === 0) {
+      this.reviewMessage.set("A message can include up to 8 images");
+      return;
+    }
+    for (const file of files.slice(0, remaining)) {
+      try {
+        const data = new Uint8Array(await file.arrayBuffer());
+        const path = await window.rift.saveImageAttachment(file.name || "pasted-image", file.type, data);
+        target.update((attachments) => [...attachments, {
+          id: crypto.randomUUID(),
+          name: file.name || "Pasted image",
+          path,
+          previewUrl: URL.createObjectURL(file)
+        }]);
+      } catch (reason) {
+        this.reviewMessage.set(reason instanceof Error ? reason.message : String(reason));
+      }
+    }
+  }
+
+  removeImageAttachment(id: string, destination: "chat" | "question"): void {
+    const target = destination === "chat" ? this.chatImageAttachments : this.questionImageAttachments;
+    const attachment = target().find((entry) => entry.id === id);
+    if (attachment) URL.revokeObjectURL(attachment.previewUrl);
+    target.update((attachments) => attachments.filter((entry) => entry.id !== id));
+  }
+
   continueConversation(): void {
     const conversation = this.activeConversation();
     if (!conversation || conversation.status === "running") return;
@@ -1132,7 +1315,7 @@ export class AppComponent implements OnInit, OnDestroy {
     this.selectedRange.set(null);
     this.allChangesSelected.set(true);
     this.toolsMenu.set({ x: Math.max(12, window.innerWidth / 2 - 195), y: 94 });
-    this.startExplain();
+    this.startExplain(false);
     this.continuingConversationId.set(conversation.id);
   }
 
@@ -1141,13 +1324,14 @@ export class AppComponent implements OnInit, OnDestroy {
     const repository = this.repository();
     const agent = this.selectedAgent();
     if ((!context && !this.allChangesSelected()) || !repository || !agent || this.agentRunning()) return;
-    const question = (this.questionDraft().trim() || "Explain this").slice(0, 20_000);
+    const attachments = this.questionImageAttachments();
+    const question = (this.questionDraft().trim() || (attachments.length > 0 ? "Review the attached image" : "Explain this")).slice(0, 20_000);
     const scope = this.allChangesSelected()
       ? [
           "Scope: the complete comparison.",
           `Start revision: ${repository.startRevision}`,
           `End revision: ${repository.endRevision ?? "working tree"}`,
-          "Inspect the complete Git diff with read-only tools before answering.",
+          "Inspect the complete Git diff before answering.",
           "Changed files:",
           ...repository.files.map((file) => `- ${file.path}`)
         ]
@@ -1158,17 +1342,18 @@ export class AppComponent implements OnInit, OnDestroy {
           context!.diff,
           "```"
         ];
-    const prompt = [
-      "You are in read-only review mode. Do not edit files or run mutating commands.",
-      "Respond with analysis only.",
+    const prompt = this.withImageAttachments([
+      "Follow the user's request for this selection.",
+      "If changes are requested, edit the files directly and verify them. Otherwise, respond with analysis only.",
       `Repository: ${repository.name}`,
       `Comparison: ${repository.comparisonLabel}`,
       ...scope,
       `Question: ${question}`,
-      "Explain intent, behavior, and any non-obvious implications concisely."
-    ].join("\n");
+      "Be concise and focus on the requested outcome."
+    ].join("\n"), attachments);
     this.toolsMenu.set(null);
     this.questionComposerOpen.set(false);
+    this.clearImageAttachments("question");
     this.activeQuestion.set(question);
     const conversationContext = context ? {
       filePath: this.selectedPath()!,
@@ -1178,8 +1363,10 @@ export class AppComponent implements OnInit, OnDestroy {
     } : undefined;
     const pending: PendingExplain = {
       agent,
+      mode: "edit",
       model: this.selectedModel(),
       prompt,
+      attachmentPaths: attachments.map((attachment) => attachment.path),
       question,
       context: conversationContext,
       providerSessionId: this.pendingProviderSessionId
@@ -1198,7 +1385,7 @@ export class AppComponent implements OnInit, OnDestroy {
       ? null
       : this.repositoryConversations().find((conversation) => conversation.id === conversationId);
     const agent = existing?.agent ?? pending.agent;
-    const model = existing?.model ?? pending.model;
+    const model = pending.model;
     const previousTurns = existing?.question
       ? [...existing.history, {
           question: existing.question,
@@ -1224,7 +1411,8 @@ export class AppComponent implements OnInit, OnDestroy {
     this.activeQuestion.set(pending.question);
     this.chatPageOpen.set(true);
     this.selectedAgent.set(agent);
-    await this.sendToAgent(agent, model, prompt, pending.context, conversationId, existing?.providerSessionId ?? pending.providerSessionId);
+    this.scrollChatToBottom();
+    await this.sendToAgent(agent, model, pending.mode, prompt, pending.attachmentPaths ?? [], pending.context, conversationId, existing?.providerSessionId ?? pending.providerSessionId);
   }
 
   cancelConversationChoice(): void {
@@ -1237,16 +1425,16 @@ export class AppComponent implements OnInit, OnDestroy {
     const notes = this.selectedNotes();
     if (!agent || notes.length === 0 || this.agentRunning()) return;
     const prompt = [
-      "You are in read-only review mode. Do not edit files or run mutating commands.",
-      "Respond with analysis only.",
-      "Review these code-anchored notes.",
-      "Inspect the referenced code and respond with concrete recommendations for each note.",
+      "Apply the fixes described in these code-anchored notes.",
+      "Inspect the referenced code, edit the files directly, and verify the changes.",
+      "Keep the changes focused on the selected notes.",
       "",
       this.formatNotes(notes)
     ].join("\n");
-    const question = `Review ${notes.length} code note${notes.length === 1 ? "" : "s"}`;
-    this.pendingExplain.set({ agent, model: this.selectedModel(), prompt, question });
+    const question = `Fix ${notes.length} code note${notes.length === 1 ? "" : "s"}`;
+    this.pendingExplain.set({ agent, mode: "edit", model: this.selectedModel(), prompt, question });
     this.conversationChoiceOpen.set(true);
+    void this.loadProviderSessions(agent);
   }
 
   closeAgentModal(): void {
@@ -1261,9 +1449,13 @@ export class AppComponent implements OnInit, OnDestroy {
     this.agentResult.set(conversation.result);
     this.agentError.set(conversation.error);
     this.chatReplyDraft.set("");
+    this.clearImageAttachments("chat");
+    this.activityExpanded.set(false);
+    this.selectedToolCall.set(null);
     this.chatModelPickerOpen.set(false);
     this.chatModelSearch.set("");
     this.chatPageOpen.set(true);
+    this.scrollChatToBottom();
   }
 
   closeConversation(id: number): void {
@@ -1337,6 +1529,7 @@ export class AppComponent implements OnInit, OnDestroy {
       this.fileToolsMenu.set(null);
       this.noteComposerOpen.set(false);
       this.questionComposerOpen.set(false);
+      this.clearImageAttachments("question");
       this.pendingProviderSessionId = undefined;
       this.continuingConversationId.set(null);
     }
@@ -1344,7 +1537,8 @@ export class AppComponent implements OnInit, OnDestroy {
 
   @HostListener("document:keydown.escape")
   closeTools(): void {
-    if (this.agentModalOpen()) this.closeAgentModal();
+    if (this.selectedToolCall()) this.closeToolCall();
+    else if (this.agentModalOpen()) this.closeAgentModal();
     else if (this.noteComposerOpen()) this.cancelNote();
     else if (this.questionComposerOpen()) {
       this.questionComposerOpen.set(false);
@@ -1416,6 +1610,14 @@ export class AppComponent implements OnInit, OnDestroy {
     return error.includes("Authentication required.");
   }
 
+  openToolCall(tool: AgentToolEvent): void {
+    this.selectedToolCall.set(tool);
+  }
+
+  closeToolCall(): void {
+    this.selectedToolCall.set(null);
+  }
+
   sessionUpdatedLabel(updatedAt: number): string {
     const elapsed = Math.max(0, Date.now() - updatedAt);
     if (elapsed < 60_000) return "Just now";
@@ -1483,7 +1685,10 @@ export class AppComponent implements OnInit, OnDestroy {
     if (!keepSelection) this.selectedRange.set(null);
     if (!keepSelection) this.allChangesSelected.set(false);
     this.selectedPath.set(nextPath);
-    if (nextPath) void this.loadPatch(nextPath, keepSelection);
+    if (nextPath) {
+      void this.loadPatch(nextPath, keepSelection);
+      if (!this.fileEdits().has(nextPath)) void this.loadEditableFile(nextPath);
+    }
     else {
       this.patch.set(null);
       this.selectedRange.set(null);
@@ -1676,12 +1881,50 @@ export class AppComponent implements OnInit, OnDestroy {
       "```"
     ].join("\n"));
     return [
-      "# Rift review notes",
       `Repository: ${repository.name}`,
       `Comparison: ${repository.comparisonLabel}`,
       "",
       ...sections
     ].join("\n\n");
+  }
+
+  conversationUpdatedLabel(conversation: Conversation): string {
+    return conversation.updatedAt ? this.sessionUpdatedLabel(conversation.updatedAt) : "Earlier";
+  }
+
+  private async loadEditableFile(path: string, reportError = false): Promise<void> {
+    try {
+      const content = await window.rift.readRepositoryFile(path);
+      if (this.selectedPath() !== path || this.fileEdits().has(path)) return;
+      this.fileContents.update((contents) => new Map(contents).set(path, content));
+    } catch (reason) {
+      this.fileContents.update((contents) => {
+        const next = new Map(contents);
+        next.delete(path);
+        return next;
+      });
+      if (reportError) this.reviewMessage.set(reason instanceof Error ? reason.message : String(reason));
+    }
+  }
+
+  private withImageAttachments(prompt: string, attachments: ImageAttachment[]): string {
+    if (attachments.length === 0) return prompt;
+    return [
+      prompt,
+      "",
+      "Attached images (use the Read tool to inspect each image):",
+      ...attachments.map((attachment, index) => `${index + 1}. ${attachment.path}`)
+    ].join("\n");
+  }
+
+  private clearImageAttachments(destination: "chat" | "question"): void {
+    const target = destination === "chat" ? this.chatImageAttachments : this.questionImageAttachments;
+    this.revokeImagePreviews(target());
+    target.set([]);
+  }
+
+  private revokeImagePreviews(attachments: ImageAttachment[]): void {
+    for (const attachment of attachments) URL.revokeObjectURL(attachment.previewUrl);
   }
 
   private async loadAgentModels(agent: AgentId, preferredModel: string | null = null): Promise<void> {
@@ -1756,7 +1999,7 @@ export class AppComponent implements OnInit, OnDestroy {
     });
   }
 
-  private importProviderConversation(agent: AgentId, history: AgentConversationHistory, repositoryRoot: string): Conversation {
+  private importProviderConversation(agent: AgentId, history: AgentConversationHistory, repositoryRoot: string, updatedAt: number): Conversation {
     const exchanges: Array<{ question: string; result: AgentRunResult | null }> = [];
     for (const message of history.messages) {
       if (message.role === "user") {
@@ -1787,7 +2030,8 @@ export class AppComponent implements OnInit, OnDestroy {
         result: exchange.result,
         error: null
       })),
-      providerSessionId: history.id
+      providerSessionId: history.id,
+      updatedAt
     };
   }
 
@@ -1806,6 +2050,14 @@ export class AppComponent implements OnInit, OnDestroy {
           }
         : conversation
     )));
+    this.scrollChatToBottom();
+  }
+
+  private scrollChatToBottom(): void {
+    requestAnimationFrame(() => {
+      const element = this.chatThread()?.nativeElement;
+      if (element) element.scrollTop = element.scrollHeight;
+    });
   }
 
   private mergeAgentResult(current: AgentRunResult | null, update: AgentRunResult): AgentRunResult {
@@ -1821,12 +2073,19 @@ export class AppComponent implements OnInit, OnDestroy {
     }
     return {
       tools: [...tools.values()].slice(0, 2_000),
-      explanation: `${current?.explanation ?? ""}${update.explanation}`.slice(0, 1_000_000),
+      explanation: this.mergeAgentText(current?.explanation ?? "", update.explanation).slice(0, 1_000_000),
       sessionId: update.sessionId ?? current?.sessionId
     };
   }
 
-  private async sendToAgent(agent: AgentId, model: string | null, prompt: string, context?: ConversationContext, existingConversationId?: number, providerSessionId?: string): Promise<void> {
+  private mergeAgentText(current: string, update: string): string {
+    if (!current) return update;
+    if (!update) return current;
+    const separator = /[.!?)]$/.test(current) && /^[A-Z][a-z]/.test(update) ? "\n\n" : "";
+    return `${current}${separator}${update}`;
+  }
+
+  private async sendToAgent(agent: AgentId, model: string | null, mode: AgentMode, prompt: string, attachmentPaths: string[], context?: ConversationContext, existingConversationId?: number, providerSessionId?: string): Promise<void> {
     const repository = this.repository();
     if (!repository) return;
     const request = ++this.agentRequest;
@@ -1838,6 +2097,7 @@ export class AppComponent implements OnInit, OnDestroy {
         ? {
             ...conversation,
             agent,
+            mode,
             model,
             question,
             context,
@@ -1845,6 +2105,7 @@ export class AppComponent implements OnInit, OnDestroy {
             result: null,
             error: null,
             providerSessionId,
+            updatedAt: Date.now(),
             history: (conversation.question
               ? [...conversation.history, {
                   question: conversation.question,
@@ -1859,6 +2120,7 @@ export class AppComponent implements OnInit, OnDestroy {
           id: conversationId,
           repositoryRoot: repository.root,
           agent,
+          mode,
           model,
           question,
           context,
@@ -1866,15 +2128,18 @@ export class AppComponent implements OnInit, OnDestroy {
           result: null,
           error: null,
           history: [],
-          providerSessionId
+          providerSessionId,
+          updatedAt: Date.now()
         }]);
     this.activeConversationId.set(conversationId);
+    this.activityExpanded.set(false);
+    this.selectedToolCall.set(null);
     this.agentRunning.set(true);
     this.agentResult.set(null);
     this.agentError.set(null);
     this.reviewMessage.set(`Waiting for ${this.agents().find((option) => option.id === agent)?.label ?? agent}`);
     try {
-      const agentResult = await window.rift.runAgent(String(request), agent, model, prompt, providerSessionId);
+      const agentResult = await window.rift.runAgent(String(request), agent, model, mode, prompt, attachmentPaths, providerSessionId);
       const result = this.mergeAgentResult(null, agentResult);
       if (request === this.agentRequest) {
         if (this.activeConversationId() === conversationId) this.agentResult.set(result);
@@ -1884,6 +2149,7 @@ export class AppComponent implements OnInit, OnDestroy {
             status: "complete",
             result,
             error: null,
+            updatedAt: Date.now(),
             providerSessionId: conversation.providerSessionId ?? result.sessionId
           } : conversation
         )));

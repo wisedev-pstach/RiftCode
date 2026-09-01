@@ -118,14 +118,14 @@
           }
 
           @if (activeConversation(); as conversation) {
-            <div class="inference-thread">
+            <div #chatThread class="inference-thread">
               @for (turn of conversation.history; track $index) {
                 <div class="chat-message user-message historical-message">
                   <span>You</span>
                   <p>{{ turn.question || "Explain this" }}</p>
                   @if (turn.context; as context) {
                     <button class="conversation-context" (click)="jumpToConversationContext(context)" title="Jump to referenced code">
-                      <span class="context-pin">↳</span>
+                      <span class="context-pin" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M5 2.5h6l4 4v11H5z"/><path d="M11 2.5v4h4M7.5 10h5M7.5 13h5"/></svg></span>
                       <span><strong>{{ shortName(context.filePath) }}</strong><small>Lines {{ context.startLine }}{{ context.endLine !== context.startLine ? "-" + context.endLine : "" }} · Jump to code</small></span>
                     </button>
                   }
@@ -146,7 +146,7 @@
                   <p>{{ conversation.question }}</p>
                   @if (conversation.context; as context) {
                     <button class="conversation-context" (click)="jumpToConversationContext(context)" title="Jump to referenced code">
-                      <span class="context-pin">↳</span>
+                      <span class="context-pin" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M5 2.5h6l4 4v11H5z"/><path d="M11 2.5v4h4M7.5 10h5M7.5 13h5"/></svg></span>
                       <span><strong>{{ shortName(context.filePath) }}</strong><small>Lines {{ context.startLine }}{{ context.endLine !== context.startLine ? "-" + context.endLine : "" }} · Jump to code</small></span>
                     </button>
                   }
@@ -158,14 +158,17 @@
                     @if (result.tools.length > 0) {
                       <div class="agent-tools">
                         <span>Live activity</span>
-                        <div>
-                          @for (tool of result.tools; track tool.id) {
-                            <article class="tool-tile" [class.failed]="tool.status === 'failed'" [class.running]="tool.status === 'running'">
-                              <i>{{ tool.status === "failed" ? "!" : tool.status === "running" ? "…" : "✓" }}</i>
-                              <span><strong>{{ tool.name }}</strong>@if (tool.detail) { <small>{{ tool.detail }}</small> }</span>
-                            </article>
-                          }
-                        </div>
+                      <div class="agent-tools-grid">
+                        @for (tool of result.tools.slice(0, activityExpanded() ? result.tools.length : 6); track tool.id) {
+                          <button type="button" class="tool-tile" [class.failed]="tool.status === 'failed'" [class.running]="tool.status === 'running'" (click)="openToolCall(tool)" [title]="'View full ' + tool.name + ' call'">
+                            <i>{{ tool.status === "failed" ? "!" : tool.status === "running" ? "…" : "✓" }}</i>
+                            <span><strong>{{ tool.name }}</strong>@if (tool.detail) { <small>{{ tool.detail }}</small> }</span>
+                          </button>
+                        }
+                      </div>
+                      @if (result.tools.length > 6) {
+                        <button type="button" class="activity-toggle" (click)="activityExpanded.update((expanded) => !expanded)">{{ activityExpanded() ? "Show less" : "Show " + (result.tools.length - 6) + " more" }}</button>
+                      }
                       </div>
                     }
                     @if (result.explanation) { <div class="markdown-response" [innerHTML]="renderMarkdown(result.explanation)"></div> }
@@ -230,11 +233,19 @@
                       [value]="chatReplyDraft()"
                       (focus)="chatModelPickerOpen.set(false)"
                       (input)="chatReplyDraft.set($any($event.target).value)"
+                      (paste)="pasteImages($event, 'chat')"
                       (keydown)="handleChatReplyKeydown($event)"
                     ></textarea>
+                    @if (chatImageAttachments().length > 0) {
+                      <div class="image-attachments">
+                        @for (attachment of chatImageAttachments(); track attachment.id) {
+                          <figure><img [src]="attachment.previewUrl" [alt]="attachment.name"><button type="button" (click)="removeImageAttachment(attachment.id, 'chat')" title="Remove image" aria-label="Remove image">×</button></figure>
+                        }
+                      </div>
+                    }
                     <small>Enter to send · Shift+Enter for a new line</small>
                   </div>
-                  <button class="chat-send" (click)="sendChatReply()" [disabled]="!chatReplyDraft().trim()"><span>Send</span><i aria-hidden="true">↑</i></button>
+                  <button class="chat-send" (click)="sendChatReply()" [disabled]="!chatReplyDraft().trim() && chatImageAttachments().length === 0"><span>Send</span><i aria-hidden="true">↑</i></button>
                 </div>
               }
             </footer>
@@ -245,7 +256,7 @@
                 @for (conversation of repositoryConversations(); track conversation.id) {
                   <button (click)="openConversation(conversation.id)">
                     <span class="conversation-status status-{{ conversation.status }}"></span>
-                    <span><strong>{{ conversation.title || conversation.question || "New chat" }}</strong><small>{{ agentLabel(conversation.agent) }} · {{ conversation.model || "default model" }}@if (conversation.context; as context) { · {{ shortName(context.filePath) }}:{{ context.startLine }}{{ context.endLine !== context.startLine ? "-" + context.endLine : "" }}}</small></span>
+                    <span><strong>{{ conversation.title || conversation.question || "New chat" }}</strong><small>{{ agentLabel(conversation.agent) }} · {{ conversation.model || "default model" }} · {{ conversationUpdatedLabel(conversation) }}@if (conversation.context; as context) { · {{ shortName(context.filePath) }}:{{ context.startLine }}{{ context.endLine !== context.startLine ? "-" + context.endLine : "" }}}</small></span>
                     <span class="history-arrow">→</span>
                   </button>
                 }
@@ -279,6 +290,10 @@
             @if (selectedFile()) { <span>{{ selectedFile()!.path }}</span> }
           </div>
           <div class="diff-options">
+            <button class="edit-file-button" [class.active]="editMode()" [disabled]="!selectedFile() || selectedFile()?.status === 'deleted' || patch()?.binary" (click)="toggleEditMode()">{{ editMode() ? "Editing" : "Edit" }}</button>
+            @if (editMode()) {
+              <button class="save-file-button" [class.dirty]="selectedFileHasEdits()" [disabled]="!selectedFileHasEdits() || fileSaving()" (click)="saveCurrentFile()">{{ fileSaving() ? "Saving..." : "Save" }} <kbd>Ctrl+S</kbd></button>
+            }
             <button
               class="review-file-button"
               [class.reviewed]="selectedPath() && isFileReviewed(selectedPath()!)"
@@ -315,7 +330,9 @@
                 <span class="line-number">{{ row.oldLine ?? "" }}</span>
                 <span class="line-number">{{ row.newLine ?? "" }}</span>
                 <span class="line-prefix">{{ row.kind === "addition" ? "+" : row.kind === "deletion" ? "-" : " " }}</span>
-                @if (row.highlighted) {
+                @if (canEditRow(row)) {
+                  <code class="editable-code" [class.dirty]="editableLineContent(row) !== row.content" contenteditable="plaintext-only" spellcheck="false" (pointerdown)="beginLineEdit(row, $event)" (dblclick)="$event.stopPropagation()" (keydown)="handleLineEditKeydown($event)" (input)="updateEditedLine(row, $event)">{{ editableLineContent(row) || " " }}</code>
+                } @else if (row.highlighted) {
                   <code [innerHTML]="row.highlighted"></code>
                 } @else {
                   <code>{{ row.content || " " }}</code>
@@ -399,7 +416,9 @@
                       >
                         <span class="line-number">{{ right.row.newLine ?? "" }}</span>
                         <span class="line-prefix">{{ right.row.kind === "addition" ? "+" : " " }}</span>
-                        @if (right.row.newHighlighted) {
+                        @if (canEditRow(right.row)) {
+                          <code class="editable-code" [class.dirty]="editableLineContent(right.row) !== right.row.content" [attr.title]="right.row.content || null" contenteditable="plaintext-only" spellcheck="false" (pointerdown)="beginLineEdit(right.row, $event)" (dblclick)="$event.stopPropagation()" (keydown)="handleLineEditKeydown($event)" (input)="updateEditedLine(right.row, $event)">{{ editableLineContent(right.row) || " " }}</code>
+                        } @else if (right.row.newHighlighted) {
                           <code [attr.title]="right.row.content || null" [innerHTML]="right.row.newHighlighted"></code>
                         } @else {
                           <code [attr.title]="right.row.content || null">{{ right.row.content || " " }}</code>
@@ -476,8 +495,8 @@
 
             <div class="notes-list">
               @for (note of notes(); track note.id) {
-                <article id="review-note-{{ note.id }}" class="review-note" [class.selected]="isNoteSelected(note.id)" [class.linked-active]="activeLinkedNoteId() === note.id">
-                  <label class="note-select" title="Include note when sending to agent">
+                <article id="review-note-{{ note.id }}" class="review-note" [class.selected]="isNoteSelected(note.id)" [class.linked-active]="activeLinkedNoteId() === note.id" (dblclick)="navigateToNote(note)">
+                  <label class="note-select" title="Include note when sending to agent" (dblclick)="$event.stopPropagation()">
                     <input type="checkbox" [checked]="isNoteSelected(note.id)" (change)="toggleNoteSelection(note.id)">
                     <span class="visually-hidden">Select note</span>
                   </label>
@@ -486,7 +505,7 @@
                     <span>Lines {{ note.startLine }}{{ note.endLine !== note.startLine ? "-" + note.endLine : "" }}</span>
                   </button>
                   <p>{{ note.content }}</p>
-                  <button class="note-delete" (click)="deleteNote(note.id)" title="Delete note" aria-label="Delete note">×</button>
+                  <button class="note-delete" (click)="deleteNote(note.id)" (dblclick)="$event.stopPropagation()" title="Delete note" aria-label="Delete note">×</button>
                 </article>
               } @empty {
                 <div class="notes-empty">
@@ -552,7 +571,7 @@
           <label for="explain-question">Question <small>Enter to send · Shift+Enter for a new line</small></label>
           <div class="explain-agent-controls">
             <label><span>Provider</span><select [value]="selectedAgent()" (change)="selectAgent($event)">@for (agent of agents(); track agent.id) { <option [value]="agent.id">{{ agent.label }}</option> }</select></label>
-            <label><span>Conversation</span><select [value]="continuingConversationId() || 'new'" (change)="selectExplainConversation($event)"><option value="new">New conversation</option>@for (conversation of availableConversations(); track conversation.id) { <option [value]="conversation.id">{{ conversation.title || conversation.question }}</option> }</select></label>
+            <label><span>Conversation</span><select [value]="continuingConversationId() || 'new'" [disabled]="providerSessionOpeningId() !== null" (change)="selectExplainConversation($event)"><option value="new">New conversation</option>@for (conversation of availableConversations(); track conversation.id) { <option [value]="conversation.id">{{ conversation.title || conversation.question || "New chat" }} · {{ conversationUpdatedLabel(conversation) }}</option> }@if (providerSessionsLoading()) { <option disabled>Loading provider sessions...</option> } @else if (providerSessionsAgent() === selectedAgent()) { @for (session of providerSessions(); track session.id) { @if (!isProviderSessionImported(session)) { <option [value]="'provider:' + session.id">{{ session.title }} · {{ sessionUpdatedLabel(session.updatedAt) }}</option> } } }</select></label>
             <label class="model-search-field">
               <span>Model</span>
               <div class="model-search-control">
@@ -561,14 +580,14 @@
                   autocomplete="off"
                   [placeholder]="modelsLoading() ? 'Loading models…' : 'Default model'"
                   [value]="modelSearch()"
-                  [disabled]="modelsLoading() || continuingConversationId() !== null"
+                  [disabled]="modelsLoading()"
                   (focus)="modelPickerOpen.set(true)"
                   (input)="updateModelSearch($event)"
                   (keydown)="handleModelSearchKeydown($event)"
                   aria-label="Search models"
                   [attr.aria-expanded]="modelPickerOpen()"
                 >
-                @if (selectedModel() && continuingConversationId() === null) { <button type="button" (click)="selectModel(null)" title="Use default model" aria-label="Use default model">×</button> }
+                @if (selectedModel()) { <button type="button" (click)="selectModel(null)" title="Use default model" aria-label="Use default model">×</button> }
                 @if (modelPickerOpen() && !modelsLoading()) {
                   <div class="model-search-results">
                     <button type="button" [class.selected]="selectedModel() === null && !modelSearch()" (click)="selectModel(null)">Default model</button>
@@ -587,23 +606,30 @@
             rows="6"
             maxlength="20000"
             autofocus
-            placeholder="Explain this"
+            placeholder="Explain, fix, or refactor this"
             [value]="questionDraft()"
             (input)="questionDraft.set($any($event.target).value)"
+            (paste)="pasteImages($event, 'question')"
             (keydown)="handleExplainKeydown($event)"
           ></textarea>
+          @if (questionImageAttachments().length > 0) {
+            <div class="image-attachments composer-images">
+              @for (attachment of questionImageAttachments(); track attachment.id) {
+                <figure><img [src]="attachment.previewUrl" [alt]="attachment.name"><button type="button" (click)="removeImageAttachment(attachment.id, 'question')" title="Remove image" aria-label="Remove image">×</button></figure>
+              }
+            </div>
+          }
           <div class="note-composer-actions">
             <button (click)="cancelQuestion()">Cancel</button>
-            <button class="save-note" (click)="explainSelection()" [disabled]="!selectedAgent() || agentRunning() || modelsLoading()">Explain</button>
+            <button class="save-note" (click)="explainSelection()" [disabled]="!selectedAgent() || agentRunning() || modelsLoading()">Ask agent</button>
           </div>
         } @else {
           @if (!allChangesSelected()) {
             <button role="menuitem" (click)="startNote()"><span class="tool-mark">+</span><span><strong>Add note</strong><small>Attach review feedback</small></span></button>
           }
           <button role="menuitem" (click)="startExplain()" [disabled]="!selectedAgent() || agentRunning()">
-            <span class="ai-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 1c0 6.1-4.9 11-11 11 6.1 0 11 4.9 11 11 0-6.1 4.9-11 11-11-6.1 0-11-4.9-11-11Z"/><circle cx="19" cy="5" r="2"/></svg></span><span><strong>Explain</strong><small>Ask the active code agent</small></span>
+            <span class="ai-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 1c0 6.1-4.9 11-11 11 6.1 0 11 4.9 11 11 0-6.1 4.9-11 11-11-6.1 0-11-4.9-11-11Z"/><circle cx="19" cy="5" r="2"/></svg></span><span><strong>Ask agent</strong><small>Explain, fix, or refactor</small></span>
           </button>
-          <button role="menuitem" disabled title="Coming soon"><span class="ai-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 1c0 6.1-4.9 11-11 11 6.1 0 11 4.9 11 11 0-6.1 4.9-11 11-11-6.1 0-11-4.9-11-11Z"/><circle cx="19" cy="5" r="2"/></svg></span><span><strong>Refactor</strong><small>Coming soon</small></span></button>
         }
       </section>
     }
@@ -624,10 +650,33 @@
             @for (conversation of availableConversations(); track conversation.id) {
               <button (click)="startExplainRequest(pending, conversation.id)" [disabled]="conversation.status === 'running'">
                 <span class="conversation-status status-{{ conversation.status }}"></span>
-                <span><strong>{{ conversation.title || conversation.question || "New chat" }}</strong><small>{{ agentLabel(conversation.agent) }} · {{ conversation.history.length + 1 }} {{ conversation.history.length === 0 ? "message" : "messages" }}</small></span>
+                <span><strong>{{ conversation.title || conversation.question || "New chat" }}</strong><small>{{ agentLabel(conversation.agent) }} · {{ conversation.history.length + 1 }} {{ conversation.history.length === 0 ? "message" : "messages" }} · {{ conversationUpdatedLabel(conversation) }}</small></span>
               </button>
             }
+            @if (providerSessionsLoading()) {
+              <p class="conversation-choice-message">Loading {{ selectedAgentOption()?.label }} sessions...</p>
+            } @else if (providerSessionsError()) {
+              <p class="conversation-choice-message error">{{ providerSessionsError() }}</p>
+            } @else if (providerSessionsAgent() === selectedAgent()) {
+              @for (session of providerSessions(); track session.id) {
+                @if (!isProviderSessionImported(session)) {
+                  <button (click)="continuePendingProviderSession(pending, session)" [disabled]="providerSessionOpeningId() !== null">
+                    <span class="conversation-status status-complete"></span>
+                    <span><strong>{{ session.title }}</strong><small>{{ selectedAgentOption()?.label }} · {{ providerSessionOpeningId() === session.id ? "Opening session..." : sessionUpdatedLabel(session.updatedAt) }}</small></span>
+                  </button>
+                }
+              }
+            }
           </div>
+        </section>
+      </div>
+    }
+
+    @if (selectedToolCall(); as tool) {
+      <div class="tool-call-backdrop" role="presentation" (click)="closeToolCall()">
+        <section class="tool-call-dialog" role="dialog" aria-modal="true" aria-labelledby="tool-call-title" (click)="$event.stopPropagation()">
+          <header><span><strong id="tool-call-title">{{ tool.name }}</strong><small class="status-{{ tool.status }}">{{ tool.status }}</small></span><button (click)="closeToolCall()" title="Close" aria-label="Close">×</button></header>
+          <pre>{{ tool.detail || "No call details were provided." }}</pre>
         </section>
       </div>
     }
