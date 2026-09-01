@@ -24,6 +24,7 @@ const PLAIN_TEXT: DetectedLanguage = { id: "plaintext", label: "Plain text" };
 const AGENT_STORAGE_KEY = "rift:last-agent";
 const MODEL_STORAGE_PREFIX = "rift:last-model:";
 const CHAT_FONT_SIZE_KEY = "rift:chat-font-size";
+const THEME_STORAGE_KEY = "rift:theme";
 const LANGUAGES: Readonly<Record<string, DetectedLanguage>> = {
   bash: { id: "bash", label: "Shell" },
   c: { id: "c", label: "C" },
@@ -347,6 +348,7 @@ function pairSplitRows(rows: DiffRow[]): SplitDiffRow[] {
 })
 export class AppComponent implements OnInit, OnDestroy {
   readonly platform = window.rift.platform;
+  readonly darkTheme = signal(this.loadDarkTheme());
   readonly repository = signal<RepositorySnapshot | null>(null);
   readonly selectedPath = signal<string | null>(null);
   readonly patch = signal<FilePatch | null>(null);
@@ -440,6 +442,14 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly providerSessionsError = signal<string | null>(null);
   readonly providerSessionOpeningId = signal<string | null>(null);
   readonly chatReplyDraft = signal("");
+  readonly chatModelSearch = signal("");
+  readonly chatModelPickerOpen = signal(false);
+  readonly filteredChatModels = computed(() => {
+    const query = this.chatModelSearch().trim().toLowerCase();
+    return (query
+      ? this.agentModels().filter((model) => model.toLowerCase().includes(query))
+      : this.agentModels()).slice(0, 100);
+  });
   readonly chatFontSize = signal(this.loadChatFontSize());
   readonly rowAnnotations = computed(() => {
     const annotations = new Map<number, RowAnnotations>();
@@ -484,6 +494,7 @@ export class AppComponent implements OnInit, OnDestroy {
   private readonly highlightWorker = new Worker(new URL("./highlight.worker.ts", import.meta.url), { type: "module" });
 
   ngOnInit(): void {
+    this.applyTheme();
     this.highlightWorker.onmessage = ({ data }: MessageEvent<HighlightResponse>) => {
       if (data.requestId === this.highlightRequest) this.highlightedRows.set(data.rows);
     };
@@ -586,6 +597,16 @@ export class AppComponent implements OnInit, OnDestroy {
     }
   }
 
+  toggleTheme(): void {
+    this.darkTheme.update((dark) => !dark);
+    this.applyTheme();
+    try {
+      localStorage.setItem(THEME_STORAGE_KEY, this.darkTheme() ? "dark" : "light");
+    } catch {
+      this.reviewMessage.set("Could not remember the selected theme");
+    }
+  }
+
   selectExplainConversation(event: Event): void {
     if (!(event.target instanceof HTMLSelectElement)) return;
     const id = Number(event.target.value);
@@ -621,6 +642,50 @@ export class AppComponent implements OnInit, OnDestroy {
     } catch {
       this.reviewMessage.set("Could not remember the selected model");
     }
+  }
+
+  updateChatModelSearch(event: Event): void {
+    if (event.target instanceof HTMLInputElement) this.chatModelSearch.set(event.target.value);
+  }
+
+  toggleChatModelPicker(): void {
+    this.chatModelPickerOpen.update((open) => !open);
+    this.chatModelSearch.set("");
+  }
+
+  selectChatModel(model: string | null): void {
+    const conversation = this.activeConversation();
+    if (!conversation || conversation.question) return;
+    this.conversations.update((conversations) => conversations.map((entry) => (
+      entry.id === conversation.id ? { ...entry, model } : entry
+    )));
+    this.chatModelPickerOpen.set(false);
+    this.chatModelSearch.set("");
+    if (this.selectedAgent() === conversation.agent) {
+      this.selectedModel.set(model);
+      this.modelSearch.set(model ?? "");
+    }
+    try {
+      if (model) localStorage.setItem(`${MODEL_STORAGE_PREFIX}${conversation.agent}`, model);
+      else localStorage.removeItem(`${MODEL_STORAGE_PREFIX}${conversation.agent}`);
+    } catch {
+      this.reviewMessage.set("Could not remember the selected model");
+    }
+    this.persistReviewSession();
+  }
+
+  handleChatModelKeydown(event: KeyboardEvent): void {
+    if (event.key === "Escape") {
+      event.stopPropagation();
+      this.chatModelPickerOpen.set(false);
+      return;
+    }
+    if (event.key !== "Enter") return;
+    const model = this.agentModels().find((entry) => entry === this.chatModelSearch()) ?? this.filteredChatModels()[0];
+    if (!model) return;
+    event.preventDefault();
+    event.stopPropagation();
+    this.selectChatModel(model);
   }
 
   handleModelSearchKeydown(event: KeyboardEvent): void {
@@ -926,14 +991,38 @@ export class AppComponent implements OnInit, OnDestroy {
     });
   }
 
-  startNewChat(providerSessionId?: string): void {
-    this.pendingProviderSessionId = providerSessionId;
+  startNewChat(): void {
+    const repository = this.repository();
+    const agent = this.selectedAgent();
+    if (!repository || !agent || this.agentRunning()) return;
+    const conversation: Conversation = {
+      id: ++this.conversationRequest,
+      repositoryRoot: repository.root,
+      agent,
+      model: this.selectedModel(),
+      question: "",
+      status: "complete",
+      result: null,
+      error: null,
+      history: []
+    };
+    this.pendingProviderSessionId = undefined;
     this.chatPageOpen.set(true);
+    this.activeConversationId.set(conversation.id);
     this.continuingConversationId.set(null);
     this.selectedRange.set(null);
-    this.allChangesSelected.set(true);
-    this.toolsMenu.set({ x: Math.max(12, window.innerWidth / 2 - 180), y: 94 });
-    this.startExplain();
+    this.allChangesSelected.set(false);
+    this.toolsMenu.set(null);
+    this.questionComposerOpen.set(false);
+    this.activeQuestion.set("");
+    this.agentResult.set(null);
+    this.agentError.set(null);
+    this.chatReplyDraft.set("");
+    this.chatModelPickerOpen.set(false);
+    this.chatModelSearch.set("");
+    this.conversations.update((conversations) => [...conversations, conversation]);
+    this.persistReviewSession();
+    if (this.modelsAgent !== agent && !this.modelsLoading()) void this.loadAgentModels(agent, conversation.model);
   }
 
   async resumeProviderSession(session: AgentSession): Promise<void> {
@@ -1071,7 +1160,7 @@ export class AppComponent implements OnInit, OnDestroy {
       : this.repositoryConversations().find((conversation) => conversation.id === conversationId);
     const agent = existing?.agent ?? pending.agent;
     const model = existing?.model ?? pending.model;
-    const previousTurns = existing
+    const previousTurns = existing?.question
       ? [...existing.history, {
           question: existing.question,
           context: existing.context,
@@ -1131,7 +1220,25 @@ export class AppComponent implements OnInit, OnDestroy {
     this.agentResult.set(conversation.result);
     this.agentError.set(conversation.error);
     this.chatReplyDraft.set("");
+    this.chatModelPickerOpen.set(false);
+    this.chatModelSearch.set("");
     this.chatPageOpen.set(true);
+  }
+
+  closeConversation(id: number): void {
+    const conversations = this.repositoryConversations();
+    const index = conversations.findIndex((conversation) => conversation.id === id);
+    if (index < 0) return;
+    const closing = conversations[index];
+    const remaining = conversations.filter((conversation) => conversation.id !== id);
+    if (closing.status === "running") void this.cancelAgent();
+    this.conversations.update((entries) => entries.filter((conversation) => conversation.id !== id));
+    if (this.activeConversationId() === id) {
+      const next = remaining[Math.min(index, remaining.length - 1)];
+      if (next) this.openConversation(next.id);
+      else this.openChats();
+    }
+    this.persistReviewSession();
   }
 
   async cancelAgent(): Promise<void> {
@@ -1262,6 +1369,10 @@ export class AppComponent implements OnInit, OnDestroy {
 
   agentLabel(id: AgentId): string {
     return this.agents().find((agent) => agent.id === id)?.label ?? id;
+  }
+
+  isAgentAuthError(error: string): boolean {
+    return error.includes("Authentication required.");
   }
 
   sessionUpdatedLabel(updatedAt: number): string {
@@ -1580,6 +1691,21 @@ export class AppComponent implements OnInit, OnDestroy {
     }
   }
 
+  private loadDarkTheme(): boolean {
+    try {
+      const stored = localStorage.getItem(THEME_STORAGE_KEY);
+      if (stored === "dark" || stored === "light") return stored === "dark";
+    } catch {
+      // Fall back to the operating system preference.
+    }
+    return window.matchMedia("(prefers-color-scheme: dark)").matches;
+  }
+
+  private applyTheme(): void {
+    document.documentElement.dataset["theme"] = this.darkTheme() ? "dark" : "light";
+    document.documentElement.style.colorScheme = this.darkTheme() ? "dark" : "light";
+  }
+
   private importProviderConversation(agent: AgentId, history: AgentConversationHistory, repositoryRoot: string): Conversation {
     const exchanges: Array<{ question: string; result: AgentRunResult | null }> = [];
     for (const message of history.messages) {
@@ -1664,17 +1790,19 @@ export class AppComponent implements OnInit, OnDestroy {
             agent,
             model,
             question,
-            context: context ?? conversation.context,
+            context,
             status: "running",
             result: null,
             error: null,
             providerSessionId,
-            history: [...conversation.history, {
-              question: conversation.question,
-              context: conversation.context,
-              result: conversation.result,
-              error: conversation.error
-            }].slice(-500)
+            history: (conversation.question
+              ? [...conversation.history, {
+                  question: conversation.question,
+                  context: conversation.context,
+                  result: conversation.result,
+                  error: conversation.error
+                }]
+              : conversation.history).slice(-500)
           }
         : conversation)
       : [...conversations, {
@@ -1713,14 +1841,22 @@ export class AppComponent implements OnInit, OnDestroy {
       }
     } catch (reason) {
       if (request === this.agentRequest) {
-        const error = reason instanceof Error ? reason.message : String(reason);
-        if (this.activeConversationId() === conversationId) this.agentError.set(error);
+        const rawError = reason instanceof Error ? reason.message : String(reason);
+        const authenticationStart = rawError.indexOf("Authentication required.");
+        const error = authenticationStart >= 0 ? rawError.slice(authenticationStart) : rawError;
+        const authenticationError = this.isAgentAuthError(error);
+        if (this.activeConversationId() === conversationId) {
+          this.agentError.set(error);
+          if (authenticationError) this.agentResult.set(null);
+        }
         this.conversations.update((conversations) => conversations.map((conversation) => (
           conversation.id === conversationId
-            ? { ...conversation, status: error.toLowerCase().includes("cancel") ? "cancelled" : "error", error }
+            ? { ...conversation, status: error.toLowerCase().includes("cancel") ? "cancelled" : "error", result: authenticationError ? null : conversation.result, error }
             : conversation
         )));
-        this.reviewMessage.set(error.toLowerCase().includes("cancel") ? "Agent request cancelled" : "Agent request failed");
+        this.reviewMessage.set(authenticationError
+          ? `${this.agentLabel(agent)} sign-in required`
+          : error.toLowerCase().includes("cancel") ? "Agent request cancelled" : "Agent request failed");
       }
     } finally {
       if (request === this.agentRequest) {
