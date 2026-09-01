@@ -499,6 +499,36 @@ button { color: inherit; font: inherit; }
 .review-page .review-request textarea { min-height: 92px; font-size: 12px; }
 .review-page-actions { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; }
 .review-page-actions .run-review-button { min-width: 230px; margin: 0; padding-inline: 17px; }
+.review-result-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin: 0 3px 16px; }
+.review-result-head > span { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.review-result-head small { color: #8aa25f; font: 750 8px ui-monospace, monospace; letter-spacing: .11em; text-transform: uppercase; }
+.review-result-head strong { overflow: hidden; color: #dce2e8; font-size: 15px; text-overflow: ellipsis; white-space: nowrap; }
+.review-result-head button, .review-result-actions button { border: 1px solid #3b4650; border-radius: 7px; padding: 7px 10px; color: #aeb8c2; background: #171d23; font-size: 9px; cursor: pointer; }
+.review-result-head button:disabled { cursor: not-allowed; opacity: .4; }
+.review-result-card { overflow: hidden; border: 1px solid #303943; border-radius: 14px; background: rgba(15, 20, 25, .9); box-shadow: 0 22px 65px rgba(0, 0, 0, .24); }
+.review-result-card > header { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 9px; border-bottom: 1px solid #29323a; padding: 12px 15px; }
+.review-result-card > header .review-mark { width: 29px; height: 29px; font-size: 12px; }
+.review-result-card > header > span:nth-child(2) { display: flex; flex-direction: column; gap: 3px; }
+.review-result-card > header strong { color: #cbd3dc; font-size: 10px; }
+.review-result-card > header small { color: #687581; font: 8px ui-monospace, monospace; text-transform: capitalize; }
+.review-result-card .review-markdown { border: 0; border-radius: 0; padding: clamp(20px, 3vw, 32px); background: transparent; }
+.review-markdown a[href^="rift-file:"] { border-bottom: 1px solid #688b45; color: #b9dc83; font-family: ui-monospace, monospace; text-decoration: none; cursor: pointer; }
+.review-markdown a[href^="rift-file:"]:hover { color: #d9f6ad; border-color: #b7e762; }
+.review-activity { margin: 0; border-bottom: 1px solid #273038; padding: 8px 15px; color: #718060; background: rgba(63, 81, 46, .12); font: 8px ui-monospace, monospace; }
+.review-waiting { display: flex; align-items: center; gap: 10px; padding: 30px; }
+.review-waiting .ai-mark { margin: 0; animation: agent-pulse 1.4s ease-in-out infinite; }
+.review-waiting > span:last-child { display: flex; flex-direction: column; gap: 4px; }
+.review-waiting strong { color: #c3ccd5; font-size: 11px; }
+.review-waiting small { color: #6b7783; font-size: 9px; }
+.review-result-card > .agent-error { margin: 16px; }
+.reconsider-panel { display: grid; grid-template-columns: minmax(180px, .8fr) minmax(260px, 1.4fr) auto; align-items: center; gap: 14px; margin-top: 13px; border: 1px solid #303a43; border-radius: 10px; padding: 13px; background: rgba(18, 24, 29, .86); }
+.reconsider-panel > div:first-child strong { color: #c3cbd4; font-size: 10px; }
+.reconsider-panel > div:first-child p { margin: 4px 0 0; color: #6c7884; font-size: 8px; line-height: 1.4; }
+.reconsider-panel textarea { width: 100%; resize: vertical; border: 1px solid #35404a; border-radius: 7px; outline: 0; padding: 8px 9px; color: #cfd6de; background: #0d1216; font: 10px/1.4 ui-sans-serif, sans-serif; }
+.reconsider-panel textarea:focus { border-color: #687d4d; }
+.review-result-actions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 12px; }
+.reconsider-panel .review-result-actions { margin: 0; }
+.review-result-actions .reconsider-button { color: #1c260f; border-color: #77964c; background: #b7e762; font-weight: 750; }
 .chat-page-header { height: 58px; display: grid; grid-template-columns: 140px minmax(180px, 1fr) auto; align-items: center; gap: 12px; border-bottom: 1px solid #252a31; padding: 0 16px; }
 .chat-page-header > span { min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 2px; }
 .chat-page-header strong { font: 750 12px ui-monospace, monospace; letter-spacing: .08em; text-transform: uppercase; }
@@ -659,6 +689,14 @@ button { color: inherit; font: inherit; }
 :root[data-theme="light"] .review-page-lead strong { color: #252d35; }
 :root[data-theme="light"] .review-page-card { border-color: #cbd3da; background: rgba(255, 255, 255, .92); box-shadow: 0 22px 65px rgba(45, 54, 63, .12); }
 :root[data-theme="light"] .review-agent-grid select { color: #3e4953; border-color: #c3ccd4; background: #f8fafb; }
+:root[data-theme="light"] .review-result-head strong { color: #2c353e; }
+:root[data-theme="light"] .review-result-card, :root[data-theme="light"] .reconsider-panel { border-color: #cbd3da; background: rgba(255, 255, 255, .94); box-shadow: 0 18px 50px rgba(45, 54, 63, .1); }
+:root[data-theme="light"] .review-result-card > header { border-color: #d7dde2; }
+:root[data-theme="light"] .review-result-card > header strong, :root[data-theme="light"] .review-waiting strong, :root[data-theme="light"] .reconsider-panel > div:first-child strong { color: #34404a; }
+:root[data-theme="light"] .review-markdown a[href^="rift-file:"] { color: #4e761f; border-color: #86a95d; }
+:root[data-theme="light"] .reconsider-panel textarea { color: #303943; border-color: #c4cdd5; background: #f7f9fa; }
+:root[data-theme="light"] .review-result-head button, :root[data-theme="light"] .review-result-actions button { color: #53606b; border-color: #bdc6ce; background: #fff; }
+:root[data-theme="light"] .review-result-actions .reconsider-button { color: #29380f; border-color: #8eaa67; background: #dbeebf; }
 :root[data-theme="light"] .chat-page-header, :root[data-theme="light"] .conversation-tabs, :root[data-theme="light"] .chat-page-footer { border-color: #d3d9df; background: rgba(247, 249, 251, .95); }
 :root[data-theme="light"] .chat-history { border-color: #cbd2d9; background: rgba(255, 255, 255, .9); box-shadow: 0 18px 52px rgba(45, 54, 63, .12); }
 :root[data-theme="light"] .chat-history > header { border-color: #d7dce1; }
@@ -786,6 +824,9 @@ button { color: inherit; font: inherit; }
   .review-page-header { grid-template-columns: 105px minmax(80px, 1fr) 105px; padding-inline: 10px; }
   .review-page-actions { grid-template-columns: 1fr; }
   .review-page-actions .run-review-button { min-width: 0; }
+  .reconsider-panel { grid-template-columns: 1fr; }
+  .reconsider-panel .review-result-actions { justify-content: stretch; }
+  .reconsider-panel .review-result-actions button { flex: 1; }
 }
 
 @media (prefers-reduced-motion: reduce) {

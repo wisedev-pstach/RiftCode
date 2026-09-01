@@ -101,6 +101,30 @@
             <button class="context-page-action" [class.active]="contextItemCount() > 0" (click)="openContextDialog()"><strong>Context</strong><small>{{ contextItemCount() > 0 ? contextItemCount() + " items" : "Add references" }}</small></button>
           </header>
           <div class="review-page-body">
+            @if (reviewQuestion() || reviewResult() || reviewError() || agentRunning()) {
+              <div class="review-result-head">
+                <span><small>Independent review</small><strong>{{ reviewQuestion() || "Reviewing current changes" }}</strong></span>
+                <button (click)="resetReview()" [disabled]="agentRunning()">New review</button>
+              </div>
+              <article class="review-result-card">
+                <header><span class="review-mark">R</span><span><strong>{{ agentLabel(selectedAgent()!) }}</strong><small>{{ selectedModel() || "Default model" }} · {{ reviewTone() }}</small></span>@if (agentRunning()) { <i class="loading-spinner" aria-label="Review in progress"></i> }</header>
+                @if (reviewResult(); as result) {
+                  @if (result.tools.length > 0 && agentRunning()) { <p class="review-activity">Inspecting repository · {{ result.tools.length }} tool {{ result.tools.length === 1 ? "call" : "calls" }}</p> }
+                  @if (result.explanation) { <div class="markdown-response review-markdown" (click)="openReviewFile($event)" [innerHTML]="renderReviewMarkdown(result.explanation)"></div> }
+                }
+                @if (agentRunning() && !reviewResult()?.explanation) { <div class="review-waiting"><span class="ai-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 1c0 6.1-4.9 11-11 11 6.1 0 11 4.9 11 11 0-6.1 4.9-11 11-11-6.1 0-11-4.9-11-11Z"/><circle cx="19" cy="5" r="2"/></svg></span><span><strong>Reviewing the comparison</strong><small>Findings will appear here as the agent works.</small></span></div> }
+                @if (reviewError()) { <p class="agent-error">{{ reviewError() }}</p> }
+              </article>
+              @if (!agentRunning() && reviewResult()?.explanation) {
+                <section class="reconsider-panel">
+                  <div><strong>Changed the code?</strong><p>Ask for a fresh pass. Resolved findings will be dropped and new regressions called out.</p></div>
+                  <textarea rows="2" maxlength="20000" placeholder="Optional: describe what changed..." [value]="reconsiderDraft()" (input)="reconsiderDraft.set($any($event.target).value)"></textarea>
+                  <div class="review-result-actions"><button (click)="saveReviewMarkdown()">Save .md</button><button class="reconsider-button" (click)="reconsiderReview()">Reconsider</button></div>
+                </section>
+              } @else if (agentRunning()) {
+                <div class="review-result-actions"><button (click)="cancelAgent()">Cancel review</button></div>
+              }
+            } @else {
             <div class="review-page-lead">
               <span class="review-mark">R</span>
               <span><small>Independent pass</small><strong>Set the tone for this review</strong><p>The agent will inspect the complete comparison and relevant surrounding code.</p></span>
@@ -122,6 +146,7 @@
                 <button class="run-review-button" (click)="startReview()" [disabled]="!selectedAgent() || agentRunning() || modelsLoading()"><span class="ai-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 1c0 6.1-4.9 11-11 11 6.1 0 11 4.9 11 11 0-6.1 4.9-11 11-11-6.1 0-11-4.9-11-11Z"/><circle cx="19" cy="5" r="2"/></svg></span>{{ agentRunning() ? "Review in progress" : "Start " + (reviewTone() === "honest" ? "honest" : "professional") + " review" }}</button>
               </div>
             </div>
+            }
           </div>
         </section>
       } @else if (chatPageOpen()) {

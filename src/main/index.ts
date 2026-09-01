@@ -631,6 +631,22 @@ function registerIpc(): void {
     return path;
   });
 
+  ipcMain.handle("review:save-markdown", async (event, name: unknown, content: unknown) => {
+    assertTrustedSender(event);
+    if (typeof name !== "string" || name.length > 200 || typeof content !== "string" || content.length > 1_000_000) {
+      throw new Error("Invalid review document.");
+    }
+    const safeName = name.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "code-review";
+    const result = await dialog.showSaveDialog(mainWindow!, {
+      title: "Save code review",
+      defaultPath: safeName.endsWith(".md") ? safeName : `${safeName}.md`,
+      filters: [{ name: "Markdown", extensions: ["md"] }]
+    });
+    if (result.canceled || !result.filePath) return false;
+    await writeFile(result.filePath, content, "utf8");
+    return true;
+  });
+
   ipcMain.handle("repository:open", async (_event, path?: string) => {
     return openRepository(path || initialRepository || process.cwd());
   });

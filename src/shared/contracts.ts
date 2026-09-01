@@ -94,6 +94,7 @@ export interface RiftApi {
   setTheme(theme: "dark" | "light"): Promise<void>;
   saveImageAttachment(name: string, type: string, data: Uint8Array): Promise<string>;
   saveClipboardImage(): Promise<string | null>;
+  saveMarkdown(name: string, content: string): Promise<boolean>;
   readRepositoryFile(path: string): Promise<string>;
   writeRepositoryFile(path: string, content: string): Promise<void>;
   openRepository(path?: string): Promise<RepositorySnapshot>;

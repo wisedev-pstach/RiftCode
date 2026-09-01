@@ -6,6 +6,7 @@ const api: RiftApi = {
   setTheme: (theme) => ipcRenderer.invoke("window:set-theme", theme),
   saveImageAttachment: (name, type, data) => ipcRenderer.invoke("attachment:save-image", name, type, data),
   saveClipboardImage: () => ipcRenderer.invoke("context:paste-image"),
+  saveMarkdown: (name, content) => ipcRenderer.invoke("review:save-markdown", name, content),
   readRepositoryFile: (path) => ipcRenderer.invoke("repository:read-file", path),
   writeRepositoryFile: (path, content) => ipcRenderer.invoke("repository:write-file", path, content),
   openRepository: (path) => ipcRenderer.invoke("repository:open", path),
