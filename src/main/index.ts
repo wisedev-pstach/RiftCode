@@ -1,20 +1,20 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu } from "electron";
 import { execFile, spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
-import { existsSync, watch, type FSWatcher } from "node:fs";
+import { existsSync, statSync, watch, type FSWatcher } from "node:fs";
 import { mkdir, open, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
-import { join, resolve, sep } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { loadFilePatch, loadRepository } from "./git";
 import type { IpcMainInvokeEvent } from "electron";
 import type { AgentConversationHistory, AgentConversationMessage, AgentId, AgentMode, AgentOption, AgentRunResult, AgentSession, AgentStreamEvent, AgentToolEvent, RepositorySnapshot } from "../shared/contracts";
 
-const AGENTS: Readonly<Record<AgentId, { label: string; args: (prompt: string, model: string | null, mode: AgentMode, sessionId: string | undefined, attachmentPaths: string[]) => string[]; promptViaStdin?: boolean }>> = {
-  opencode: { label: "OpenCode", args: (prompt, model, mode, sessionId, attachmentPaths) => ["run", "--pure", "--agent", mode === "edit" ? "build" : "plan", "--format", "json", "--auto", ...(model ? ["--model", model] : []), ...(sessionId ? ["--session", sessionId] : []), ...attachmentPaths.flatMap((path) => ["--file", path]), prompt] },
+const AGENTS: Readonly<Record<AgentId, { label: string; args: (prompt: string, model: string | null, mode: AgentMode, sessionId: string | undefined, resourcePaths: string[]) => string[]; promptViaStdin?: boolean }>> = {
+  opencode: { label: "OpenCode", args: (prompt, model, mode, sessionId, resourcePaths) => ["run", "--pure", "--agent", mode === "edit" ? "build" : "plan", "--format", "json", "--auto", ...(model ? ["--model", model] : []), ...(sessionId ? ["--session", sessionId] : []), ...resourcePaths.filter((path) => !statSync(path).isDirectory()).flatMap((path) => ["--file", path]), prompt] },
   claude: {
     label: "Claude Code",
-    args: (_prompt, model, mode, sessionId, attachmentPaths) => ["--print", "--verbose", "--output-format", "stream-json", "--include-partial-messages", "--permission-mode", mode === "edit" ? "auto" : "plan", "--tools", mode === "edit" ? "Read,Grep,Glob,Bash,Edit,Write" : "Read,Grep,Glob,Bash", ...(attachmentPaths.length > 0 && attachmentDirectory ? ["--add-dir", attachmentDirectory] : []), ...(model ? ["--model", model] : []), ...(sessionId ? ["--resume", sessionId] : [])],
+    args: (_prompt, model, mode, sessionId, resourcePaths) => ["--print", "--verbose", "--output-format", "stream-json", "--include-partial-messages", "--permission-mode", mode === "edit" ? "auto" : "plan", "--tools", mode === "edit" ? "Read,Grep,Glob,Bash,Edit,Write" : "Read,Grep,Glob,Bash", ...[...new Set(resourcePaths.map((path) => statSync(path).isDirectory() ? path : dirname(path)))].flatMap((path) => ["--add-dir", path]), ...(model ? ["--model", model] : []), ...(sessionId ? ["--resume", sessionId] : [])],
     promptViaStdin: true
   }
 };
@@ -618,6 +618,19 @@ function registerIpc(): void {
     return path;
   });
 
+  ipcMain.handle("context:paste-image", async (event) => {
+    assertTrustedSender(event);
+    const image = clipboard.readImage();
+    if (image.isEmpty()) return null;
+    const data = image.toPNG();
+    if (data.byteLength === 0 || data.byteLength > 10 * 1024 * 1024) throw new Error("Clipboard image must be smaller than 10 MB.");
+    attachmentDirectory ??= join(app.getPath("temp"), `rift-code-${process.pid}`);
+    await mkdir(attachmentDirectory, { recursive: true });
+    const path = join(attachmentDirectory, `${randomUUID()}.png`);
+    await writeFile(path, data);
+    return path;
+  });
+
   ipcMain.handle("repository:open", async (_event, path?: string) => {
     return openRepository(path || initialRepository || process.cwd());
   });
@@ -680,6 +693,17 @@ function registerIpc(): void {
     return openRepository(result.filePaths[0]);
   });
 
+  ipcMain.handle("context:choose-resources", async (event, kind: unknown) => {
+    assertTrustedSender(event);
+    if (kind !== "files" && kind !== "directory") throw new Error("Invalid context resource type.");
+    const result = await dialog.showOpenDialog(mainWindow!, {
+      title: kind === "files" ? "Add files or images to context" : "Add directory to context",
+      properties: kind === "files" ? ["openFile", "multiSelections"] : ["openDirectory", "multiSelections"]
+    });
+    if (result.canceled) return [];
+    return result.filePaths.slice(0, 20).map((path) => ({ path, kind: kind === "files" ? "file" : "directory" }));
+  });
+
   ipcMain.handle("agent:list", (event) => {
     assertTrustedSender(event);
     return listAgents();
@@ -704,7 +728,7 @@ function registerIpc(): void {
     return getAgentSession(id as AgentId, sessionId);
   });
 
-  ipcMain.handle("agent:run", (event, runId: unknown, id: unknown, model: unknown, mode: unknown, prompt: unknown, attachmentPaths: unknown, sessionId: unknown) => {
+  ipcMain.handle("agent:run", (event, runId: unknown, id: unknown, model: unknown, mode: unknown, prompt: unknown, resourcePaths: unknown, sessionId: unknown) => {
     assertTrustedSender(event);
     if (typeof runId !== "string" || !runId || runId.length > 100) throw new Error("Invalid agent run identifier.");
     if (typeof id !== "string" || !Object.hasOwn(AGENTS, id)) throw new Error(`Unsupported agent: ${String(id)}`);
@@ -713,14 +737,14 @@ function registerIpc(): void {
     if (typeof prompt !== "string" || !prompt.trim() || prompt.length > 100_000) {
       throw new Error("The agent prompt is empty or too large.");
     }
-    const attachmentRoot = attachmentDirectory ? `${resolve(attachmentDirectory)}${sep}` : null;
-    if (!Array.isArray(attachmentPaths) || attachmentPaths.length > 8 || attachmentPaths.some((path) => (
-      typeof path !== "string" || !attachmentRoot || !resolve(path).startsWith(attachmentRoot)
-    ))) throw new Error("Invalid agent attachments.");
+    if (!Array.isArray(resourcePaths) || resourcePaths.length > 28 || resourcePaths.some((path) => (
+      typeof path !== "string" || path.length > 10_000
+    ))) throw new Error("Invalid agent resources.");
+    const availableResourcePaths = resourcePaths.map((path) => resolve(path)).filter(existsSync);
     if (sessionId !== undefined && (typeof sessionId !== "string" || !/^[a-zA-Z0-9_-]{8,100}$/.test(sessionId))) {
       throw new Error("Invalid agent session identifier.");
     }
-    return runAgent(runId, id as AgentId, model as string | null, mode, prompt, attachmentPaths, sessionId as string | undefined);
+    return runAgent(runId, id as AgentId, model as string | null, mode, prompt, availableResourcePaths, sessionId as string | undefined);
   });
 
   ipcMain.handle("agent:cancel", (event) => {

@@ -10,10 +10,11 @@ import {
   viewChild
 } from "@angular/core";
 import { marked } from "marked";
-import type { AgentConversationHistory, AgentId, AgentMode, AgentOption, AgentRunResult, AgentSession, AgentStreamEvent, AgentToolEvent, ChangedFile, FilePatch, RepositorySnapshot } from "../../shared/contracts";
+import type { AgentConversationHistory, AgentId, AgentMode, AgentOption, AgentRunResult, AgentSession, AgentStreamEvent, AgentToolEvent, ChangedFile, ContextResourcePath, FilePatch, RepositorySnapshot } from "../../shared/contracts";
 
 type DiffKind = "header" | "hunk" | "context" | "addition" | "deletion" | "meta";
 type DiffMode = "unified" | "split";
+type ReviewTone = "professional" | "honest";
 
 interface DetectedLanguage {
   id: string;
@@ -116,10 +117,17 @@ interface ReviewNote {
 }
 
 interface ReviewSessionData {
-  version: 1 | 2;
+  version: 1 | 2 | 3;
   reviewedFiles: string[];
   notes: ReviewNote[];
   conversations?: Conversation[];
+  workspaceContext?: WorkspaceContext;
+}
+
+interface WorkspaceContext {
+  details: string;
+  links: string[];
+  resources: ContextResourcePath[];
 }
 
 interface ToolsMenu {
@@ -207,11 +215,28 @@ function isReviewNote(value: unknown): value is ReviewNote {
 function isReviewSessionData(value: unknown): value is ReviewSessionData {
   if (!value || typeof value !== "object") return false;
   const session = value as Record<string, unknown>;
-  return (session.version === 1 || session.version === 2)
+  return (session.version === 1 || session.version === 2 || session.version === 3)
     && Array.isArray(session.reviewedFiles)
     && session.reviewedFiles.every((path) => typeof path === "string" && path.length <= 10_000)
     && Array.isArray(session.notes)
-    && (session.version === 1 || (Array.isArray(session.conversations) && session.conversations.every(isConversation)));
+    && (session.version === 1 || (Array.isArray(session.conversations) && session.conversations.every(isConversation)))
+    && (session.version !== 3 || isWorkspaceContext(session.workspaceContext));
+}
+
+function isWorkspaceContext(value: unknown): value is WorkspaceContext {
+  if (!value || typeof value !== "object") return false;
+  const context = value as Record<string, unknown>;
+  return typeof context.details === "string" && context.details.length <= 40_000
+    && Array.isArray(context.links) && context.links.length <= 30
+    && context.links.every((link) => typeof link === "string" && link.length <= 2_000)
+    && Array.isArray(context.resources) && context.resources.length <= 20
+    && context.resources.every((resource) => {
+      if (!resource || typeof resource !== "object") return false;
+      const entry = resource as Record<string, unknown>;
+      return typeof entry.path === "string" && entry.path.length <= 10_000
+        && (entry.kind === "file" || entry.kind === "directory")
+        && (entry.label === undefined || (typeof entry.label === "string" && entry.label.length <= 255));
+    });
 }
 
 function isConversationContext(value: unknown): value is ConversationContext {
@@ -372,6 +397,7 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly comparisonChanging = signal(false);
   readonly error = signal<string | null>(null);
   readonly reviewSidebarOpen = signal(false);
+  readonly reviewPageOpen = signal(false);
   readonly toolsMenu = signal<ToolsMenu | null>(null);
   readonly fileToolsMenu = signal<FileToolsMenu | null>(null);
   readonly noteComposerOpen = signal(false);
@@ -431,6 +457,17 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly pendingExplain = signal<PendingExplain | null>(null);
   readonly continuingConversationId = signal<number | null>(null);
   readonly reviewMessage = signal<string | null>(null);
+  readonly reviewTone = signal<ReviewTone>("professional");
+  readonly reviewDraft = signal("");
+  readonly contextDialogOpen = signal(false);
+  readonly workspaceContext = signal<WorkspaceContext>({ details: "", links: [], resources: [] });
+  readonly contextDetailsDraft = signal("");
+  readonly contextLinksDraft = signal("");
+  readonly contextResourcesDraft = signal<ContextResourcePath[]>([]);
+  readonly contextItemCount = computed(() => {
+    const context = this.workspaceContext();
+    return (context.details.trim() ? 1 : 0) + context.links.length + context.resources.length;
+  });
   readonly selectedFile = computed(() => this.repository()?.files.find((file) => file.path === this.selectedPath()));
   readonly selectedAgentOption = computed(() => this.agents().find((agent) => agent.id === this.selectedAgent()));
   readonly detectedLanguage = computed(() => detectLanguage(this.selectedPath()));
@@ -459,7 +496,7 @@ export class AppComponent implements OnInit, OnDestroy {
     }
     return `${count} lines selected`;
   });
-  readonly reviewSessionStarted = computed(() => this.notes().length > 0 || this.reviewedFiles().length > 0 || this.repositoryConversations().length > 0);
+  readonly reviewSessionStarted = computed(() => this.notes().length > 0 || this.reviewedFiles().length > 0 || this.repositoryConversations().length > 0 || this.contextItemCount() > 0);
   readonly providerSessions = signal<AgentSession[]>([]);
   readonly providerSessionsAgent = signal<AgentId | null>(null);
   readonly providerSessionsLoading = signal(false);
@@ -764,6 +801,7 @@ export class AppComponent implements OnInit, OnDestroy {
   selectFile(path: string): void {
     this.fileToolsMenu.set(null);
     this.chatPageOpen.set(false);
+    this.reviewPageOpen.set(false);
     if (path === this.selectedPath()) return;
     this.selectedPath.set(path);
     this.selectedRange.set(null);
@@ -805,7 +843,16 @@ export class AppComponent implements OnInit, OnDestroy {
   updateEditedLine(row: DiffRow, event: Event): void {
     const path = this.selectedPath();
     if (!path || row.newLine === undefined || !(event.currentTarget instanceof HTMLElement)) return;
-    const content = event.currentTarget.innerText.replace(/\n$/, "");
+    const element = event.currentTarget;
+    const selection = window.getSelection();
+    let caretOffset: number | null = null;
+    if (selection?.rangeCount && selection.anchorNode && element.contains(selection.anchorNode)) {
+      const caretRange = document.createRange();
+      caretRange.selectNodeContents(element);
+      caretRange.setEnd(selection.anchorNode, selection.anchorOffset);
+      caretOffset = caretRange.toString().length;
+    }
+    const content = element.innerText.replace(/\n$/, "");
     const pathEdits = new Map(this.fileEdits().get(path) ?? []);
     if (content === row.content) pathEdits.delete(row.newLine);
     else pathEdits.set(row.newLine, content);
@@ -813,6 +860,35 @@ export class AppComponent implements OnInit, OnDestroy {
     if (pathEdits.size > 0) edits.set(path, pathEdits);
     else edits.delete(path);
     this.fileEdits.set(edits);
+    if (caretOffset !== null) requestAnimationFrame(() => this.restoreCaret(element, caretOffset!));
+  }
+
+  private restoreCaret(element: HTMLElement, offset: number): void {
+    if (!element.isConnected) return;
+    const selection = window.getSelection();
+    if (!selection) return;
+    const range = document.createRange();
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    let remaining = offset;
+    let node = walker.nextNode();
+    while (node) {
+      const length = node.textContent?.length ?? 0;
+      if (remaining <= length) {
+        range.setStart(node, remaining);
+        range.collapse(true);
+        selection.removeAllRanges();
+        selection.addRange(range);
+        element.focus({ preventScroll: true });
+        return;
+      }
+      remaining -= length;
+      node = walker.nextNode();
+    }
+    range.selectNodeContents(element);
+    range.collapse(false);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    element.focus({ preventScroll: true });
   }
 
   @HostListener("document:keydown", ["$event"])
@@ -1026,6 +1102,7 @@ export class AppComponent implements OnInit, OnDestroy {
     this.notes.set([]);
     this.selectedNoteIds.set([]);
     this.reviewedFiles.set([]);
+    this.workspaceContext.set({ details: "", links: [], resources: [] });
     this.conversations.update((conversations) => conversations.filter((conversation) => conversation.repositoryRoot !== root));
     this.activeConversationId.set(null);
     this.activeLinkedNoteId.set(null);
@@ -1041,6 +1118,7 @@ export class AppComponent implements OnInit, OnDestroy {
     this.pendingProviderSessionId = undefined;
     this.continuingConversationId.set(null);
     this.chatPageOpen.set(false);
+    this.reviewPageOpen.set(false);
     this.toolsMenu.set(null);
     this.noteComposerOpen.set(false);
     this.questionComposerOpen.set(false);
@@ -1065,6 +1143,7 @@ export class AppComponent implements OnInit, OnDestroy {
       return;
     }
     this.chatPageOpen.set(false);
+    this.reviewPageOpen.set(false);
     if (this.selectedPath() !== note.filePath) {
       this.selectedPath.set(note.filePath);
       await this.loadPatch(note.filePath);
@@ -1142,14 +1221,160 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   openChats(): void {
+    this.reviewPageOpen.set(false);
     this.chatPageOpen.set(true);
     this.activeConversationId.set(null);
     const agent = this.selectedAgent();
     if (agent) void this.loadProviderSessions(agent);
   }
 
+  openReviewPage(): void {
+    this.reviewSidebarOpen.set(false);
+    this.chatPageOpen.set(false);
+    this.reviewPageOpen.set(true);
+    this.activeConversationId.set(null);
+    const agent = this.selectedAgent();
+    if (agent && this.modelsAgent !== agent && !this.modelsLoading()) void this.loadAgentModels(agent);
+  }
+
+  selectReviewModel(event: Event): void {
+    if (event.target instanceof HTMLSelectElement) this.selectModel(event.target.value || null);
+  }
+
+  openContextDialog(): void {
+    const context = this.workspaceContext();
+    this.contextDetailsDraft.set(context.details);
+    this.contextLinksDraft.set(context.links.join("\n"));
+    this.contextResourcesDraft.set([...context.resources]);
+    this.contextDialogOpen.set(true);
+  }
+
+  closeContextDialog(): void {
+    this.contextDialogOpen.set(false);
+  }
+
+  async addContextResources(kind: "files" | "directory"): Promise<void> {
+    try {
+      const selected = await window.rift.chooseContextResources(kind);
+      this.contextResourcesDraft.update((resources) => {
+        const byPath = new Map(resources.map((resource) => [resource.path, resource]));
+        for (const resource of selected) byPath.set(resource.path, resource);
+        return [...byPath.values()].slice(0, 20);
+      });
+    } catch (reason) {
+      this.reviewMessage.set(reason instanceof Error ? reason.message : String(reason));
+    }
+  }
+
+  removeContextResource(path: string): void {
+    this.contextResourcesDraft.update((resources) => resources.filter((resource) => resource.path !== path));
+  }
+
+  async pasteContextResources(event: ClipboardEvent): Promise<void> {
+    const itemFiles = [...(event.clipboardData?.items ?? [])]
+      .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => file !== null);
+    const files = [...new Set([...itemFiles, ...(event.clipboardData?.files ?? [])])]
+      .filter((file) => file.type.startsWith("image/"));
+    if (files.length === 0) return;
+    event.preventDefault();
+    const remaining = Math.max(0, 20 - this.contextResourcesDraft().length);
+    if (remaining === 0) {
+      this.reviewMessage.set("Context can include up to 20 files and directories");
+      return;
+    }
+    for (const file of files.slice(0, remaining)) {
+      try {
+        const path = await window.rift.saveImageAttachment(file.name || "pasted-context-image", file.type, new Uint8Array(await file.arrayBuffer()));
+        this.contextResourcesDraft.update((resources) => [...resources, {
+          path,
+          kind: "file",
+          label: file.name || "Pasted image"
+        }]);
+      } catch (reason) {
+        this.reviewMessage.set(reason instanceof Error ? reason.message : String(reason));
+      }
+    }
+  }
+
+  async pasteContextImage(): Promise<void> {
+    if (this.contextResourcesDraft().length >= 20) {
+      this.reviewMessage.set("Context can include up to 20 files and directories");
+      return;
+    }
+    try {
+      const path = await window.rift.saveClipboardImage();
+      if (!path) {
+        this.reviewMessage.set("The clipboard does not contain an image");
+        return;
+      }
+      this.contextResourcesDraft.update((resources) => [...resources, { path, kind: "file", label: "Pasted image" }]);
+      this.reviewMessage.set("Clipboard image added to context");
+    } catch (reason) {
+      this.reviewMessage.set(reason instanceof Error ? reason.message : String(reason));
+    }
+  }
+
+  saveWorkspaceContext(): void {
+    const links = [...new Set(this.contextLinksDraft().split(/\r?\n/).map((link) => link.trim()).filter(Boolean))].slice(0, 30);
+    this.workspaceContext.set({
+      details: this.contextDetailsDraft().trim().slice(0, 40_000),
+      links: links.map((link) => link.slice(0, 2_000)),
+      resources: this.contextResourcesDraft().slice(0, 20)
+    });
+    this.contextDialogOpen.set(false);
+    this.persistReviewSession();
+    this.reviewMessage.set(this.contextItemCount() > 0 ? "Project context saved" : "Project context cleared");
+  }
+
+  async startReview(): Promise<void> {
+    const repository = this.repository();
+    const agent = this.selectedAgent();
+    if (!repository || !agent || this.agentRunning()) return;
+    const request = this.reviewDraft().trim().slice(0, 20_000) || "Review the complete comparison and report the findings that matter.";
+    const style = this.reviewTone() === "honest"
+      ? [
+          "# Honest review",
+          "Review this code with uncompromising technical honesty. Stay professional and precise, but be brutal about weak reasoning, needless complexity, fragile code, fake abstractions, and avoidable mistakes.",
+          "Use dry irony or sharp sarcasm when it makes the problem memorable, never as a substitute for evidence. Make the critique land, explain the consequence, and give a concrete fix.",
+          "Do not manufacture issues for entertainment. Praise genuinely strong work briefly when it deserves it."
+        ]
+      : [
+          "# Professional review",
+          "Act as a senior code reviewer. Be objective, respectful, specific, and evidence-led.",
+          "Prioritize correctness, security, regressions, maintainability, and missing tests. Order findings by severity, include file and line references where possible, and propose practical fixes."
+        ];
+    const prompt = [
+      ...this.workspaceContextSection([
+        `Repository: ${repository.name}`,
+        `Comparison: ${repository.comparisonLabel}`,
+        `Start revision: ${repository.startRevision}`,
+        `End revision: ${repository.endRevision ?? "working tree"}`,
+        "Inspect the complete Git diff and relevant surrounding code.",
+        "Changed files:",
+        ...repository.files.map((file) => `- ${file.path}`)
+      ]),
+      "",
+      ...style,
+      "",
+      "# User said",
+      request,
+      "",
+      "Return analysis only. Do not edit files. Lead with findings; do not bury them under a summary."
+    ].join("\n");
+    this.reviewDraft.set("");
+    this.activeQuestion.set(request);
+    const pending: PendingExplain = { agent, mode: "review", model: this.selectedModel(), prompt, question: request };
+    this.pendingExplain.set(pending);
+    this.reviewPageOpen.set(false);
+    this.chatPageOpen.set(true);
+    await this.startExplainRequest(pending);
+  }
+
   showDiff(): void {
     this.chatPageOpen.set(false);
+    this.reviewPageOpen.set(false);
     this.activeConversationId.set(null);
     this.toolsMenu.set(null);
     this.fileToolsMenu.set(null);
@@ -1183,6 +1408,7 @@ export class AppComponent implements OnInit, OnDestroy {
       updatedAt: Date.now()
     };
     this.pendingProviderSessionId = undefined;
+    this.reviewPageOpen.set(false);
     this.chatPageOpen.set(true);
     this.activeConversationId.set(conversation.id);
     this.continuingConversationId.set(null);
@@ -1373,6 +1599,7 @@ export class AppComponent implements OnInit, OnDestroy {
     };
     this.pendingProviderSessionId = undefined;
     this.pendingExplain.set(pending);
+    this.reviewPageOpen.set(false);
     this.chatPageOpen.set(true);
     const conversationId = this.continuingConversationId();
     this.continuingConversationId.set(null);
@@ -1409,6 +1636,7 @@ export class AppComponent implements OnInit, OnDestroy {
     this.pendingExplain.set(null);
     this.pendingProviderSessionId = undefined;
     this.activeQuestion.set(pending.question);
+    this.reviewPageOpen.set(false);
     this.chatPageOpen.set(true);
     this.selectedAgent.set(agent);
     this.scrollChatToBottom();
@@ -1518,6 +1746,7 @@ export class AppComponent implements OnInit, OnDestroy {
     });
     this.agentModalOpen.set(false);
     this.chatPageOpen.set(false);
+    this.reviewPageOpen.set(false);
   }
 
   @HostListener("document:pointerdown", ["$event"])
@@ -1816,6 +2045,9 @@ export class AppComponent implements OnInit, OnDestroy {
         this.notes.set(notes);
         this.selectedNoteIds.set(notes.map((note) => note.id));
         this.reviewedFiles.set([...new Set(stored.reviewedFiles)].slice(0, 5_000));
+        this.workspaceContext.set(stored.workspaceContext && isWorkspaceContext(stored.workspaceContext)
+          ? stored.workspaceContext
+          : { details: "", links: [], resources: [] });
         const root = this.repository()!.root;
         const restored = (stored.conversations ?? []).filter(isConversation).slice(-100).map((conversation) => (
           conversation.status === "running"
@@ -1836,6 +2068,7 @@ export class AppComponent implements OnInit, OnDestroy {
       this.notes.set(notes);
       this.selectedNoteIds.set(notes.map((note) => note.id));
       this.reviewedFiles.set([]);
+      this.workspaceContext.set({ details: "", links: [], resources: [] });
       const root = this.repository()!.root;
       this.conversations.update((conversations) => conversations.filter((conversation) => conversation.repositoryRoot !== root));
       this.clearSessionArmed.set(false);
@@ -1847,6 +2080,7 @@ export class AppComponent implements OnInit, OnDestroy {
       this.notes.set([]);
       this.selectedNoteIds.set([]);
       this.reviewedFiles.set([]);
+      this.workspaceContext.set({ details: "", links: [], resources: [] });
       const root = this.repository()?.root;
       this.conversations.update((conversations) => conversations.filter((conversation) => conversation.repositoryRoot !== root));
       this.clearSessionArmed.set(false);
@@ -1858,10 +2092,11 @@ export class AppComponent implements OnInit, OnDestroy {
     if (!key) return;
     try {
       const session: ReviewSessionData = {
-        version: 2,
+        version: 3,
         reviewedFiles: this.reviewedFiles(),
         notes: this.notes(),
-        conversations: this.repositoryConversations().slice(-100)
+        conversations: this.repositoryConversations().slice(-100),
+        workspaceContext: this.workspaceContext()
       };
       localStorage.setItem(key, JSON.stringify(session));
     } catch {
@@ -1915,6 +2150,22 @@ export class AppComponent implements OnInit, OnDestroy {
       "Attached images (use the Read tool to inspect each image):",
       ...attachments.map((attachment, index) => `${index + 1}. ${attachment.path}`)
     ].join("\n");
+  }
+
+  private workspaceContextSection(additional: string[] = []): string[] {
+    const context = this.workspaceContext();
+    return [
+      "# Context",
+      ...additional,
+      ...(context.details ? ["", "Project details:", context.details] : []),
+      ...(context.links.length > 0 ? ["", "Reference links:", ...context.links.map((link) => `- ${link}`)] : []),
+      ...(context.resources.length > 0 ? ["", "Reference files and directories (inspect these paths when relevant):", ...context.resources.map((resource) => `- ${resource.kind}: ${resource.path}`)] : [])
+    ];
+  }
+
+  private withWorkspaceContext(prompt: string): string {
+    if (this.contextItemCount() === 0 || prompt.startsWith("# Context\n")) return prompt;
+    return [...this.workspaceContextSection(), "", prompt].join("\n");
   }
 
   private clearImageAttachments(destination: "chat" | "question"): void {
@@ -2139,7 +2390,8 @@ export class AppComponent implements OnInit, OnDestroy {
     this.agentError.set(null);
     this.reviewMessage.set(`Waiting for ${this.agents().find((option) => option.id === agent)?.label ?? agent}`);
     try {
-      const agentResult = await window.rift.runAgent(String(request), agent, model, mode, prompt, attachmentPaths, providerSessionId);
+      const resourcePaths = [...new Set([...attachmentPaths, ...this.workspaceContext().resources.map((resource) => resource.path)])].slice(0, 28);
+      const agentResult = await window.rift.runAgent(String(request), agent, model, mode, this.withWorkspaceContext(prompt), resourcePaths, providerSessionId);
       const result = this.mergeAgentResult(null, agentResult);
       if (request === this.agentRequest) {
         if (this.activeConversationId() === conversationId) this.agentResult.set(result);

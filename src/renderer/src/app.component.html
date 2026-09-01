@@ -25,7 +25,7 @@
           {{ repository()!.name }}
         </button>
         <span class="comparison-arrow">/</span>
-        <label>
+         <label>
           <span class="visually-hidden">Select comparison</span>
           <select
             [value]="repository()!.comparisonId"
@@ -38,9 +38,13 @@
                 {{ option.label }} - {{ option.detail }}
               </option>
             }
-          </select>
-        </label>
-      </div>
+           </select>
+         </label>
+         <button class="context-action" [class.active]="contextItemCount() > 0" (click)="openContextDialog()" title="Add project details, links, files, images, or directories">
+           <span class="context-action-mark">C</span>
+           <span><strong>Context</strong><small>{{ contextItemCount() > 0 ? contextItemCount() + " items shared" : "Add project knowledge" }}</small></span>
+         </button>
+       </div>
     </header>
 
     <section class="workspace" [class.review-open]="reviewSidebarOpen()">
@@ -54,7 +58,7 @@
                 [class.armed]="clearSessionArmed()"
                 [disabled]="agentRunning()"
                 (click)="clearReviewSession()"
-                title="Clear all notes, chats, reviewed files, and selections"
+                title="Clear context, notes, chats, reviewed files, and selections"
               >{{ clearSessionArmed() ? "Confirm clear" : "Clear session" }}</button>
             }
             <button
@@ -89,7 +93,38 @@
         </div>
       </aside>
 
-      @if (chatPageOpen()) {
+      @if (reviewPageOpen()) {
+        <section class="review-page" aria-label="Code review">
+          <header class="review-page-header">
+            <button class="back-to-diff" (click)="showDiff()">← Back to diff</button>
+            <span><strong>Code review</strong><small>{{ repository()!.name }} · {{ repository()!.comparisonLabel }}</small></span>
+            <button class="context-page-action" [class.active]="contextItemCount() > 0" (click)="openContextDialog()"><strong>Context</strong><small>{{ contextItemCount() > 0 ? contextItemCount() + " items" : "Add references" }}</small></button>
+          </header>
+          <div class="review-page-body">
+            <div class="review-page-lead">
+              <span class="review-mark">R</span>
+              <span><small>Independent pass</small><strong>Set the tone for this review</strong><p>The agent will inspect the complete comparison and relevant surrounding code.</p></span>
+            </div>
+            <div class="review-page-card">
+              <div class="review-agent-grid">
+                <label><span>Provider</span>@if (agents().length > 0) { <select [value]="selectedAgent()" (change)="selectAgent($event)">@for (agent of agents(); track agent.id) { <option [value]="agent.id">{{ agent.label }}</option> }</select> } @else { <small>No supported agent detected</small> }</label>
+                <label><span>Model</span><select [value]="selectedModel() || ''" [disabled]="!selectedAgent() || modelsLoading()" (change)="selectReviewModel($event)"><option value="">{{ modelsLoading() ? "Loading models..." : "Default model" }}</option>@for (model of agentModels(); track model) { <option [value]="model">{{ model }}</option> }</select></label>
+              </div>
+              <fieldset class="tone-switch review-page-tones">
+                <legend>Review voice</legend>
+                <button [class.active]="reviewTone() === 'professional'" (click)="reviewTone.set('professional')"><span class="tone-index">01</span><strong>Professional</strong><small>Measured, objective, and precise. Findings are ordered by severity with practical fixes.</small></button>
+                <button [class.active]="reviewTone() === 'honest'" (click)="reviewTone.set('honest')"><span class="tone-index">02</span><strong>Honest</strong><small>Technically fair, brutally direct, and sharp enough that weak code feels it.</small></button>
+              </fieldset>
+              <div class="review-tone-note" [class.honest]="reviewTone() === 'honest'"><strong>{{ reviewTone() === "honest" ? "No cushioning." : "Senior-level feedback." }}</strong><p>{{ reviewTone() === "honest" ? "Dry irony is allowed. Inventing problems is not." : "Clear findings, practical fixes, no theatrics." }}</p></div>
+              <label class="review-request" for="review-page-request"><span>Your focus <small>optional</small></span><textarea id="review-page-request" rows="4" maxlength="20000" placeholder="Security, architecture, regressions, test coverage..." [value]="reviewDraft()" (input)="reviewDraft.set($any($event.target).value)"></textarea></label>
+              <div class="review-page-actions">
+                <button class="context-shortcut" (click)="openContextDialog()"><span>Context</span><small>{{ contextItemCount() > 0 ? contextItemCount() + " items available to the agent" : "Add docs, links, files, images, or directories" }}</small><i>→</i></button>
+                <button class="run-review-button" (click)="startReview()" [disabled]="!selectedAgent() || agentRunning() || modelsLoading()"><span class="ai-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 1c0 6.1-4.9 11-11 11 6.1 0 11 4.9 11 11 0-6.1 4.9-11 11-11-6.1 0-11-4.9-11-11Z"/><circle cx="19" cy="5" r="2"/></svg></span>{{ agentRunning() ? "Review in progress" : "Start " + (reviewTone() === "honest" ? "honest" : "professional") + " review" }}</button>
+              </div>
+            </div>
+          </div>
+        </section>
+      } @else if (chatPageOpen()) {
         <section class="chat-page" aria-label="Chats" [style.--chat-font-size.px]="chatFontSize()">
           <header class="chat-page-header">
             <button class="back-to-diff" (click)="leaveChatPage()">← {{ activeConversation() ? "Back to chats" : "Back to diff" }}</button>
@@ -331,7 +366,7 @@
                 <span class="line-number">{{ row.newLine ?? "" }}</span>
                 <span class="line-prefix">{{ row.kind === "addition" ? "+" : row.kind === "deletion" ? "-" : " " }}</span>
                 @if (canEditRow(row)) {
-                  <code class="editable-code" [class.dirty]="editableLineContent(row) !== row.content" contenteditable="plaintext-only" spellcheck="false" (pointerdown)="beginLineEdit(row, $event)" (dblclick)="$event.stopPropagation()" (keydown)="handleLineEditKeydown($event)" (input)="updateEditedLine(row, $event)">{{ editableLineContent(row) || " " }}</code>
+                  <code class="editable-code" [class.dirty]="editableLineContent(row) !== row.content" contenteditable="plaintext-only" spellcheck="false" (pointerdown)="beginLineEdit(row, $event)" (dblclick)="$event.stopPropagation()" (keydown)="handleLineEditKeydown($event)" (input)="updateEditedLine(row, $event)">{{ editableLineContent(row) }}</code>
                 } @else if (row.highlighted) {
                   <code [innerHTML]="row.highlighted"></code>
                 } @else {
@@ -417,7 +452,7 @@
                         <span class="line-number">{{ right.row.newLine ?? "" }}</span>
                         <span class="line-prefix">{{ right.row.kind === "addition" ? "+" : " " }}</span>
                         @if (canEditRow(right.row)) {
-                          <code class="editable-code" [class.dirty]="editableLineContent(right.row) !== right.row.content" [attr.title]="right.row.content || null" contenteditable="plaintext-only" spellcheck="false" (pointerdown)="beginLineEdit(right.row, $event)" (dblclick)="$event.stopPropagation()" (keydown)="handleLineEditKeydown($event)" (input)="updateEditedLine(right.row, $event)">{{ editableLineContent(right.row) || " " }}</code>
+                          <code class="editable-code" [class.dirty]="editableLineContent(right.row) !== right.row.content" [attr.title]="right.row.content || null" contenteditable="plaintext-only" spellcheck="false" (pointerdown)="beginLineEdit(right.row, $event)" (dblclick)="$event.stopPropagation()" (keydown)="handleLineEditKeydown($event)" (input)="updateEditedLine(right.row, $event)">{{ editableLineContent(right.row) }}</code>
                         } @else if (right.row.newHighlighted) {
                           <code [attr.title]="right.row.content || null" [innerHTML]="right.row.newHighlighted"></code>
                         } @else {
@@ -460,11 +495,15 @@
               <small>Chats</small>
               @if (repositoryConversations().some((conversation) => conversation.status === "running")) { <i class="rail-spinner" aria-label="Explanation is running"></i> }
             </button>
+            <button class="review-rail review-mode-rail" [class.active]="reviewPageOpen()" (click)="openReviewPage()" [disabled]="!selectedAgent()" title="Review the complete comparison" aria-label="Open code review">
+              <span class="review-mark">R</span>
+              <small>Review</small>
+            </button>
           </div>
         } @else {
           <div class="panel-title review-header">
             <span>Review notes</span>
-            <button (click)="reviewSidebarOpen.set(false)" title="Collapse review sidebar" aria-label="Collapse review notes">×</button>
+            <button (click)="reviewSidebarOpen.set(false)" title="Collapse sidebar" aria-label="Collapse sidebar">×</button>
           </div>
           <div class="review-content">
             <div class="agent-control">
@@ -668,6 +707,30 @@
               }
             }
           </div>
+        </section>
+      </div>
+    }
+
+    @if (contextDialogOpen()) {
+      <div class="context-backdrop" role="presentation" (click)="closeContextDialog()">
+        <section class="context-dialog" role="dialog" aria-modal="true" aria-labelledby="context-dialog-title" (click)="$event.stopPropagation()" (paste)="pasteContextResources($event)">
+          <header>
+            <span><strong id="context-dialog-title">Project context</strong><small>Shared with every chat, question, and review in this comparison.</small></span>
+            <button (click)="closeContextDialog()" title="Close" aria-label="Close project context">×</button>
+          </header>
+          <div class="context-form">
+            <label><span>Background <small>Goals, constraints, architecture, decisions</small></span><textarea rows="6" maxlength="40000" placeholder="What is this change trying to achieve? What should the agent know before judging it?" [value]="contextDetailsDraft()" (input)="contextDetailsDraft.set($any($event.target).value)"></textarea></label>
+            <label><span>Reference links <small>One documentation URL per line</small></span><textarea rows="3" maxlength="30000" placeholder="https://docs.example.com/spec" [value]="contextLinksDraft()" (input)="contextLinksDraft.set($any($event.target).value)"></textarea></label>
+            <div class="context-resources-heading"><span><strong>Files and directories</strong><small>Shared with chats, questions, and reviews</small></span><span><button class="paste-context-image" (click)="pasteContextImage()">Paste image</button><button (click)="addContextResources('files')">+ Files</button><button (click)="addContextResources('directory')">+ Directory</button></span></div>
+            <div class="context-resources">
+              @for (resource of contextResourcesDraft(); track resource.path) {
+                <div><span class="resource-kind">{{ resource.kind === "directory" ? "DIR" : "FILE" }}</span><span><strong>{{ resource.label || shortName(resource.path) }}</strong><small>{{ resource.path }}</small></span><button (click)="removeContextResource(resource.path)" title="Remove resource" aria-label="Remove resource">×</button></div>
+              } @empty {
+                <p>No files attached. Paths selected here remain available for future agent requests.</p>
+              }
+            </div>
+          </div>
+          <footer><small>Context is stored locally for this repository and comparison.</small><span><button (click)="closeContextDialog()">Cancel</button><button class="save-context" (click)="saveWorkspaceContext()">Save context</button></span></footer>
         </section>
       </div>
     }

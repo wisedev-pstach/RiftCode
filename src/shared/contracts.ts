@@ -78,6 +78,12 @@ export interface AgentRunResult {
   sessionId?: string;
 }
 
+export interface ContextResourcePath {
+  path: string;
+  kind: "file" | "directory";
+  label?: string;
+}
+
 export interface AgentStreamEvent {
   runId: string;
   result: AgentRunResult;
@@ -87,18 +93,20 @@ export interface RiftApi {
   platform: "darwin" | "linux" | "win32";
   setTheme(theme: "dark" | "light"): Promise<void>;
   saveImageAttachment(name: string, type: string, data: Uint8Array): Promise<string>;
+  saveClipboardImage(): Promise<string | null>;
   readRepositoryFile(path: string): Promise<string>;
   writeRepositoryFile(path: string, content: string): Promise<void>;
   openRepository(path?: string): Promise<RepositorySnapshot>;
   refreshRepository(): Promise<RepositorySnapshot>;
   getFilePatch(path: string): Promise<FilePatch>;
   chooseRepository(): Promise<RepositorySnapshot | null>;
+  chooseContextResources(kind: "files" | "directory"): Promise<ContextResourcePath[]>;
   selectComparison(id: string): Promise<RepositorySnapshot>;
   listAgents(): Promise<AgentOption[]>;
   listAgentModels(id: AgentId): Promise<string[]>;
   listAgentSessions(id: AgentId): Promise<AgentSession[]>;
   getAgentSession(id: AgentId, sessionId: string): Promise<AgentConversationHistory>;
-  runAgent(runId: string, id: AgentId, model: string | null, mode: AgentMode, prompt: string, attachmentPaths: string[], sessionId?: string): Promise<AgentRunResult>;
+  runAgent(runId: string, id: AgentId, model: string | null, mode: AgentMode, prompt: string, resourcePaths: string[], sessionId?: string): Promise<AgentRunResult>;
   cancelAgent(): Promise<void>;
   copyText(text: string): Promise<void>;
   onRepositoryChanged(listener: () => void): () => void;
