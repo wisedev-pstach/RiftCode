@@ -52,6 +52,12 @@ if [ -z "$PACKAGED_APP" ]; then
 fi
 
 mkdir -p "$(dirname "$APP_DESTINATION")" "$(dirname "$CLI_DESTINATION")"
+if [ -d "$APP_DESTINATION" ]; then
+  echo "Closing the installed Rift instance..."
+  osascript -e 'tell application "Rift" to quit' >/dev/null 2>&1 || true
+  sleep 1
+  pkill -f "$APP_DESTINATION/Contents/MacOS/Rift" >/dev/null 2>&1 || true
+fi
 rm -rf "$APP_DESTINATION"
 cp -R "$PACKAGED_APP" "$APP_DESTINATION"
 
@@ -65,4 +71,5 @@ chmod 755 "$CLI_DESTINATION"
 
 echo "Rift was installed at $APP_DESTINATION"
 echo "The rift command was installed at $CLI_DESTINATION"
+echo "Existing Rift data is retained; incompatible saved selections are migrated when Rift starts."
 echo "Ensure $HOME/.local/bin is on PATH."

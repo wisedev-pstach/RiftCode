@@ -3,6 +3,7 @@ import {
   Component,
   computed,
   ElementRef,
+  afterRenderEffect,
   HostListener,
   OnDestroy,
   OnInit,
@@ -23,7 +24,11 @@ interface DetectedLanguage {
 
 const PLAIN_TEXT: DetectedLanguage = { id: "plaintext", label: "Plain text" };
 const AGENT_STORAGE_KEY = "rift:last-agent";
+const AGENT_MODEL_STORAGE_KEY = "rift:last-agent-model";
 const MODEL_STORAGE_PREFIX = "rift:last-model:";
+const CONVERSATION_STORAGE_PREFIX = "rift:last-conversation:";
+const PREFERENCE_SCHEMA_KEY = "rift:preference-schema";
+const PREFERENCE_SCHEMA_VERSION = "3";
 const CHAT_FONT_SIZE_KEY = "rift:chat-font-size";
 const THEME_STORAGE_KEY = "rift:theme";
 const LANGUAGES: Readonly<Record<string, DetectedLanguage>> = {
@@ -114,14 +119,23 @@ interface ReviewNote {
   content: string;
   diff: string;
   createdAt: number;
+  done: boolean;
 }
 
 interface ReviewSessionData {
-  version: 1 | 2 | 3;
+  version: 1 | 2 | 3 | 4;
   reviewedFiles: string[];
   notes: ReviewNote[];
   conversations?: Conversation[];
   workspaceContext?: WorkspaceContext;
+  review?: PersistedReview;
+}
+
+interface PersistedReview {
+  question: string;
+  result: AgentRunResult | null;
+  error: string | null;
+  tone: ReviewTone;
 }
 
 interface WorkspaceContext {
@@ -154,6 +168,7 @@ interface Conversation {
   result: AgentRunResult | null;
   error: string | null;
   history: ConversationTurn[];
+  attachedReview?: string;
   providerSessionId?: string;
   updatedAt?: number;
 }
@@ -209,18 +224,29 @@ function isReviewNote(value: unknown): value is ReviewNote {
     && typeof note.endIndex === "number" && Number.isFinite(note.endIndex)
     && typeof note.startLine === "number" && Number.isFinite(note.startLine)
     && typeof note.endLine === "number" && Number.isFinite(note.endLine)
-    && typeof note.createdAt === "number" && Number.isFinite(note.createdAt);
+    && typeof note.createdAt === "number" && Number.isFinite(note.createdAt)
+    && (note.done === undefined || typeof note.done === "boolean");
 }
 
 function isReviewSessionData(value: unknown): value is ReviewSessionData {
   if (!value || typeof value !== "object") return false;
   const session = value as Record<string, unknown>;
-  return (session.version === 1 || session.version === 2 || session.version === 3)
+  return (session.version === 1 || session.version === 2 || session.version === 3 || session.version === 4)
     && Array.isArray(session.reviewedFiles)
     && session.reviewedFiles.every((path) => typeof path === "string" && path.length <= 10_000)
     && Array.isArray(session.notes)
     && (session.version === 1 || (Array.isArray(session.conversations) && session.conversations.every(isConversation)))
-    && (session.version !== 3 || isWorkspaceContext(session.workspaceContext));
+    && (session.version < 3 || isWorkspaceContext(session.workspaceContext))
+    && (session.version !== 4 || isPersistedReview(session.review));
+}
+
+function isPersistedReview(value: unknown): value is PersistedReview {
+  if (!value || typeof value !== "object") return false;
+  const review = value as Record<string, unknown>;
+  return typeof review.question === "string" && review.question.length <= 20_000
+    && (review.result === null || isAgentResult(review.result))
+    && (review.error === null || (typeof review.error === "string" && review.error.length <= 20_000))
+    && (review.tone === "professional" || review.tone === "honest");
 }
 
 function isWorkspaceContext(value: unknown): value is WorkspaceContext {
@@ -288,6 +314,7 @@ function isConversation(value: unknown): value is Conversation {
     && (conversation.error === null || (typeof conversation.error === "string" && conversation.error.length <= 20_000))
     && Array.isArray(conversation.history) && conversation.history.length <= 500
     && conversation.history.every(isConversationTurn)
+    && (conversation.attachedReview === undefined || (typeof conversation.attachedReview === "string" && conversation.attachedReview.length <= 1_000_000))
     && (conversation.providerSessionId === undefined || (typeof conversation.providerSessionId === "string" && conversation.providerSessionId.length <= 100))
     && (conversation.updatedAt === undefined || (typeof conversation.updatedAt === "number" && Number.isFinite(conversation.updatedAt)));
 }
@@ -435,7 +462,7 @@ export class AppComponent implements OnInit, OnDestroy {
     const query = this.modelSearch().trim().toLowerCase();
     return (query
       ? this.agentModels().filter((model) => model.toLowerCase().includes(query))
-      : this.agentModels()).slice(0, 100);
+      : this.agentModels());
   });
   readonly agentRunning = signal(false);
   readonly activityExpanded = signal(false);
@@ -481,6 +508,8 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly splitRows = computed(() => pairSplitRows(this.rows()));
   readonly diffScroll = viewChild<ElementRef<HTMLDivElement>>("diffScroll");
   readonly chatThread = viewChild<ElementRef<HTMLDivElement>>("chatThread");
+  readonly chatContent = viewChild<ElementRef<HTMLDivElement>>("chatContent");
+  readonly chatBottom = viewChild<ElementRef<HTMLDivElement>>("chatBottom");
   readonly selectedLineCount = computed(() => {
     const range = this.selectedRange();
     if (!range) return 0;
@@ -500,7 +529,7 @@ export class AppComponent implements OnInit, OnDestroy {
     }
     return `${count} lines selected`;
   });
-  readonly reviewSessionStarted = computed(() => this.notes().length > 0 || this.reviewedFiles().length > 0 || this.repositoryConversations().length > 0 || this.contextItemCount() > 0);
+  readonly reviewSessionStarted = computed(() => this.notes().length > 0 || this.reviewedFiles().length > 0 || this.repositoryConversations().length > 0 || this.contextItemCount() > 0 || !!this.reviewResult() || !!this.reviewError());
   readonly providerSessions = signal<AgentSession[]>([]);
   readonly providerSessionsAgent = signal<AgentId | null>(null);
   readonly providerSessionsLoading = signal(false);
@@ -514,7 +543,7 @@ export class AppComponent implements OnInit, OnDestroy {
     const query = this.chatModelSearch().trim().toLowerCase();
     return (query
       ? this.agentModels().filter((model) => model.toLowerCase().includes(query))
-      : this.agentModels()).slice(0, 100);
+      : this.agentModels());
   });
   readonly chatFontSize = signal(this.loadChatFontSize());
   readonly editMode = signal(false);
@@ -567,9 +596,36 @@ export class AppComponent implements OnInit, OnDestroy {
   private reviewRunActive = false;
   private conversationRequest = 0;
   private pendingProviderSessionId?: string;
+  private chatFollowTimer: ReturnType<typeof setTimeout> | undefined;
+  private chatFollowUntil = 0;
+  private chatAutoFollow = true;
+  private chatPointerActive = false;
+  private observedChatContent: HTMLDivElement | null = null;
+  private readonly chatResizeObserver = new ResizeObserver(() => {
+    if (this.chatAutoFollow) this.pinChatToBottom();
+  });
+  private readonly keepChatAtBottom = afterRenderEffect(() => {
+    const chatOpen = this.chatPageOpen();
+    const conversation = this.activeConversation();
+    const content = chatOpen && conversation ? this.chatContent()?.nativeElement ?? null : null;
+    if (content !== this.observedChatContent) {
+      this.chatResizeObserver.disconnect();
+      this.observedChatContent = content;
+      if (content) this.chatResizeObserver.observe(content);
+    }
+    if (!chatOpen || !conversation) return;
+    conversation.history.length;
+    conversation.question;
+    conversation.status;
+    conversation.result?.explanation;
+    conversation.result?.tools.length;
+    conversation.error;
+    if (this.chatAutoFollow) this.pinChatToBottom();
+  });
   private readonly highlightWorker = new Worker(new URL("./highlight.worker.ts", import.meta.url), { type: "module" });
 
   ngOnInit(): void {
+    this.migratePreferences();
     this.applyTheme();
     this.highlightWorker.onmessage = ({ data }: MessageEvent<HighlightResponse>) => {
       if (data.requestId === this.highlightRequest) this.highlightedRows.set(data.rows);
@@ -591,7 +647,7 @@ export class AppComponent implements OnInit, OnDestroy {
     this.removeAgentListener = window.rift.onAgentEvent((event) => this.acceptAgentEvent(event));
     void window.rift.listAgents().then((agents) => {
       this.agents.set(agents);
-      const preferred = localStorage.getItem(AGENT_STORAGE_KEY);
+      const preferred = this.loadSavedSelection().agent;
       const agent = agents.find((option) => option.id === preferred)?.id ?? agents[0]?.id ?? null;
       this.selectedAgent.set(agent);
       if (agent) void this.loadAgentModels(agent);
@@ -603,6 +659,8 @@ export class AppComponent implements OnInit, OnDestroy {
   ngOnDestroy(): void {
     this.removeRepositoryListener?.();
     this.removeAgentListener?.();
+    if (this.chatFollowTimer) clearTimeout(this.chatFollowTimer);
+    this.chatResizeObserver.disconnect();
     this.highlightWorker.terminate();
     this.revokeImagePreviews(this.questionImageAttachments());
     this.revokeImagePreviews(this.chatImageAttachments());
@@ -651,10 +709,11 @@ export class AppComponent implements OnInit, OnDestroy {
     if (event.target instanceof HTMLSelectElement) {
       const id = event.target.value as AgentId;
       if (id !== this.selectedAgent()) this.pendingProviderSessionId = undefined;
-      if (id !== this.selectedAgent()) this.continuingConversationId.set(null);
       this.selectedAgent.set(id);
+      this.useExplainConversation(this.preferredConversation(id), false);
       this.selectedModel.set(null);
       this.modelSearch.set("");
+      this.saveAgentModelSelection(id, null);
       this.modelPickerOpen.set(false);
       this.modelsAgent = null;
       void this.loadAgentModels(id);
@@ -708,14 +767,11 @@ export class AppComponent implements OnInit, OnDestroy {
     if (conversation) this.useExplainConversation(conversation);
   }
 
-  private useExplainConversation(conversation?: Conversation): void {
+  private useExplainConversation(conversation?: Conversation, applyModel = true): void {
     this.continuingConversationId.set(conversation?.id ?? null);
-    if (!conversation) return;
-    this.modelRequest += 1;
-    this.modelsLoading.set(false);
-    this.selectedModel.set(conversation.model);
-    this.modelSearch.set(conversation.model ?? "");
-    this.modelPickerOpen.set(false);
+    this.rememberConversation(conversation?.id ?? null);
+    if (!conversation || !applyModel) return;
+    this.selectModel(conversation.model);
   }
 
   updateModelSearch(event: Event): void {
@@ -734,6 +790,7 @@ export class AppComponent implements OnInit, OnDestroy {
     try {
       if (model) localStorage.setItem(`${MODEL_STORAGE_PREFIX}${agent}`, model);
       else localStorage.removeItem(`${MODEL_STORAGE_PREFIX}${agent}`);
+      this.saveAgentModelSelection(agent, model);
     } catch {
       this.reviewMessage.set("Could not remember the selected model");
     }
@@ -1022,7 +1079,8 @@ export class AppComponent implements OnInit, OnDestroy {
       endLine: context.endLine,
       content,
       diff: context.diff,
-      createdAt: Date.now()
+      createdAt: Date.now(),
+      done: false
     };
     this.notes.update((notes) => [...notes, note]);
     this.selectedNoteIds.update((ids) => [...ids, note.id]);
@@ -1043,13 +1101,23 @@ export class AppComponent implements OnInit, OnDestroy {
     this.questionComposerOpen.set(false);
     this.clearImageAttachments("question");
     this.pendingProviderSessionId = undefined;
-    this.continuingConversationId.set(null);
   }
 
   deleteNote(id: string): void {
     this.notes.update((notes) => notes.filter((note) => note.id !== id));
     this.selectedNoteIds.update((ids) => ids.filter((noteId) => noteId !== id));
     this.persistReviewSession();
+  }
+
+  toggleNoteDone(id: string): void {
+    let done = false;
+    this.notes.update((notes) => notes.map((note) => {
+      if (note.id !== id) return note;
+      done = !note.done;
+      return { ...note, done };
+    }));
+    this.persistReviewSession();
+    this.reviewMessage.set(done ? "Note marked done" : "Note marked active");
   }
 
   isNoteSelected(id: string): boolean {
@@ -1199,19 +1267,26 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   startExplain(useLatestConversation = true): void {
-    const latestConversation = useLatestConversation
-      ? [...this.availableConversations()].sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0) || right.id - left.id)[0]
-      : undefined;
-    this.useExplainConversation(latestConversation);
+    const savedSelection = this.loadSavedSelection();
+    const agent = this.agents().some((option) => option.id === savedSelection.agent) ? savedSelection.agent : this.selectedAgent();
+    if (agent) {
+      this.selectedAgent.set(agent);
+      const savedModel = savedSelection.agent === agent ? savedSelection.model : this.loadSavedModel(agent);
+      const model = savedModel && this.modelsAgent === agent && this.agentModels().includes(savedModel)
+        ? savedModel
+        : null;
+      this.selectedModel.set(model);
+      this.modelSearch.set(model ?? "");
+    }
+    if (useLatestConversation) this.useExplainConversation(this.preferredConversation(agent), false);
     this.noteComposerOpen.set(false);
     this.questionDraft.set("");
     this.clearImageAttachments("question");
     this.modelSearch.set(this.selectedModel() ?? "");
     this.modelPickerOpen.set(false);
     this.questionComposerOpen.set(true);
-    const agent = this.selectedAgent();
     if (agent) {
-      if (this.modelsAgent !== agent && !this.modelsLoading()) void this.loadAgentModels(agent);
+      if (this.modelsAgent !== agent) void this.loadAgentModels(agent);
       void this.loadProviderSessions(agent);
     }
   }
@@ -1360,6 +1435,7 @@ export class AppComponent implements OnInit, OnDestroy {
     this.reviewResult.set(null);
     this.reviewError.set(null);
     this.reconsiderDraft.set("");
+    this.persistReviewSession();
   }
 
   async saveReviewMarkdown(): Promise<void> {
@@ -1447,6 +1523,7 @@ export class AppComponent implements OnInit, OnDestroy {
       if (request === this.agentRequest) {
         this.reviewRunActive = false;
         this.agentRunning.set(false);
+        this.persistReviewSession();
       }
     }
   }
@@ -1469,13 +1546,14 @@ export class AppComponent implements OnInit, OnDestroy {
     });
   }
 
-  startNewChat(): void {
+  startNewChat(attachedReview?: string): void {
     const repository = this.repository();
     const agent = this.selectedAgent();
     if (!repository || !agent || this.agentRunning()) return;
     const conversation: Conversation = {
       id: ++this.conversationRequest,
       repositoryRoot: repository.root,
+      title: attachedReview ? "Review follow-up" : undefined,
       agent,
       mode: "edit",
       model: this.selectedModel(),
@@ -1484,6 +1562,7 @@ export class AppComponent implements OnInit, OnDestroy {
       result: null,
       error: null,
       history: [],
+      attachedReview: attachedReview?.slice(0, 1_000_000),
       updatedAt: Date.now()
     };
     this.pendingProviderSessionId = undefined;
@@ -1556,11 +1635,24 @@ export class AppComponent implements OnInit, OnDestroy {
     if (!conversation || (!text && attachments.length === 0) || this.agentRunning()) return;
     this.chatReplyDraft.set("");
     this.clearImageAttachments("chat");
+    const prompt = conversation.attachedReview && !conversation.question
+      ? [
+          "Use the attached code review as context for the user's instructions.",
+          "Apply only the findings the user asks to fix. Leave excluded findings unchanged.",
+          "Inspect the current repository before editing and verify any changes you make.",
+          "",
+          "# Attached review",
+          conversation.attachedReview.slice(0, 30_000),
+          "",
+          "# User instructions",
+          question
+        ].join("\n")
+      : question;
     const pending: PendingExplain = {
       agent: conversation.agent,
       mode: conversation.mode ?? "edit",
       model: conversation.model,
-      prompt: this.withImageAttachments(question, attachments),
+      prompt: this.withImageAttachments(prompt, attachments),
       attachmentPaths: attachments.map((attachment) => attachment.path),
       question,
       providerSessionId: conversation.providerSessionId
@@ -1572,6 +1664,42 @@ export class AppComponent implements OnInit, OnDestroy {
     if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
     event.preventDefault();
     void this.sendChatReply();
+  }
+
+  handleChatScroll(): void {
+    const element = this.chatThread()?.nativeElement;
+    if (!element) return;
+    if (element.scrollHeight - element.clientHeight - element.scrollTop <= 48) {
+      this.chatAutoFollow = true;
+      return;
+    }
+    if (this.chatPointerActive) this.pauseChatAutoFollow();
+  }
+
+  handleChatWheel(event: WheelEvent): void {
+    if (event.deltaY < 0) this.pauseChatAutoFollow();
+  }
+
+  handleChatScrollKeydown(event: KeyboardEvent): void {
+    if (event.key === "ArrowUp" || event.key === "PageUp" || event.key === "Home") this.pauseChatAutoFollow();
+  }
+
+  beginChatScrollTakeover(): void {
+    this.chatPointerActive = true;
+  }
+
+  @HostListener("document:pointerup")
+  @HostListener("document:pointercancel")
+  endChatScrollTakeover(): void {
+    this.chatPointerActive = false;
+  }
+
+  private pauseChatAutoFollow(): void {
+    this.chatAutoFollow = false;
+    if (!this.chatFollowTimer) return;
+    clearTimeout(this.chatFollowTimer);
+    this.chatFollowTimer = undefined;
+    this.chatFollowUntil = 0;
   }
 
   async pasteImages(event: ClipboardEvent, destination: "chat" | "question"): Promise<void> {
@@ -1615,7 +1743,8 @@ export class AppComponent implements OnInit, OnDestroy {
     if (!conversation || conversation.status === "running") return;
     const agentChanged = this.selectedAgent() !== conversation.agent;
     this.selectedAgent.set(conversation.agent);
-    this.selectedModel.set(conversation.model);
+    this.selectModel(conversation.model);
+    this.rememberAgent(conversation.agent);
     if (agentChanged) void this.loadAgentModels(conversation.agent, conversation.model);
     this.selectedRange.set(null);
     this.allChangesSelected.set(true);
@@ -1666,10 +1795,11 @@ export class AppComponent implements OnInit, OnDestroy {
       endLine: context.endLine,
       diff: context.diff
     } : undefined;
+    const model = this.resolveModelSearch();
     const pending: PendingExplain = {
       agent,
       mode: "edit",
-      model: this.selectedModel(),
+      model,
       prompt,
       attachmentPaths: attachments.map((attachment) => attachment.path),
       question,
@@ -1718,7 +1848,9 @@ export class AppComponent implements OnInit, OnDestroy {
     this.reviewPageOpen.set(false);
     this.chatPageOpen.set(true);
     this.selectedAgent.set(agent);
-    this.scrollChatToBottom();
+    this.selectModel(model);
+    this.rememberAgent(agent);
+    this.scrollChatToBottom(true);
     await this.sendToAgent(agent, model, pending.mode, prompt, pending.attachmentPaths ?? [], pending.context, conversationId, existing?.providerSessionId ?? pending.providerSessionId);
   }
 
@@ -1762,7 +1894,7 @@ export class AppComponent implements OnInit, OnDestroy {
     this.chatModelPickerOpen.set(false);
     this.chatModelSearch.set("");
     this.chatPageOpen.set(true);
-    this.scrollChatToBottom();
+    this.scrollChatToBottom(true);
   }
 
   closeConversation(id: number): void {
@@ -2151,13 +2283,19 @@ export class AppComponent implements OnInit, OnDestroy {
       if (raw) {
         const stored: unknown = JSON.parse(raw);
         if (!isReviewSessionData(stored)) throw new Error("Invalid review session");
-        const notes = stored.notes.filter(isReviewNote).slice(0, 500);
+        const notes = stored.notes.filter(isReviewNote).slice(0, 500).map((note) => ({ ...note, done: note.done ?? false }));
         this.notes.set(notes);
         this.selectedNoteIds.set(notes.map((note) => note.id));
         this.reviewedFiles.set([...new Set(stored.reviewedFiles)].slice(0, 5_000));
         this.workspaceContext.set(stored.workspaceContext && isWorkspaceContext(stored.workspaceContext)
           ? stored.workspaceContext
           : { details: "", links: [], resources: [] });
+        if (stored.review && isPersistedReview(stored.review)) {
+          this.reviewQuestion.set(stored.review.question);
+          this.reviewResult.set(stored.review.result);
+          this.reviewError.set(stored.review.error);
+          this.reviewTone.set(stored.review.tone);
+        }
         const root = this.repository()!.root;
         const restored = (stored.conversations ?? []).filter(isConversation).slice(-100).map((conversation) => (
           conversation.status === "running"
@@ -2174,7 +2312,7 @@ export class AppComponent implements OnInit, OnDestroy {
       }
       const legacyKey = this.legacyNotesStorageKey();
       const legacy: unknown = JSON.parse(legacyKey ? localStorage.getItem(legacyKey) ?? "[]" : "[]");
-      const notes = Array.isArray(legacy) ? legacy.filter(isReviewNote).slice(0, 500) : [];
+      const notes = Array.isArray(legacy) ? legacy.filter(isReviewNote).slice(0, 500).map((note) => ({ ...note, done: note.done ?? false })) : [];
       this.notes.set(notes);
       this.selectedNoteIds.set(notes.map((note) => note.id));
       this.reviewedFiles.set([]);
@@ -2202,11 +2340,17 @@ export class AppComponent implements OnInit, OnDestroy {
     if (!key) return;
     try {
       const session: ReviewSessionData = {
-        version: 3,
+        version: 4,
         reviewedFiles: this.reviewedFiles(),
         notes: this.notes(),
         conversations: this.repositoryConversations().slice(-100),
-        workspaceContext: this.workspaceContext()
+        workspaceContext: this.workspaceContext(),
+        review: {
+          question: this.reviewQuestion(),
+          result: this.reviewResult(),
+          error: this.reviewError(),
+          tone: this.reviewTone()
+        }
       };
       localStorage.setItem(key, JSON.stringify(session));
     } catch {
@@ -2291,19 +2435,27 @@ export class AppComponent implements OnInit, OnDestroy {
   private async loadAgentModels(agent: AgentId, preferredModel: string | null = null): Promise<void> {
     const request = ++this.modelRequest;
     this.modelsLoading.set(true);
-    this.agentModels.set([]);
     this.modelsAgent = null;
     try {
-      const models = await window.rift.listAgentModels(agent);
+      const discoveredModels = await window.rift.listAgentModels(agent);
       if (request !== this.modelRequest || this.selectedAgent() !== agent) return;
+      const models = [...new Set(discoveredModels.map((model) => model.trim()).filter(Boolean))];
       this.agentModels.set(models);
       this.modelsAgent = agent;
-      const saved = preferredModel ?? localStorage.getItem(`${MODEL_STORAGE_PREFIX}${agent}`);
-      this.selectedModel.set(saved && models.includes(saved) ? saved : null);
+      const saved = preferredModel ?? this.loadSavedModel(agent);
+      const model = saved && models.includes(saved) ? saved : null;
+      if (saved && !model) {
+        try {
+          localStorage.removeItem(`${MODEL_STORAGE_PREFIX}${agent}`);
+        } catch {
+          this.reviewMessage.set("Could not clear an unavailable saved model");
+        }
+      }
+      this.selectedModel.set(model);
       this.modelSearch.set(this.selectedModel() ?? "");
+      this.saveAgentModelSelection(agent, model);
     } catch (reason) {
       if (request === this.modelRequest && this.selectedAgent() === agent) {
-        this.selectedModel.set(null);
         this.reviewMessage.set(reason instanceof Error ? reason.message : String(reason));
       }
     } finally {
@@ -2418,11 +2570,141 @@ export class AppComponent implements OnInit, OnDestroy {
     this.scrollChatToBottom();
   }
 
-  private scrollChatToBottom(): void {
-    requestAnimationFrame(() => {
-      const element = this.chatThread()?.nativeElement;
-      if (element) element.scrollTop = element.scrollHeight;
-    });
+  private scrollChatToBottom(force = false): void {
+    if (force) this.chatAutoFollow = true;
+    if (!this.chatAutoFollow) return;
+    this.chatFollowUntil = performance.now() + 750;
+    if (this.chatFollowTimer) return;
+    const follow = (): void => {
+      this.chatFollowTimer = undefined;
+      requestAnimationFrame(() => this.pinChatToBottom());
+      if (this.activeConversationRunning() || performance.now() < this.chatFollowUntil) {
+        this.chatFollowTimer = setTimeout(follow, 80);
+      }
+    };
+    follow();
+  }
+
+  private pinChatToBottom(): void {
+    const element = this.chatThread()?.nativeElement;
+    if (!element) return;
+    element.scrollTop = element.scrollHeight;
+    this.chatBottom()?.nativeElement.scrollIntoView({ block: "end", inline: "nearest" });
+  }
+
+  private resolveModelSearch(): string | null {
+    const selected = this.selectedModel();
+    if (selected) return selected;
+    const query = this.modelSearch().trim();
+    if (!query) return null;
+    const model = this.agentModels().find((entry) => entry === query) ?? null;
+    if (model) this.selectModel(model);
+    return model;
+  }
+
+  private loadSavedSelection(): { agent: AgentId | null; model: string | null } {
+    try {
+      const raw = localStorage.getItem(AGENT_MODEL_STORAGE_KEY);
+      if (raw) {
+        const saved: unknown = JSON.parse(raw);
+        if (saved && typeof saved === "object") {
+          const selection = saved as Record<string, unknown>;
+          const agent = selection["agent"];
+          const model = selection["model"];
+          if ((agent === "opencode" || agent === "claude") && (typeof model === "string" || model === null)) {
+            return { agent, model };
+          }
+        }
+      }
+      const savedAgent = localStorage.getItem(AGENT_STORAGE_KEY);
+      const agent = savedAgent === "opencode" || savedAgent === "claude" ? savedAgent : null;
+      return { agent, model: agent ? this.loadSavedModel(agent) : null };
+    } catch {
+      return { agent: null, model: null };
+    }
+  }
+
+  takeReviewToChat(): void {
+    const review = this.reviewResult()?.explanation;
+    if (!review || this.agentRunning()) return;
+    this.startNewChat(review);
+    requestAnimationFrame(() => document.getElementById("chat-reply")?.focus());
+  }
+
+  private saveAgentModelSelection(agent: AgentId, model: string | null): void {
+    try {
+      localStorage.setItem(AGENT_MODEL_STORAGE_KEY, JSON.stringify({ agent, model }));
+    } catch {
+      this.reviewMessage.set("Could not remember the selected provider and model");
+    }
+  }
+
+  private migratePreferences(): void {
+    try {
+      if (localStorage.getItem(PREFERENCE_SCHEMA_KEY) === PREFERENCE_SCHEMA_VERSION) return;
+      localStorage.removeItem(AGENT_STORAGE_KEY);
+      localStorage.removeItem(AGENT_MODEL_STORAGE_KEY);
+      for (let index = localStorage.length - 1; index >= 0; index -= 1) {
+        const key = localStorage.key(index);
+        if (key?.startsWith(MODEL_STORAGE_PREFIX) || key?.startsWith(CONVERSATION_STORAGE_PREFIX)) {
+          localStorage.removeItem(key);
+        }
+      }
+      localStorage.setItem(PREFERENCE_SCHEMA_KEY, PREFERENCE_SCHEMA_VERSION);
+    } catch {
+      this.reviewMessage.set("Could not migrate saved agent preferences");
+    }
+  }
+
+  private rememberAgent(agent: AgentId): void {
+    try {
+      localStorage.setItem(AGENT_STORAGE_KEY, agent);
+      this.saveAgentModelSelection(agent, this.selectedModel());
+    } catch {
+      this.reviewMessage.set("Could not remember the selected agent");
+    }
+  }
+
+  private loadSavedModel(agent: AgentId): string | null {
+    try {
+      return localStorage.getItem(`${MODEL_STORAGE_PREFIX}${agent}`);
+    } catch {
+      return null;
+    }
+  }
+
+  private preferredConversation(agent: AgentId | null): Conversation | undefined {
+    if (!agent) return undefined;
+    const conversations = this.repositoryConversations().filter((conversation) => conversation.agent === agent && conversation.status !== "running");
+    const key = this.conversationStorageKey(agent);
+    let saved: string | null = null;
+    let savedId = NaN;
+    try {
+      saved = key ? localStorage.getItem(key) : null;
+      savedId = saved ? Number(saved) : NaN;
+    } catch {
+      // Fall back to the latest conversation when storage is unavailable.
+    }
+    if (saved === "new") return undefined;
+    return conversations.find((conversation) => conversation.id === savedId)
+      ?? [...conversations].sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0) || right.id - left.id)[0];
+  }
+
+  private rememberConversation(id: number | null): void {
+    const agent = this.selectedAgent();
+    const key = agent ? this.conversationStorageKey(agent) : null;
+    if (!key) return;
+    try {
+      if (id) localStorage.setItem(key, String(id));
+      else localStorage.setItem(key, "new");
+    } catch {
+      this.reviewMessage.set("Could not remember the selected conversation");
+    }
+  }
+
+  private conversationStorageKey(agent: AgentId): string | null {
+    const sessionKey = this.reviewSessionStorageKey();
+    return sessionKey ? `${CONVERSATION_STORAGE_PREFIX}${agent}:${sessionKey}` : null;
   }
 
   private mergeAgentResult(current: AgentRunResult | null, update: AgentRunResult): AgentRunResult {
@@ -2494,9 +2776,11 @@ export class AppComponent implements OnInit, OnDestroy {
           error: null,
           history: [],
           providerSessionId,
-          updatedAt: Date.now()
-        }]);
+           updatedAt: Date.now()
+         }]);
     this.activeConversationId.set(conversationId);
+    this.rememberConversation(conversationId);
+    this.scrollChatToBottom(true);
     this.activityExpanded.set(false);
     this.selectedToolCall.set(null);
     this.agentRunning.set(true);
@@ -2516,10 +2800,18 @@ export class AppComponent implements OnInit, OnDestroy {
             result,
             error: null,
             updatedAt: Date.now(),
-            providerSessionId: conversation.providerSessionId ?? result.sessionId
-          } : conversation
-        )));
-        this.reviewMessage.set("Explanation ready");
+             providerSessionId: conversation.providerSessionId ?? result.sessionId
+           } : conversation
+         )));
+         this.scrollChatToBottom();
+         this.reviewMessage.set("Explanation ready");
+        if (mode === "edit") {
+          try {
+            await this.refreshRepository();
+          } catch (reason) {
+            this.reviewMessage.set(`Changes applied, but the diff could not be refreshed: ${reason instanceof Error ? reason.message : String(reason)}`);
+          }
+        }
       }
     } catch (reason) {
       if (request === this.agentRequest) {
@@ -2536,6 +2828,7 @@ export class AppComponent implements OnInit, OnDestroy {
             ? { ...conversation, status: error.toLowerCase().includes("cancel") ? "cancelled" : "error", result: authenticationError ? null : conversation.result, error }
             : conversation
         )));
+        this.scrollChatToBottom();
         this.reviewMessage.set(authenticationError
           ? `${this.agentLabel(agent)} sign-in required`
           : error.toLowerCase().includes("cancel") ? "Agent request cancelled" : "Agent request failed");
