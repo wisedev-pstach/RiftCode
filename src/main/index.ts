@@ -158,7 +158,7 @@ async function resolveAgentCommand(id: AgentId): Promise<string | null> {
 }
 
 async function listAgentModels(id: AgentId): Promise<string[]> {
-  if (id === "claude") return ["sonnet", "opus", "haiku"];
+  if (id === "claude") return ["sonnet", "opus", "haiku", "fable"];
   const command = await resolveAgentCommand(id);
   if (!command) return [];
   return (await execute(command, ["models"])).split(/\r?\n/).map((model) => model.trim()).filter(Boolean);

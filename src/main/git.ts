@@ -96,10 +96,10 @@ async function comparisonDefinitions(
       id: "current-branch",
       kind: "branch",
       label: "Current branch changes",
-      detail: `${branch} against ${base.label}`,
+      detail: `${branch} against ${base.label} and working tree`,
       startRevision: mergeBase,
-      endRevision: "HEAD",
-      includeUntracked: false
+      endRevision: null,
+      includeUntracked: true
     });
   }
 
@@ -177,7 +177,7 @@ export async function loadRepository(requestedPath: string, comparisonId = "auto
   const base = await detectBase(root, branch);
   const comparisons = await comparisonDefinitions(root, branch, base);
   const requestedComparisonId = comparisonId === "auto"
-    ? await defaultComparisonId(root, comparisons)
+    ? defaultComparisonId(comparisons)
     : comparisonId;
   const comparison = comparisons.find((entry) => entry.id === requestedComparisonId) ?? comparisons[0];
   const revisions = comparison.endRevision
@@ -226,12 +226,10 @@ export async function loadRepository(requestedPath: string, comparisonId = "auto
   };
 }
 
-async function defaultComparisonId(root: string, comparisons: ComparisonDefinition[]): Promise<string> {
-  const status = await git(root, ["status", "--porcelain=v1", "--untracked-files=normal"]);
-  if (!status.stdout.trim() && comparisons.some((option) => option.id === "current-branch")) {
-    return "current-branch";
-  }
-  return "working-tree";
+function defaultComparisonId(comparisons: ComparisonDefinition[]): string {
+  return comparisons.some((option) => option.id === "current-branch")
+    ? "current-branch"
+    : "working-tree";
 }
 
 export async function loadFilePatch(snapshot: RepositorySnapshot, path: string, signal?: AbortSignal): Promise<FilePatch> {

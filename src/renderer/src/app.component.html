@@ -119,7 +119,7 @@
                 <section class="reconsider-panel">
                   <div><strong>Changed the code?</strong><p>Ask for a fresh pass. Resolved findings will be dropped and new regressions called out.</p></div>
                   <textarea rows="2" maxlength="20000" placeholder="Optional: describe what changed..." [value]="reconsiderDraft()" (input)="reconsiderDraft.set($any($event.target).value)"></textarea>
-                  <div class="review-result-actions"><button (click)="saveReviewMarkdown()">Save .md</button><button class="reconsider-button" (click)="reconsiderReview()">Reconsider</button></div>
+                  <div class="review-result-actions"><button (click)="saveReviewMarkdown()">Save .md</button><button class="take-review-to-chat" (click)="takeReviewToChat()">Take to chat</button><button class="reconsider-button" (click)="reconsiderReview()">Reconsider</button></div>
                 </section>
               } @else if (agentRunning()) {
                 <div class="review-result-actions"><button (click)="cancelAgent()">Cancel review</button></div>
@@ -131,7 +131,7 @@
             </div>
             <div class="review-page-card">
               <div class="review-agent-grid">
-                <label><span>Provider</span>@if (agents().length > 0) { <select [value]="selectedAgent()" (change)="selectAgent($event)">@for (agent of agents(); track agent.id) { <option [value]="agent.id">{{ agent.label }}</option> }</select> } @else { <small>No supported agent detected</small> }</label>
+                <label><span>Provider</span>@if (agents().length > 0) { <select [value]="selectedAgent()" (change)="selectAgent($event)">@for (agent of agents(); track agent.id) { <option [value]="agent.id" [selected]="agent.id === selectedAgent()">{{ agent.label }}</option> }</select> } @else { <small>No supported agent detected</small> }</label>
                 <label><span>Model</span><select [value]="selectedModel() || ''" [disabled]="!selectedAgent() || modelsLoading()" (change)="selectReviewModel($event)"><option value="">{{ modelsLoading() ? "Loading models..." : "Default model" }}</option>@for (model of agentModels(); track model) { <option [value]="model">{{ model }}</option> }</select></label>
               </div>
               <fieldset class="tone-switch review-page-tones">
@@ -178,7 +178,14 @@
           }
 
           @if (activeConversation(); as conversation) {
-            <div #chatThread class="inference-thread">
+            <div #chatThread class="inference-thread" tabindex="0" (scroll)="handleChatScroll()" (wheel)="handleChatWheel($event)" (pointerdown)="beginChatScrollTakeover()" (pointerup)="endChatScrollTakeover()" (pointercancel)="endChatScrollTakeover()" (keydown)="handleChatScrollKeydown($event)">
+              <div #chatContent class="chat-content">
+              @if (conversation.attachedReview) {
+                <details class="review-chat-attachment">
+                  <summary><span class="review-mark">R</span><span><strong>Code review attached</strong><small>Use your message to choose what to fix and what to leave</small></span><i aria-hidden="true">⌄</i></summary>
+                  <div class="markdown-response review-markdown" (click)="openReviewFile($event)" [innerHTML]="renderReviewMarkdown(conversation.attachedReview)"></div>
+                </details>
+              }
               @for (turn of conversation.history; track $index) {
                 <div class="chat-message user-message historical-message">
                   <span>You</span>
@@ -243,6 +250,8 @@
                   }
                 </div>
               }
+              <div #chatBottom class="chat-bottom" aria-hidden="true"></div>
+              </div>
             </div>
             <footer class="chat-page-footer">
               @if (conversation.status === "running") {
@@ -289,7 +298,7 @@
                       id="chat-reply"
                       rows="2"
                       maxlength="20000"
-                      [placeholder]="conversation.question ? 'Continue this conversation...' : 'Ask about this repository...'"
+                      [placeholder]="conversation.question ? 'Continue this conversation...' : conversation.attachedReview ? 'Tell the agent what to fix and what to leave...' : 'Ask about this repository...'"
                       [value]="chatReplyDraft()"
                       (focus)="chatModelPickerOpen.set(false)"
                       (input)="chatReplyDraft.set($any($event.target).value)"
@@ -559,7 +568,7 @@
 
             <div class="notes-list">
               @for (note of notes(); track note.id) {
-                <article id="review-note-{{ note.id }}" class="review-note" [class.selected]="isNoteSelected(note.id)" [class.linked-active]="activeLinkedNoteId() === note.id" (dblclick)="navigateToNote(note)">
+                <article id="review-note-{{ note.id }}" class="review-note" [class.selected]="isNoteSelected(note.id)" [class.done]="note.done" [class.linked-active]="activeLinkedNoteId() === note.id" (dblclick)="navigateToNote(note)">
                   <label class="note-select" title="Include note when sending to agent" (dblclick)="$event.stopPropagation()">
                     <input type="checkbox" [checked]="isNoteSelected(note.id)" (change)="toggleNoteSelection(note.id)">
                     <span class="visually-hidden">Select note</span>
@@ -569,6 +578,7 @@
                     <span>Lines {{ note.startLine }}{{ note.endLine !== note.startLine ? "-" + note.endLine : "" }}</span>
                   </button>
                   <p>{{ note.content }}</p>
+                  <button class="note-done" (click)="toggleNoteDone(note.id)" [title]="note.done ? 'Mark note active' : 'Mark note done'" [attr.aria-label]="note.done ? 'Mark note active' : 'Mark note done'">{{ note.done ? "Done" : "Mark done" }}</button>
                   <button class="note-delete" (click)="deleteNote(note.id)" (dblclick)="$event.stopPropagation()" title="Delete note" aria-label="Delete note">×</button>
                 </article>
               } @empty {
@@ -634,8 +644,8 @@
         } @else if (questionComposerOpen()) {
           <label for="explain-question">Question <small>Enter to send · Shift+Enter for a new line</small></label>
           <div class="explain-agent-controls">
-            <label><span>Provider</span><select [value]="selectedAgent()" (change)="selectAgent($event)">@for (agent of agents(); track agent.id) { <option [value]="agent.id">{{ agent.label }}</option> }</select></label>
-            <label><span>Conversation</span><select [value]="continuingConversationId() || 'new'" [disabled]="providerSessionOpeningId() !== null" (change)="selectExplainConversation($event)"><option value="new">New conversation</option>@for (conversation of availableConversations(); track conversation.id) { <option [value]="conversation.id">{{ conversation.title || conversation.question || "New chat" }} · {{ conversationUpdatedLabel(conversation) }}</option> }@if (providerSessionsLoading()) { <option disabled>Loading provider sessions...</option> } @else if (providerSessionsAgent() === selectedAgent()) { @for (session of providerSessions(); track session.id) { @if (!isProviderSessionImported(session)) { <option [value]="'provider:' + session.id">{{ session.title }} · {{ sessionUpdatedLabel(session.updatedAt) }}</option> } } }</select></label>
+            <label><span>Provider</span><select [value]="selectedAgent()" (change)="selectAgent($event)">@for (agent of agents(); track agent.id) { <option [value]="agent.id" [selected]="agent.id === selectedAgent()">{{ agent.label }}</option> }</select></label>
+            <label><span>Conversation</span><select [value]="continuingConversationId() || 'new'" [disabled]="providerSessionOpeningId() !== null" (change)="selectExplainConversation($event)"><option value="new" [selected]="continuingConversationId() === null">New conversation</option>@for (conversation of availableConversations(); track conversation.id) { <option [value]="conversation.id" [selected]="conversation.id === continuingConversationId()">{{ conversation.title || conversation.question || "New chat" }} · {{ conversationUpdatedLabel(conversation) }}</option> }@if (providerSessionsLoading()) { <option disabled>Loading provider sessions...</option> } @else if (providerSessionsAgent() === selectedAgent()) { @for (session of providerSessions(); track session.id) { @if (!isProviderSessionImported(session)) { <option [value]="'provider:' + session.id">{{ session.title }} · {{ sessionUpdatedLabel(session.updatedAt) }}</option> } } }</select></label>
             <label class="model-search-field">
               <span>Model</span>
               <div class="model-search-control">

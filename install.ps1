@@ -268,4 +268,5 @@ if (-not $hasBinPath) {
 }
 
 Write-Host "Rift was installed at $destination"
+Write-Host "Existing Rift data is retained; incompatible saved selections are migrated when Rift starts."
 Write-Host "Open a new terminal, then run: rift <repository-path>"
