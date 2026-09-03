@@ -47,7 +47,7 @@
        </div>
     </header>
 
-    <section class="workspace" [class.review-open]="reviewSidebarOpen()">
+    <section class="workspace" [class.review-open]="reviewSidebarOpen()" [class.resizing-changes]="changesPanelResizing()" [style.--changes-width]="effectiveChangesPanelWidth() + 'px'">
       <aside class="changes-panel">
         <div class="panel-title">
           <button class="changes-title-button" (click)="showDiff()" title="Show changes and diff">Changes</button>
@@ -70,8 +70,12 @@
             <span class="count" [title]="reviewedFileCount() + ' files reviewed'">{{ reviewedFileCount() }}/{{ repository()!.files.length }}</span>
           </span>
         </div>
+        <div class="file-filter">
+          <input type="text" maxlength="1000" aria-label="Exclude files by wildcard" placeholder="Exclude: *Test*, *.snap" [value]="fileFilter()" (input)="updateFileFilter($event)">
+          @if (fileFilter()) { <button (click)="clearFileFilter()" title="Clear file filters" aria-label="Clear file filters">×</button> }
+        </div>
         <div class="file-list">
-          @for (file of repository()!.files; track file.path) {
+          @for (file of filteredFiles(); track file.path) {
             <button
               class="file-row"
               [class.selected]="file.path === selectedPath()"
@@ -88,9 +92,20 @@
               </span>
             </button>
           } @empty {
-            <p class="empty-copy">No changes in this comparison.</p>
+            <p class="empty-copy">{{ fileFilter() ? "No files match the current filters." : "No changes in this comparison." }}</p>
           }
         </div>
+        <button
+          class="changes-resizer"
+          role="separator"
+          aria-label="Resize changed files panel"
+          aria-orientation="vertical"
+          [attr.aria-valuenow]="effectiveChangesPanelWidth()"
+          aria-valuemin="220"
+          aria-valuemax="600"
+          (pointerdown)="beginChangesResize($event)"
+          (keydown)="resizeChangesPanelWithKeyboard($event)"
+        ></button>
       </aside>
 
       @if (reviewPageOpen()) {
@@ -359,7 +374,7 @@
             @if (selectedFile()) { <span>{{ selectedFile()!.path }}</span> }
           </div>
           <div class="diff-options">
-            <button class="edit-file-button" [class.active]="editMode()" [disabled]="!selectedFile() || selectedFile()?.status === 'deleted' || patch()?.binary" (click)="toggleEditMode()">{{ editMode() ? "Editing" : "Edit" }}</button>
+            <button class="edit-file-button" [class.active]="editMode()" [disabled]="!selectedFile() || selectedFile()?.status === 'deleted' || patch()?.binary" (click)="toggleEditMode()" [title]="editMode() ? 'Exit edit mode (Escape)' : 'Enter edit mode (Ctrl+E)'">{{ editMode() ? "Editing" : "Edit" }}</button>
             @if (editMode()) {
               <button class="save-file-button" [class.dirty]="selectedFileHasEdits()" [disabled]="!selectedFileHasEdits() || fileSaving()" (click)="saveCurrentFile()">{{ fileSaving() ? "Saving..." : "Save" }} <kbd>Ctrl+S</kbd></button>
             }
@@ -376,6 +391,10 @@
                 <option value="unified">Unified</option>
                 <option value="split">Side by side</option>
               </select>
+            </label>
+            <label class="full-file-toggle" title="Show unchanged lines across the full file">
+              <input type="checkbox" [checked]="fullFile()" [disabled]="!selectedFile() || patch()?.binary" (change)="toggleFullFile($event)">
+              <span>Full file</span>
             </label>
           </div>
         </div>

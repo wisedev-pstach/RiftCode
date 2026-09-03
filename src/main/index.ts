@@ -684,14 +684,15 @@ function registerIpc(): void {
     }
   });
 
-  ipcMain.handle("repository:patch", async (_event, path: string) => {
+  ipcMain.handle("repository:patch", async (_event, path: string, fullFile: boolean) => {
     if (!snapshot) throw new Error("No repository is open.");
+    if (typeof fullFile !== "boolean") throw new Error("Invalid full-file option.");
     activePatchController?.abort();
     const controller = new AbortController();
     activePatchController = controller;
     const patchSnapshot = snapshot;
     try {
-      return await loadFilePatch(patchSnapshot, path, controller.signal);
+      return await loadFilePatch(patchSnapshot, path, fullFile, controller.signal);
     } catch (error) {
       if (controller.signal.aborted) return { path, patch: "", binary: false };
       throw error;
