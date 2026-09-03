@@ -3,7 +3,7 @@
 set -eu
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
-if [ ! -f "$SCRIPT_DIR/package.json" ]; then
+if [ ! -f "$SCRIPT_DIR/package.json" ] || [ ! -f "$SCRIPT_DIR/version.json" ]; then
   BOOTSTRAP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/rift-source.XXXXXX")
   trap 'rm -rf "$BOOTSTRAP_ROOT"' EXIT
   curl -fsSL https://github.com/wisedev-pstach/RiftCode/archive/refs/heads/main.tar.gz |

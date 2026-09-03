@@ -89,6 +89,15 @@ export interface AgentStreamEvent {
   result: AgentRunResult;
 }
 
+export interface UpdateStatus {
+  currentVersion: string;
+  latestVersion: string | null;
+  releaseNotes: string[];
+  updateAvailable: boolean;
+  installSupported: boolean;
+  error: string | null;
+}
+
 export interface RiftApi {
   platform: "darwin" | "linux" | "win32";
   setTheme(theme: "dark" | "light"): Promise<void>;
@@ -110,6 +119,8 @@ export interface RiftApi {
   runAgent(runId: string, id: AgentId, model: string | null, mode: AgentMode, prompt: string, resourcePaths: string[], sessionId?: string): Promise<AgentRunResult>;
   cancelAgent(): Promise<void>;
   copyText(text: string): Promise<void>;
+  checkForUpdate(): Promise<UpdateStatus>;
+  installUpdate(): Promise<boolean>;
   onRepositoryChanged(listener: () => void): () => void;
   onAgentEvent(listener: (event: AgentStreamEvent) => void): () => void;
 }

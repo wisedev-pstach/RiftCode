@@ -5,7 +5,8 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 $scriptRoot = if ([string]::IsNullOrWhiteSpace($PSScriptRoot)) { (Get-Location).Path } else { $PSScriptRoot }
 
-if (-not (Test-Path -LiteralPath (Join-Path $scriptRoot "package.json"))) {
+if (-not (Test-Path -LiteralPath (Join-Path $scriptRoot "package.json")) -or
+    -not (Test-Path -LiteralPath (Join-Path $scriptRoot "version.json"))) {
     $bootstrapRoot = Join-Path ([IO.Path]::GetTempPath()) "rift-source-$([guid]::NewGuid())"
     $archive = Join-Path $bootstrapRoot "rift.zip"
     $sourceRoot = Join-Path $bootstrapRoot "RiftCode-main"

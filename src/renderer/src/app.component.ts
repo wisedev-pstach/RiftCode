@@ -11,7 +11,8 @@ import {
   viewChild
 } from "@angular/core";
 import { marked } from "marked";
-import type { AgentConversationHistory, AgentId, AgentMode, AgentOption, AgentRunResult, AgentSession, AgentStreamEvent, AgentToolEvent, ChangedFile, ContextResourcePath, FilePatch, RepositorySnapshot } from "../../shared/contracts";
+import type { AgentConversationHistory, AgentId, AgentMode, AgentOption, AgentRunResult, AgentSession, AgentStreamEvent, AgentToolEvent, ChangedFile, ContextResourcePath, FilePatch, RepositorySnapshot, UpdateStatus } from "../../shared/contracts";
+import versionManifest from "../../../version.json";
 
 type DiffKind = "header" | "hunk" | "context" | "addition" | "deletion" | "meta";
 type DiffMode = "unified" | "split";
@@ -433,6 +434,14 @@ function pairSplitRows(rows: DiffRow[]): SplitDiffRow[] {
 })
 export class AppComponent implements OnInit, OnDestroy {
   readonly platform = window.rift.platform;
+  readonly appVersion = versionManifest.version;
+  readonly updateStatus = signal<UpdateStatus | null>(null);
+  readonly updateInstalling = signal(false);
+  readonly releaseNotesTitle = computed(() => {
+    const status = this.updateStatus();
+    if (!status?.updateAvailable || !status.latestVersion) return "";
+    return [`What's new in Rift ${status.latestVersion}`, "", ...status.releaseNotes.map((note) => `- ${note}`)].join("\n");
+  });
   readonly darkTheme = signal(this.loadDarkTheme());
   readonly repository = signal<RepositorySnapshot | null>(null);
   readonly selectedPath = signal<string | null>(null);
@@ -709,6 +718,7 @@ export class AppComponent implements OnInit, OnDestroy {
   ngOnInit(): void {
     this.migratePreferences();
     this.applyTheme();
+    void window.rift.checkForUpdate().then((status) => this.updateStatus.set(status));
     this.highlightWorker.onmessage = ({ data }: MessageEvent<HighlightResponse>) => {
       if (data.requestId === this.highlightRequest) this.highlightedRows.set(data.rows);
     };
@@ -736,6 +746,18 @@ export class AppComponent implements OnInit, OnDestroy {
     }).catch((reason: Error) => {
       this.reviewMessage.set(reason.message);
     });
+  }
+
+  async installAvailableUpdate(): Promise<void> {
+    if (this.updateInstalling()) return;
+    this.updateInstalling.set(true);
+    try {
+      const started = await window.rift.installUpdate();
+      if (!started) this.updateInstalling.set(false);
+    } catch (reason) {
+      this.updateInstalling.set(false);
+      this.updateStatus.update((status) => status ? { ...status, error: reason instanceof Error ? reason.message : String(reason) } : status);
+    }
   }
 
   ngOnDestroy(): void {

@@ -1,8 +1,8 @@
 @if (loading()) {
-  <main class="center-state"><span class="loading-wordmark"><strong>RIFT</strong><small>/code</small></span><p>Opening repository...</p></main>
+  <main class="center-state"><span class="loading-wordmark"><strong>RIFT</strong><small>/code</small><em>v{{ appVersion }}</em></span><p>Opening repository...</p></main>
 } @else if (!repository()) {
   <main class="center-state">
-    <span class="loading-wordmark"><strong>RIFT</strong><small>/code</small></span>
+    <span class="loading-wordmark"><strong>RIFT</strong><small>/code</small><em>v{{ appVersion }}</em></span>
     <h1>Open a Git repository</h1>
     <p>{{ error() || "Launch Rift from a repository or choose one here." }}</p>
     <button class="primary-button" (click)="chooseRepository()">Choose repository</button>
@@ -18,8 +18,19 @@
              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.2 15.2A8.5 8.5 0 0 1 8.8 3.8 8.5 8.5 0 1 0 20.2 15.2Z"/></svg>
            }
          </button>
-         <div class="brand" aria-label="RIFTcode"><strong class="typing-logo"><span class="logo-letter">R</span><span class="logo-letter">I</span><span class="logo-letter">F</span><span class="logo-letter">T</span><small>code</small></strong></div>
-       </div>
+          <div class="brand" aria-label="RIFTcode"><strong class="typing-logo"><span class="logo-letter">R</span><span class="logo-letter">I</span><span class="logo-letter">F</span><span class="logo-letter">T</span><small>code</small></strong></div>
+          <span class="app-version" [title]="updateStatus()?.error ? 'Update check failed: ' + updateStatus()!.error : 'Rift ' + appVersion">v{{ appVersion }}</span>
+          @if (updateStatus()?.updateAvailable) {
+            <button
+              class="update-install"
+              [disabled]="updateInstalling() || !updateStatus()!.installSupported"
+              (click)="installAvailableUpdate()"
+              [title]="updateStatus()!.installSupported ? 'Install Rift ' + updateStatus()!.latestVersion : 'Automatic installation is unavailable on this platform'"
+              [attr.aria-label]="'Install Rift ' + updateStatus()!.latestVersion"
+            >{{ updateInstalling() ? "..." : "-> " + updateStatus()!.latestVersion }}</button>
+            <button class="update-info" [title]="releaseNotesTitle()" aria-label="Show release notes">i</button>
+          }
+        </div>
       <div class="comparison-picker">
         <button class="repository-switcher" (click)="chooseRepository()" [title]="repository()!.root">
           {{ repository()!.name }}

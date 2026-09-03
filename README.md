@@ -21,3 +21,7 @@ curl -fsSL https://raw.githubusercontent.com/wisedev-pstach/RiftCode/main/instal
 ```
 
 Ensure `~/.local/bin` is on `PATH`, then run `rift <repository-path>`.
+
+## Releases
+
+The current app version and its release notes live in `version.json`. Update both `version.json` and the `version` fields in `package.json` and `package-lock.json` for each release. Rift checks the repository manifest at startup and offers to run the platform installer when a newer semantic version is available.

@@ -1,0 +1,8 @@
+{
+  "version": "0.5.0",
+  "releaseNotes": [
+    "Added an in-app version display and startup update checks.",
+    "Added platform-aware updates with clear restart guidance.",
+    "Added release notes to update notifications."
+  ]
+}
