@@ -50,7 +50,17 @@
     <section class="workspace" [class.review-open]="reviewSidebarOpen()" [class.resizing-changes]="changesPanelResizing()" [style.--changes-width]="effectiveChangesPanelWidth() + 'px'">
       <aside class="changes-panel">
         <div class="panel-title">
-          <button class="changes-title-button" (click)="showDiff()" title="Show changes and diff">Changes</button>
+          <span class="changes-heading-title">
+            <button class="changes-title-button" (click)="showDiff()" title="Show changes and diff">Changes</button>
+            <button
+              class="hide-reviewed-button"
+              [class.active]="hideReviewed()"
+              [attr.aria-pressed]="hideReviewed()"
+              aria-label="Hide reviewed files"
+              [title]="hideReviewed() ? 'Show reviewed files' : 'Hide reviewed files'"
+              (click)="toggleHideReviewed()"
+            ><span aria-hidden="true">✓</span></button>
+          </span>
           <span class="changes-heading-actions">
             @if (reviewSessionStarted()) {
               <button
@@ -59,7 +69,7 @@
                 [disabled]="agentRunning()"
                 (click)="clearReviewSession()"
                 title="Clear context, notes, chats, reviewed files, and selections"
-              >{{ clearSessionArmed() ? "Confirm clear" : "Clear session" }}</button>
+              >{{ clearSessionArmed() ? "Confirm" : "Clear" }}</button>
             }
             <button
               class="all-changes-button"
@@ -92,7 +102,7 @@
               </span>
             </button>
           } @empty {
-            <p class="empty-copy">{{ fileFilter() ? "No files match the current filters." : "No changes in this comparison." }}</p>
+            <p class="empty-copy">{{ hideReviewed() ? "No unreviewed files match the current filters." : fileFilter() ? "No files match the current filters." : "No changes in this comparison." }}</p>
           }
         </div>
         <button
