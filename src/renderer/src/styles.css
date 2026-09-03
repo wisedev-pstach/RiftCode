@@ -573,11 +573,15 @@ button { color: inherit; font: inherit; }
 .chat-font-control strong { color: #aeb8c3; font-size: 12px; }
 .chat-font-control input { width: 70px; accent-color: #9abe5d; cursor: pointer; }
 .chat-page .conversation-tabs { padding-inline: 16px; }
-.chat-page .inference-thread { grid-row: 3; min-height: 0; height: 100%; width: min(1280px, 100%); overflow-y: auto; overflow-anchor: none; justify-self: center; padding: 24px clamp(20px, 3vw, 42px) 34px; }
-.chat-content { min-width: 0; display: flex; flex-direction: column; gap: 15px; }
-.chat-page .chat-message { max-width: min(900px, 78%); }
+.chat-page .inference-thread { grid-row: 3; min-height: 0; height: 100%; width: min(1280px, 100%); overflow-x: hidden; overflow-y: auto; overflow-anchor: none; justify-self: center; padding: 24px clamp(20px, 3vw, 42px) 34px; }
+.chat-content { min-width: 0; max-width: 100%; display: flex; flex-direction: column; gap: 15px; }
+.chat-page .chat-message { min-width: 0; max-width: min(900px, 78%); }
 .chat-page .chat-message > span { font-size: max(9px, calc(var(--chat-font-size, 14px) - 5px)); }
 .chat-page .assistant-message { max-width: 100%; }
+.chat-page .user-message p, .chat-page .markdown-response { min-width: 0; max-width: 100%; overflow-wrap: anywhere; word-break: break-word; }
+.chat-page .markdown-response pre { max-width: 100%; overflow-x: hidden; white-space: pre-wrap; }
+.chat-page .markdown-response pre code { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
+.chat-page .markdown-response table { display: block; max-width: 100%; overflow-x: auto; }
 .review-chat-attachment { flex: none; overflow: hidden; border: 1px solid #4c4268; border-radius: 10px; background: rgba(31, 26, 45, .72); }
 .review-chat-attachment summary { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 11px 13px; cursor: pointer; list-style: none; }
 .review-chat-attachment summary::-webkit-details-marker { display: none; }
