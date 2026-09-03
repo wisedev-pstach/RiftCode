@@ -781,16 +781,11 @@ export class AppComponent implements OnInit, OnDestroy {
     }
   }
 
-  scrollToDiffRegion(index: number): void {
+  scrollToDiffRegion(position: number): void {
     const scroller = this.diffScroll()?.nativeElement;
-    const row = scroller?.querySelector<HTMLElement>(`[data-diff-index="${index}"]`);
-    if (!scroller || !row) return;
-    const scrollerBounds = scroller.getBoundingClientRect();
-    const rowBounds = row.getBoundingClientRect();
-    const rowTop = scroller.scrollTop + rowBounds.top - scrollerBounds.top;
-    const top = rowTop - (scroller.clientHeight - rowBounds.height) / 2;
-    const behavior = window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
-    scroller.scrollTo({ top: Math.max(0, top), behavior });
+    if (!scroller) return;
+    const maxScroll = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+    scroller.scrollTop = Math.round(maxScroll * Math.max(0, Math.min(100, position)) / 100);
   }
 
   updateFileFilter(event: Event): void {
