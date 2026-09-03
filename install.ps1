@@ -3,6 +3,23 @@ param()
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+$scriptRoot = if ([string]::IsNullOrWhiteSpace($PSScriptRoot)) { (Get-Location).Path } else { $PSScriptRoot }
+
+if (-not (Test-Path -LiteralPath (Join-Path $scriptRoot "package.json"))) {
+    $bootstrapRoot = Join-Path ([IO.Path]::GetTempPath()) "rift-source-$([guid]::NewGuid())"
+    $archive = Join-Path $bootstrapRoot "rift.zip"
+    $sourceRoot = Join-Path $bootstrapRoot "RiftCode-main"
+    New-Item -ItemType Directory -Path $bootstrapRoot | Out-Null
+    try {
+        Invoke-WebRequest "https://github.com/wisedev-pstach/RiftCode/archive/refs/heads/main.zip" -OutFile $archive
+        Expand-Archive -LiteralPath $archive -DestinationPath $bootstrapRoot
+        & (Join-Path $sourceRoot "install.ps1")
+        return
+    }
+    finally {
+        Remove-Item -LiteralPath $bootstrapRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
 
 function Invoke-Checked {
     param(
@@ -222,7 +239,7 @@ if (-not (Get-Command npm.cmd -ErrorAction SilentlyContinue)) {
     throw "Node.js 24 or newer is required."
 }
 
-$root = $PSScriptRoot
+$root = $scriptRoot
 $destination = Join-Path $env:LOCALAPPDATA "Programs\Rift"
 $binDestination = Join-Path $destination "bin"
 
