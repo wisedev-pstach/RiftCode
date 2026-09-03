@@ -99,7 +99,7 @@ export interface RiftApi {
   writeRepositoryFile(path: string, content: string): Promise<void>;
   openRepository(path?: string): Promise<RepositorySnapshot>;
   refreshRepository(): Promise<RepositorySnapshot>;
-  getFilePatch(path: string): Promise<FilePatch>;
+  getFilePatch(path: string, fullFile: boolean): Promise<FilePatch>;
   chooseRepository(): Promise<RepositorySnapshot | null>;
   chooseContextResources(kind: "files" | "directory"): Promise<ContextResourcePath[]>;
   selectComparison(id: string): Promise<RepositorySnapshot>;

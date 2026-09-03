@@ -31,6 +31,9 @@ const PREFERENCE_SCHEMA_KEY = "rift:preference-schema";
 const PREFERENCE_SCHEMA_VERSION = "3";
 const CHAT_FONT_SIZE_KEY = "rift:chat-font-size";
 const THEME_STORAGE_KEY = "rift:theme";
+const FULL_FILE_SESSION_KEY = "rift:full-file";
+const FILE_FILTER_SESSION_KEY = "rift:file-filter";
+const CHANGES_WIDTH_SESSION_KEY = "rift:changes-width";
 const LANGUAGES: Readonly<Record<string, DetectedLanguage>> = {
   bash: { id: "bash", label: "Shell" },
   c: { id: "c", label: "C" },
@@ -369,6 +372,14 @@ function detectLanguage(path: string | null): DetectedLanguage {
   return LANGUAGES[extension] ?? PLAIN_TEXT;
 }
 
+function wildcardExpression(pattern: string): RegExp {
+  const expression = pattern.replace(/\*+/g, "*")
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replaceAll("*", ".*")
+    .replaceAll("?", ".");
+  return new RegExp(`^${expression}$`, "i");
+}
+
 function pairSplitRows(rows: DiffRow[]): SplitDiffRow[] {
   const result: SplitDiffRow[] = [];
   let index = 0;
@@ -418,6 +429,11 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly selectedPath = signal<string | null>(null);
   readonly patch = signal<FilePatch | null>(null);
   readonly diffMode = signal<DiffMode>("unified");
+  readonly fullFile = signal(this.loadFullFile());
+  readonly fileFilter = signal(this.loadFileFilter());
+  readonly changesPanelWidth = signal(this.loadChangesPanelWidth());
+  readonly changesPanelResizing = signal(false);
+  readonly viewportWidth = signal(window.innerWidth);
   readonly selectedRange = signal<SelectionRange | null>(null);
   readonly allChangesSelected = signal(false);
   readonly loading = signal(true);
@@ -500,6 +516,15 @@ export class AppComponent implements OnInit, OnDestroy {
     return (context.details.trim() ? 1 : 0) + context.links.length + context.resources.length;
   });
   readonly selectedFile = computed(() => this.repository()?.files.find((file) => file.path === this.selectedPath()));
+  readonly filteredFiles = computed(() => {
+    const patterns = this.fileFilter().split(",").map((pattern) => pattern.trim()).filter(Boolean).map(wildcardExpression);
+    const files = this.repository()?.files ?? [];
+    return patterns.length === 0 ? files : files.filter((file) => !patterns.some((pattern) => pattern.test(file.path)));
+  });
+  readonly effectiveChangesPanelWidth = computed(() => {
+    const reviewWidth = this.reviewSidebarOpen() ? (this.viewportWidth() <= 1_050 ? 250 : 310) : (this.viewportWidth() <= 1_050 ? 88 : 44);
+    return Math.max(220, Math.min(this.changesPanelWidth(), this.viewportWidth() - 460 - reviewWidth));
+  });
   readonly selectedAgentOption = computed(() => this.agents().find((agent) => agent.id === this.selectedAgent()));
   readonly detectedLanguage = computed(() => detectLanguage(this.selectedPath()));
   readonly parsedRows = computed(() => parsePatch(this.patch()?.patch ?? ""));
@@ -705,6 +730,33 @@ export class AppComponent implements OnInit, OnDestroy {
     }
   }
 
+  updateFileFilter(event: Event): void {
+    if (!(event.target instanceof HTMLInputElement)) return;
+    this.fileFilter.set(event.target.value.slice(0, 1_000));
+    this.storeSessionSetting(FILE_FILTER_SESSION_KEY, this.fileFilter());
+    this.reconcileFilteredSelection();
+  }
+
+  clearFileFilter(): void {
+    this.fileFilter.set("");
+    this.storeSessionSetting(FILE_FILTER_SESSION_KEY, "");
+    this.reconcileFilteredSelection();
+  }
+
+  beginChangesResize(event: PointerEvent): void {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    if (event.currentTarget instanceof HTMLElement) event.currentTarget.setPointerCapture(event.pointerId);
+    this.changesPanelResizing.set(true);
+  }
+
+  resizeChangesPanelWithKeyboard(event: KeyboardEvent): void {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    this.setChangesPanelWidth(this.effectiveChangesPanelWidth() + (event.key === "ArrowLeft" ? -20 : 20));
+    this.storeSessionSetting(CHANGES_WIDTH_SESSION_KEY, String(this.changesPanelWidth()));
+  }
+
   selectAgent(event: Event): void {
     if (event.target instanceof HTMLSelectElement) {
       const id = event.target.value as AgentId;
@@ -897,6 +949,12 @@ export class AppComponent implements OnInit, OnDestroy {
 
   handleLineEditKeydown(event: KeyboardEvent): void {
     event.stopPropagation();
+    if (event.key === "Escape" && !event.isComposing) {
+      event.preventDefault();
+      this.editMode.set(false);
+      if (event.currentTarget instanceof HTMLElement) event.currentTarget.blur();
+      return;
+    }
     if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "s") return;
     event.preventDefault();
     void this.saveCurrentFile();
@@ -954,11 +1012,21 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   @HostListener("document:keydown", ["$event"])
-  handleSaveShortcut(event: KeyboardEvent): void {
-    if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "s") return;
-    if (!this.selectedFileHasEdits()) return;
-    event.preventDefault();
-    void this.saveCurrentFile();
+  handleKeyboardShortcut(event: KeyboardEvent): void {
+    if (!(event.ctrlKey || event.metaKey)) return;
+    if (event.key.toLowerCase() === "e") {
+      const target = event.target;
+      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement || (target instanceof HTMLElement && target.isContentEditable)) return;
+      const file = this.selectedFile();
+      if (this.chatPageOpen() || this.reviewPageOpen() || !file || file.status === "deleted" || this.patch()?.binary) return;
+      event.preventDefault();
+      if (!this.editMode()) this.toggleEditMode();
+      return;
+    }
+    if (event.key.toLowerCase() === "s" && this.selectedFileHasEdits()) {
+      event.preventDefault();
+      void this.saveCurrentFile();
+    }
   }
 
   async saveCurrentFile(): Promise<void> {
@@ -1101,6 +1169,20 @@ export class AppComponent implements OnInit, OnDestroy {
     this.questionComposerOpen.set(false);
     this.clearImageAttachments("question");
     this.pendingProviderSessionId = undefined;
+  }
+
+  toggleFullFile(event: Event): void {
+    if (!(event.target instanceof HTMLInputElement)) return;
+    this.fullFile.set(event.target.checked);
+    this.selectedRange.set(null);
+    this.allChangesSelected.set(false);
+    try {
+      sessionStorage.setItem(FULL_FILE_SESSION_KEY, String(event.target.checked));
+    } catch {
+      // The setting still applies for the current page when session storage is unavailable.
+    }
+    const path = this.selectedPath();
+    if (path) void this.loadPatch(path);
   }
 
   deleteNote(id: string): void {
@@ -1985,6 +2067,11 @@ export class AppComponent implements OnInit, OnDestroy {
       this.questionComposerOpen.set(false);
       this.pendingProviderSessionId = undefined;
     }
+    else if (this.editMode()) {
+      this.editMode.set(false);
+      this.toolsMenu.set(null);
+      this.fileToolsMenu.set(null);
+    }
     else {
       this.toolsMenu.set(null);
       this.fileToolsMenu.set(null);
@@ -2001,8 +2088,23 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   @HostListener("document:pointerup")
+  @HostListener("document:pointercancel")
   finishSelection(): void {
     this.selecting = false;
+    if (this.changesPanelResizing()) {
+      this.changesPanelResizing.set(false);
+      this.storeSessionSetting(CHANGES_WIDTH_SESSION_KEY, String(this.changesPanelWidth()));
+    }
+  }
+
+  @HostListener("document:pointermove", ["$event"])
+  resizeChangesPanel(event: PointerEvent): void {
+    if (this.changesPanelResizing()) this.setChangesPanelWidth(event.clientX);
+  }
+
+  @HostListener("window:resize")
+  updateViewportWidth(): void {
+    this.viewportWidth.set(window.innerWidth);
   }
 
   isRowSelected(index: number, row: DiffRow): boolean {
@@ -2150,7 +2252,8 @@ export class AppComponent implements OnInit, OnDestroy {
     }
     this.error.set(null);
     const current = this.selectedPath();
-    const nextPath = repository.files.some((file) => file.path === current) ? current : repository.files[0]?.path ?? null;
+    const visibleFiles = this.filteredFiles();
+    const nextPath = visibleFiles.some((file) => file.path === current) ? current : visibleFiles[0]?.path ?? null;
     const keepSelection = preserveSelection
       && previousComparison === repository.comparisonId
       && previousPath === nextPath;
@@ -2200,7 +2303,7 @@ export class AppComponent implements OnInit, OnDestroy {
       this.resetHorizontalScroll();
     }
     try {
-      const patch = await window.rift.getFilePatch(path);
+      const patch = await window.rift.getFilePatch(path, this.fullFile());
       if (request === this.patchRequest) {
         if (
           previousPatch?.path === patch.path
@@ -2584,6 +2687,61 @@ export class AppComponent implements OnInit, OnDestroy {
       }
     };
     follow();
+  }
+
+  private loadFullFile(): boolean {
+    try {
+      return sessionStorage.getItem(FULL_FILE_SESSION_KEY) === "true";
+    } catch {
+      return false;
+    }
+  }
+
+  private loadFileFilter(): string {
+    try {
+      return (sessionStorage.getItem(FILE_FILTER_SESSION_KEY) ?? "").slice(0, 1_000);
+    } catch {
+      return "";
+    }
+  }
+
+  private loadChangesPanelWidth(): number {
+    const fallback = window.innerWidth <= 1_050 ? 220 : 255;
+    try {
+      const stored = Number(sessionStorage.getItem(CHANGES_WIDTH_SESSION_KEY));
+      return Number.isFinite(stored) && stored >= 220 && stored <= 600 ? stored : fallback;
+    } catch {
+      return fallback;
+    }
+  }
+
+  private setChangesPanelWidth(width: number): void {
+    this.changesPanelWidth.set(Math.round(Math.max(220, Math.min(600, width))));
+  }
+
+  private reconcileFilteredSelection(): void {
+    const files = this.filteredFiles();
+    const current = this.selectedPath();
+    if (current && files.some((file) => file.path === current)) return;
+    const next = files[0]?.path;
+    if (next) {
+      this.selectFile(next);
+      return;
+    }
+    this.patchRequest += 1;
+    this.selectedPath.set(null);
+    this.patch.set(null);
+    this.highlightedRows.set(null);
+    this.selectedRange.set(null);
+    this.allChangesSelected.set(false);
+  }
+
+  private storeSessionSetting(key: string, value: string): void {
+    try {
+      sessionStorage.setItem(key, value);
+    } catch {
+      // The setting still applies for the current page when session storage is unavailable.
+    }
   }
 
   private pinChatToBottom(): void {

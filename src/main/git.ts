@@ -10,6 +10,7 @@ import type {
 } from "../shared/contracts";
 
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+const FULL_FILE_CONTEXT_LINES = 2_147_483_647;
 
 interface GitResult {
   stdout: string;
@@ -232,15 +233,16 @@ function defaultComparisonId(comparisons: ComparisonDefinition[]): string {
     : "working-tree";
 }
 
-export async function loadFilePatch(snapshot: RepositorySnapshot, path: string, signal?: AbortSignal): Promise<FilePatch> {
+export async function loadFilePatch(snapshot: RepositorySnapshot, path: string, fullFile: boolean, signal?: AbortSignal): Promise<FilePatch> {
   const file = snapshot.files.find((entry) => entry.path === path);
   if (!file) throw new Error(`File is no longer part of the comparison: ${path}`);
 
+  const contextLines = fullFile ? FULL_FILE_CONTEXT_LINES : 4;
   let result: GitResult;
   if (file.status === "untracked") {
     result = await git(
       snapshot.root,
-      ["diff", "--no-index", "--no-color", "--unified=4", "--", "/dev/null", join(snapshot.root, path)],
+      ["diff", "--no-index", "--no-color", `--unified=${contextLines}`, "--", "/dev/null", join(snapshot.root, path)],
       [0, 1],
       signal
     );
@@ -256,7 +258,7 @@ export async function loadFilePatch(snapshot: RepositorySnapshot, path: string, 
       "--no-ext-diff",
       "--no-color",
       "--find-renames",
-      "--unified=4",
+      `--unified=${contextLines}`,
       ...revisions,
       "--",
       ...paths
