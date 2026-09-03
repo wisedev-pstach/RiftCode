@@ -537,7 +537,7 @@
           @if (selectedFile() && !patch()) { <p class="empty-copy">Loading patch...</p> }
         </div>
         @if (fullFile() && !patch()?.binary && diffOverviewMarkers().length > 0) {
-          <nav class="diff-overview" aria-label="Changed regions in full file">
+          <nav class="diff-overview" aria-label="Changed regions in full file" (pointerdown)="scrollFromDiffOverview($event)">
             @for (marker of diffOverviewMarkers(); track marker.index) {
               <button
                 type="button"
