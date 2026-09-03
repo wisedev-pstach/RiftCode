@@ -6,7 +6,7 @@ import { mkdir, open, readFile, readdir, rm, stat, writeFile } from "node:fs/pro
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
-import { loadFilePatch, loadRepository } from "./git";
+import { loadFilePatch, loadRepository, readRepositoryViewFile, searchRepository } from "./git";
 import type { IpcMainInvokeEvent } from "electron";
 import type { AgentConversationHistory, AgentConversationMessage, AgentId, AgentMode, AgentOption, AgentRunResult, AgentSession, AgentStreamEvent, AgentToolEvent, RepositorySnapshot, UpdateStatus } from "../shared/contracts";
 import versionManifest from "../../version.json";
@@ -758,6 +758,19 @@ function registerIpc(): void {
     const content = await readFile(repositoryFilePath(path), "utf8");
     if (content.length > 20 * 1024 * 1024) throw new Error("The file is too large to edit in Rift.");
     return content;
+  });
+
+  ipcMain.handle("repository:search", (event, query: unknown) => {
+    assertTrustedSender(event);
+    if (!snapshot) throw new Error("No repository is open.");
+    if (typeof query !== "string" || !query.trim() || query.length > 200) throw new Error("Enter a search query of up to 200 characters.");
+    return searchRepository(snapshot.root, query.trim());
+  });
+
+  ipcMain.handle("repository:read-view-file", (event, path: unknown) => {
+    assertTrustedSender(event);
+    if (!snapshot || typeof path !== "string" || path.length > 10_000) throw new Error("Invalid repository file.");
+    return readRepositoryViewFile(snapshot.root, path);
   });
 
   ipcMain.handle("repository:write-file", async (event, path: unknown, content: unknown) => {

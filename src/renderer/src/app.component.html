@@ -391,37 +391,53 @@
       <section class="diff-panel">
         <div class="diff-toolbar">
           <div>
-            <strong>{{ selectedFile() ? shortName(selectedFile()!.path) : "No file selected" }}</strong>
-            @if (selectedFile()) { <span>{{ selectedFile()!.path }}</span> }
+            <strong>{{ selectedPath() ? shortName(selectedPath()!) : "No file selected" }}</strong>
+            @if (selectedPath()) { <span>{{ selectedPath() }}</span> }
           </div>
           <div class="diff-options">
-            <button class="edit-file-button" [class.active]="editMode()" [disabled]="!selectedFile() || selectedFile()?.status === 'deleted' || patch()?.binary" (click)="toggleEditMode()" [title]="editMode() ? 'Exit edit mode (Escape)' : 'Enter edit mode (Ctrl+E)'">{{ editMode() ? "Editing" : "Edit" }}</button>
-            @if (editMode()) {
-              <button class="save-file-button" [class.dirty]="selectedFileHasEdits()" [disabled]="!selectedFileHasEdits() || fileSaving()" (click)="saveCurrentFile()">{{ fileSaving() ? "Saving..." : "Save" }} <kbd>Ctrl+S</kbd></button>
+            @if (selectedFile()) {
+              <button class="edit-file-button" [class.active]="editMode()" [disabled]="selectedFile()?.status === 'deleted' || patch()?.binary" (click)="toggleEditMode()" [title]="editMode() ? 'Exit edit mode (Escape)' : 'Enter edit mode (Ctrl+E)'">{{ editMode() ? "Editing" : "Edit" }}</button>
+              @if (editMode()) {
+                <button class="save-file-button" [class.dirty]="selectedFileHasEdits()" [disabled]="!selectedFileHasEdits() || fileSaving()" (click)="saveCurrentFile()">{{ fileSaving() ? "Saving..." : "Save" }} <kbd>Ctrl+S</kbd></button>
+              }
+              <button
+                class="review-file-button"
+                [class.reviewed]="selectedPath() && isFileReviewed(selectedPath()!)"
+                (click)="toggleSelectedFileReviewed()"
+              >{{ selectedPath() && isFileReviewed(selectedPath()!) ? "Reviewed" : "Mark reviewed" }}</button>
             }
-            <button
-              class="review-file-button"
-              [class.reviewed]="selectedPath() && isFileReviewed(selectedPath()!)"
-              [disabled]="!selectedFile()"
-              (click)="toggleSelectedFileReviewed()"
-            >{{ selectedPath() && isFileReviewed(selectedPath()!) ? "Reviewed" : "Mark reviewed" }}</button>
             <span class="language-pill">{{ detectedLanguage().label }}</span>
-            <label class="mode-picker">
-              <span class="visually-hidden">Diff layout</span>
-              <select [value]="diffMode()" (change)="selectDiffMode($event)" title="Diff layout">
-                <option value="unified">Unified</option>
-                <option value="split">Side by side</option>
-              </select>
-            </label>
-            <label class="full-file-toggle" title="Show unchanged lines across the full file">
-              <input type="checkbox" [checked]="fullFile()" [disabled]="!selectedFile() || patch()?.binary" (change)="toggleFullFile($event)">
-              <span>Full file</span>
-            </label>
+            @if (selectedFile()) {
+              <label class="mode-picker">
+                <span class="visually-hidden">Diff layout</span>
+                <select [value]="diffMode()" (change)="selectDiffMode($event)" title="Diff layout">
+                  <option value="unified">Unified</option>
+                  <option value="split">Side by side</option>
+                </select>
+              </label>
+              <label class="full-file-toggle" title="Show unchanged lines across the full file">
+                <input type="checkbox" [checked]="fullFile()" [disabled]="patch()?.binary" (change)="toggleFullFile($event)">
+                <span>Full file</span>
+              </label>
+            }
           </div>
         </div>
         <div class="diff-viewport">
         <div #diffScroll class="diff-scroll" role="listbox" aria-multiselectable="true" aria-label="Changed lines">
-          @if (patch()?.binary) {
+          @if (repositoryFileLoading()) {
+            <p class="empty-copy">Opening repository file...</p>
+          } @else if (repositoryFileError()) {
+            <p class="empty-copy">{{ repositoryFileError() }}</p>
+          } @else if (repositoryFileView()?.binary) {
+            <p class="empty-copy">Binary file cannot be displayed.</p>
+          } @else if (repositoryFileView(); as repositoryFile) {
+            @if (repositoryFile.truncated) { <p class="repository-file-notice">Large file preview truncated</p> }
+            <div class="repository-file-lines">
+              @for (line of repositoryFileLines(); track $index) {
+                <div class="repository-file-row"><span>{{ $index + 1 }}</span><code>{{ line || " " }}</code></div>
+              }
+            </div>
+          } @else if (patch()?.binary) {
             <p class="empty-copy">Binary file cannot be displayed.</p>
           } @else if (diffMode() === "unified") {
             @for (row of rows(); track $index) {
@@ -766,6 +782,60 @@
           </button>
         }
       </section>
+    }
+
+    @if (repositorySearchOpen()) {
+      <div class="repository-search-backdrop" role="presentation" (click)="closeRepositorySearch()">
+        <section class="repository-search-dialog" role="dialog" aria-modal="true" aria-labelledby="repository-search-title" (click)="$event.stopPropagation()">
+          <header>
+            <span><strong id="repository-search-title">Search repository</strong><small>Files, paths, and content across {{ repository()!.name }}</small></span>
+            <kbd>{{ platform === "darwin" ? "Cmd F" : "Ctrl F" }}</kbd>
+          </header>
+          <div class="repository-search-box">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg>
+            <input #repositorySearchInput type="search" maxlength="200" autocomplete="off" spellcheck="false" placeholder="Search file names and contents..." [value]="repositorySearchQuery()" (input)="updateRepositorySearch($event)" (keydown)="handleRepositorySearchKeydown($event)">
+            @if (repositorySearchLoading()) { <span class="repository-search-spinner" aria-label="Searching"></span> }
+          </div>
+          <div class="repository-search-content">
+            <div class="repository-search-results" role="listbox" aria-label="Repository search results">
+              @for (result of repositorySearchResults(); track result.path; let index = $index) {
+                <button
+                  class="repository-search-result"
+                  [class.active]="index === activeSearchResult()"
+                  [class.changed]="isChangedFile(result.path)"
+                  role="option"
+                  [attr.aria-selected]="index === activeSearchResult()"
+                  (pointerenter)="activeSearchResult.set(index)"
+                  (focus)="activeSearchResult.set(index)"
+                  (click)="openSearchResult(result)"
+                >
+                  <span class="repository-search-file-mark">{{ result.nameMatch ? "FILE" : "TEXT" }}</span>
+                  <span><strong>{{ shortName(result.path) }}</strong><small>{{ result.path }}</small>@if (result.matches[0]; as match) { <em><b>{{ match.line }}</b>{{ match.text }}</em> }</span>
+                </button>
+              } @empty {
+                <div class="repository-search-empty">
+                  @if (repositorySearchError()) { <strong>Search failed</strong><span>{{ repositorySearchError() }}</span> }
+                  @else if (repositorySearchQuery().trim() && !repositorySearchLoading()) { <strong>No matches</strong><span>Try another file name or phrase.</span> }
+                  @else { <strong>Find anything</strong><span>Search tracked and non-ignored files without leaving the review.</span> }
+                </div>
+              }
+            </div>
+            <aside class="repository-search-preview">
+              @if (searchPreview(); as preview) {
+                <header><span><strong>{{ shortName(preview.path) }}</strong><small>{{ preview.path }}</small></span><em>{{ preview.matches.length ? "Content match" : "Name match" }}</em></header>
+                <div>
+                  @for (line of preview.preview.split("\n"); track $index) {
+                    <p [class.match]="preview.matches[0]?.line === preview.previewStartLine + $index"><span>{{ preview.previewStartLine + $index }}</span><code>{{ line || " " }}</code></p>
+                  }
+                </div>
+              } @else {
+                <div class="repository-search-preview-empty">Hover a result to preview it</div>
+              }
+            </aside>
+          </div>
+          <footer><span>{{ repositorySearchLimited() ? "Showing the first 80 matches" : repositorySearchResults().length + " results" }}</span><span><kbd>Up/Down</kbd> Navigate <kbd>Enter</kbd> Open <kbd>Esc</kbd> Close</span></footer>
+        </section>
+      </div>
     }
 
     @if (conversationChoiceOpen() && pendingExplain(); as pending) {

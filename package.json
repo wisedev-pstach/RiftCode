@@ -1,6 +1,6 @@
 {
   "name": "rift",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "A visual, AI-native code review workspace focused on branch diffs.",
   "main": "app-out/main/index.js",
   "type": "module",

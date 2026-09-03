@@ -39,6 +39,31 @@ export interface FilePatch {
   binary: boolean;
 }
 
+export interface RepositorySearchMatch {
+  line: number;
+  text: string;
+}
+
+export interface RepositorySearchResult {
+  path: string;
+  nameMatch: boolean;
+  matches: RepositorySearchMatch[];
+  preview: string;
+  previewStartLine: number;
+}
+
+export interface RepositorySearchResponse {
+  results: RepositorySearchResult[];
+  limited: boolean;
+}
+
+export interface RepositoryFileView {
+  path: string;
+  content: string;
+  binary: boolean;
+  truncated: boolean;
+}
+
 export type AgentId = "opencode" | "claude";
 export type AgentMode = "review" | "edit";
 
@@ -109,6 +134,8 @@ export interface RiftApi {
   openRepository(path?: string): Promise<RepositorySnapshot>;
   refreshRepository(): Promise<RepositorySnapshot>;
   getFilePatch(path: string, fullFile: boolean): Promise<FilePatch>;
+  searchRepository(query: string): Promise<RepositorySearchResponse>;
+  readRepositoryViewFile(path: string): Promise<RepositoryFileView>;
   chooseRepository(): Promise<RepositorySnapshot | null>;
   chooseContextResources(kind: "files" | "directory"): Promise<ContextResourcePath[]>;
   selectComparison(id: string): Promise<RepositorySnapshot>;

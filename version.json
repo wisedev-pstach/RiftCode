@@ -1,8 +1,8 @@
 {
-  "version": "0.5.0",
+  "version": "0.5.1",
   "releaseNotes": [
-    "Added an in-app version display and startup update checks.",
-    "Added platform-aware updates with clear restart guidance.",
-    "Added release notes to update notifications."
+    "Added Ctrl/Cmd+F repository-wide search across file names and contents.",
+    "Added glassy search results with instant file previews and read-only viewing for unchanged files.",
+    "Fixed the exclusion filter appearance in light mode."
   ]
 }
