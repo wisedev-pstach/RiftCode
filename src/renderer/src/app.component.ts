@@ -788,6 +788,15 @@ export class AppComponent implements OnInit, OnDestroy {
     scroller.scrollTop = Math.round(maxScroll * Math.max(0, Math.min(100, position)) / 100);
   }
 
+  scrollFromDiffOverview(event: PointerEvent): void {
+    if (event.button !== 0 || !(event.currentTarget instanceof HTMLElement)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const bounds = event.currentTarget.getBoundingClientRect();
+    if (bounds.height <= 0) return;
+    this.scrollToDiffRegion((event.clientY - bounds.top) / bounds.height * 100);
+  }
+
   updateFileFilter(event: Event): void {
     if (!(event.target instanceof HTMLInputElement)) return;
     this.fileFilter.set(event.target.value.slice(0, 1_000));
