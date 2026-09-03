@@ -34,6 +34,7 @@ const THEME_STORAGE_KEY = "rift:theme";
 const FULL_FILE_SESSION_KEY = "rift:full-file";
 const FILE_FILTER_SESSION_KEY = "rift:file-filter";
 const CHANGES_WIDTH_SESSION_KEY = "rift:changes-width";
+const HIDE_REVIEWED_SESSION_KEY = "rift:hide-reviewed";
 const LANGUAGES: Readonly<Record<string, DetectedLanguage>> = {
   bash: { id: "bash", label: "Shell" },
   c: { id: "c", label: "C" },
@@ -439,6 +440,7 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly diffMode = signal<DiffMode>("unified");
   readonly fullFile = signal(this.loadFullFile());
   readonly fileFilter = signal(this.loadFileFilter());
+  readonly hideReviewed = signal(this.loadHideReviewed());
   readonly changesPanelWidth = signal(this.loadChangesPanelWidth());
   readonly changesPanelResizing = signal(false);
   readonly viewportWidth = signal(window.innerWidth);
@@ -527,7 +529,11 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly filteredFiles = computed(() => {
     const patterns = this.fileFilter().split(",").map((pattern) => pattern.trim()).filter(Boolean).map(wildcardExpression);
     const files = this.repository()?.files ?? [];
-    return patterns.length === 0 ? files : files.filter((file) => !patterns.some((pattern) => pattern.test(file.path)));
+    const reviewed = new Set(this.reviewedFiles());
+    return files.filter((file) => (
+      (!this.hideReviewed() || !reviewed.has(file.path))
+      && !patterns.some((pattern) => pattern.test(file.path))
+    ));
   });
   readonly effectiveChangesPanelWidth = computed(() => {
     const reviewWidth = this.reviewSidebarOpen() ? (this.viewportWidth() <= 1_050 ? 250 : 310) : (this.viewportWidth() <= 1_050 ? 88 : 44);
@@ -807,6 +813,12 @@ export class AppComponent implements OnInit, OnDestroy {
   clearFileFilter(): void {
     this.fileFilter.set("");
     this.storeSessionSetting(FILE_FILTER_SESSION_KEY, "");
+    this.reconcileFilteredSelection();
+  }
+
+  toggleHideReviewed(): void {
+    this.hideReviewed.update((hidden) => !hidden);
+    this.storeSessionSetting(HIDE_REVIEWED_SESSION_KEY, String(this.hideReviewed()));
     this.reconcileFilteredSelection();
   }
 
@@ -1301,6 +1313,7 @@ export class AppComponent implements OnInit, OnDestroy {
     this.persistReviewSession();
     this.reviewMessage.set(reviewed ? "File marked unreviewed" : "File marked reviewed");
     this.fileToolsMenu.set(null);
+    if (this.hideReviewed()) this.reconcileFilteredSelection();
   }
 
   openFileTools(path: string, event: MouseEvent): void {
@@ -1324,6 +1337,7 @@ export class AppComponent implements OnInit, OnDestroy {
     this.notes.set([]);
     this.selectedNoteIds.set([]);
     this.reviewedFiles.set([]);
+    if (this.hideReviewed()) this.reconcileFilteredSelection();
     this.workspaceContext.set({ details: "", links: [], resources: [] });
     this.conversations.update((conversations) => conversations.filter((conversation) => conversation.repositoryRoot !== root));
     this.activeConversationId.set(null);
@@ -2020,7 +2034,7 @@ export class AppComponent implements OnInit, OnDestroy {
       "",
       this.formatNotes(notes)
     ].join("\n");
-    const question = `Fix ${notes.length} code note${notes.length === 1 ? "" : "s"}`;
+    const question = `Process ${notes.length} note${notes.length === 1 ? "" : "s"}`;
     this.pendingExplain.set({ agent, mode: "edit", model: this.selectedModel(), prompt, question });
     this.conversationChoiceOpen.set(true);
     void this.loadProviderSessions(agent);
@@ -2769,6 +2783,14 @@ export class AppComponent implements OnInit, OnDestroy {
       return (sessionStorage.getItem(FILE_FILTER_SESSION_KEY) ?? "").slice(0, 1_000);
     } catch {
       return "";
+    }
+  }
+
+  private loadHideReviewed(): boolean {
+    try {
+      return sessionStorage.getItem(HIDE_REVIEWED_SESSION_KEY) === "true";
+    } catch {
+      return false;
     }
   }
 

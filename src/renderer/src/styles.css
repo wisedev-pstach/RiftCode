@@ -59,9 +59,15 @@ button { color: inherit; font: inherit; }
 .changes-panel { border-right: 1px solid #252a31; }
 .review-panel { overflow: hidden; border-left: 1px solid #252a31; }
 .panel-title { height: 44px; padding: 0 14px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #252a31; color: #aeb5c0; font-size: 11px; font-weight: 750; letter-spacing: .09em; text-transform: uppercase; }
+.changes-panel > .panel-title { padding-inline: 10px; }
+.changes-heading-title { min-width: 0; display: flex; align-items: center; gap: 4px; }
 .changes-title-button { border: 0; padding: 5px 0; color: inherit; background: transparent; font: inherit; letter-spacing: inherit; text-transform: inherit; cursor: pointer; }
 .changes-title-button:hover { color: #dce4ed; }
-.changes-heading-actions { display: flex; align-items: center; gap: 7px; }
+.hide-reviewed-button { position: relative; width: 24px; height: 24px; flex: none; display: grid; place-items: center; border: 1px solid #343d46; border-radius: 4px; padding: 0; color: #71808c; background: transparent; font: 750 9px ui-monospace, monospace; cursor: pointer; }
+.hide-reviewed-button:hover { color: #b8c4ce; border-color: #52606d; }
+.hide-reviewed-button.active { color: #c8ff63; border-color: #607b3f; background: rgba(200, 255, 99, .07); }
+.hide-reviewed-button.active::after { position: absolute; width: 15px; height: 1px; background: currentColor; content: ""; transform: rotate(-45deg); }
+.changes-heading-actions { display: flex; align-items: center; gap: 5px; }
 .changes-heading-actions .clear-session-action { border: 0; padding: 3px 2px; color: #747e89; background: transparent; font: 650 8px ui-monospace, monospace; letter-spacing: 0; text-transform: none; cursor: pointer; }
 .changes-heading-actions .clear-session-action:hover { color: #d18a82; }
 .changes-heading-actions .clear-session-action.armed { color: #f09a91; }
