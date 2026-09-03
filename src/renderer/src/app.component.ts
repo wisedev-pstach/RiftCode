@@ -1455,9 +1455,10 @@ export class AppComponent implements OnInit, OnDestroy {
     const style = this.reviewTone() === "honest"
       ? [
           "# Honest review",
-          "Review this code with uncompromising technical honesty. Stay professional and precise, but be brutal about weak reasoning, needless complexity, fragile code, fake abstractions, and avoidable mistakes.",
-          "Use dry irony or sharp sarcasm when it makes the problem memorable, never as a substitute for evidence. Make the critique land, explain the consequence, and give a concrete fix.",
-          "Do not manufacture issues for entertainment. Praise genuinely strong work briefly when it deserves it."
+          "This is the roast. Be blunt, biting, and memorable. Do not cushion bad code with diplomatic language or drift into a standard professional-review voice.",
+          "Call out weak reasoning, needless complexity, fragile code, fake abstractions, cargo-cult patterns, and avoidable mistakes with dry irony and sharp sarcasm. Roast the code and engineering decisions, never the author.",
+          "Every punchline must be earned by a real technical finding. Pair it with specific evidence, the consequence, and a concrete fix; humor never replaces analysis.",
+          "Do not manufacture issues or exaggerate severity for entertainment. Briefly acknowledge genuinely strong work, but do not dilute valid criticism with praise sandwiches."
         ]
       : [
           "# Professional review",
