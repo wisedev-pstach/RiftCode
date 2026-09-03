@@ -130,7 +130,15 @@ button { color: inherit; font: inherit; }
 .save-file-button kbd { margin-left: 4px; color: inherit; font: 7px ui-monospace, monospace; opacity: .68; }
 .edit-file-button:disabled, .save-file-button:disabled { cursor: not-allowed; opacity: .35; }
 .diff-toolbar .language-pill { padding: 3px 7px; border: 1px solid #29313a; border-radius: 4px; color: #74808e; background: #11151a; font: 600 9px ui-monospace, monospace; letter-spacing: .04em; text-transform: uppercase; }
-.diff-scroll { min-width: 0; min-height: 0; flex: 1; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable both-edges; padding: 10px 0 40px; }
+.diff-viewport { position: relative; min-width: 0; min-height: 0; flex: 1; overflow: hidden; }
+.diff-scroll { width: 100%; height: 100%; min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable both-edges; padding: 10px 0 40px; }
+.diff-overview { position: absolute; z-index: 4; top: 10px; right: 6px; bottom: 40px; width: 11px; overflow: hidden; }
+.diff-overview::before { position: absolute; top: 0; right: 4px; bottom: 0; width: 3px; border-radius: 2px; background: rgba(108, 119, 132, .2); content: ""; }
+.diff-overview-marker { position: absolute; left: 0; width: 11px; min-height: 5px; border: 0; border-radius: 2px; padding: 0; background: #d0a35f; cursor: pointer; }
+.diff-overview-marker.addition { background: #55c88c; }
+.diff-overview-marker.deletion { background: #df7777; }
+.diff-overview-marker.change { background: #d0a35f; }
+.diff-overview-marker:hover, .diff-overview-marker:focus-visible { outline: 1px solid #e5edf5; outline-offset: -1px; filter: brightness(1.25); }
 .diff-row { min-width: max-content; width: 100%; display: grid; grid-template-columns: 46px 46px 22px minmax(600px, 1fr) auto; min-height: 21px; font: 11.5px/21px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; user-select: none; }
 .diff-row.context, .diff-row.addition, .diff-row.deletion { cursor: pointer; }
 .diff-row:focus-visible { outline: 1px solid #73808f; outline-offset: -1px; }
