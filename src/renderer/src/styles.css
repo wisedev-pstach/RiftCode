@@ -147,6 +147,10 @@ button { color: inherit; font: inherit; }
 .diff-toolbar div { min-width: 0; display: flex; align-items: baseline; gap: 9px; }
 .diff-toolbar strong { font-size: 12px; }
 .diff-toolbar div span { overflow: hidden; color: #626b77; font: 10px ui-monospace, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.diff-toolbar .search-shortcut-hint { flex: none; display: flex; align-items: center; gap: 5px; border: 0; border-left: 1px solid #2d353e; padding: 2px 0 2px 9px; color: #66727e; background: transparent; font: 650 8px ui-monospace, monospace; cursor: pointer; }
+.diff-toolbar .search-shortcut-hint:hover { color: #b8c9a0; }
+.diff-toolbar .search-shortcut-hint kbd { border: 1px solid #3b4650; border-radius: 4px; padding: 2px 4px; color: #8b987c; background: #151a20; font: 650 7px ui-monospace, monospace; box-shadow: inset 0 -1px rgba(255, 255, 255, .025); }
+.diff-toolbar .search-shortcut-hint span { color: inherit; font: inherit; }
 .mode-picker select { border: 1px solid #303640; border-radius: 4px; outline: 0; padding: 4px 24px 4px 7px; color: #9ba4b1; background: #13171c; font-size: 10px; cursor: pointer; }
 .mode-picker select:focus-visible { border-color: #73808f; }
 .diff-toolbar .diff-options { flex: none; align-items: center; gap: 7px; }
@@ -799,6 +803,9 @@ button { color: inherit; font: inherit; }
 :root[data-theme="light"] .file-row.selected { background: #dfe5ea; box-shadow: inset 2px 0 #719f2e; }
 :root[data-theme="light"] .file-name strong { color: #303740; }
 :root[data-theme="light"] .file-name small, :root[data-theme="light"] .diff-toolbar div span { color: #707b86; }
+:root[data-theme="light"] .diff-toolbar .search-shortcut-hint { color: #687580; border-color: #d4dae0; }
+:root[data-theme="light"] .diff-toolbar .search-shortcut-hint:hover { color: #4d701d; }
+:root[data-theme="light"] .diff-toolbar .search-shortcut-hint kbd { color: #5d7440; border-color: #bdc8b0; background: #f5f8f2; box-shadow: inset 0 -1px rgba(45, 54, 63, .04); }
 :root[data-theme="light"] .diff-panel, :root[data-theme="light"] .split-head { background: #fff; }
 :root[data-theme="light"] .repository-file-row:hover { background: #f0f3f6; }
 :root[data-theme="light"] .repository-file-row > span { border-color: #d9dee3; color: #939ca5; }

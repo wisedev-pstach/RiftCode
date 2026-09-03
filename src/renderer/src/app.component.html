@@ -405,6 +405,7 @@
           <div>
             <strong>{{ selectedPath() ? shortName(selectedPath()!) : "No file selected" }}</strong>
             @if (selectedPath()) { <span>{{ selectedPath() }}</span> }
+            <button class="search-shortcut-hint" (click)="openRepositorySearch()" title="Search all repository files and contents"><kbd>{{ platform === "darwin" ? "Cmd+F" : "Ctrl+F" }}</kbd><span>Search repo</span></button>
           </div>
           <div class="diff-options">
             @if (selectedFile()) {

@@ -1,8 +1,8 @@
 {
-  "version": "0.5.2",
+  "version": "0.5.3",
   "releaseNotes": [
-    "Added Ctrl/Cmd+F repository-wide search across file names and contents.",
-    "Added glassy search results with instant file previews and read-only viewing for unchanged files.",
-    "Improved update controls and release-note details, and fixed the exclusion filter in light mode."
+    "Redesigned the update action so new versions are clearly labeled and easier to install.",
+    "Added an interactive release-notes panel with update details and restart guidance.",
+    "Added a visible Ctrl/Cmd+F repository-search shortcut beside the active file."
   ]
 }
