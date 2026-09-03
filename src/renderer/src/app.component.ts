@@ -111,6 +111,14 @@ interface SplitDiffRow {
   spanning?: IndexedDiffRow;
 }
 
+interface DiffOverviewMarker {
+  index: number;
+  position: number;
+  size: number;
+  kind: "addition" | "deletion" | "change";
+  label: string;
+}
+
 interface ReviewNote {
   id: string;
   comparisonId: string;
@@ -531,6 +539,49 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly highlightedRows = signal<DiffRow[] | null>(null);
   readonly rows = computed(() => this.highlightedRows() ?? this.parsedRows());
   readonly splitRows = computed(() => pairSplitRows(this.rows()));
+  readonly diffOverviewMarkers = computed(() => {
+    const rows = this.rows();
+    const overviewRows = this.diffMode() === "unified"
+      ? rows.map((row, index) => ({
+          index,
+          addition: row.kind === "addition",
+          deletion: row.kind === "deletion"
+        }))
+      : this.splitRows().map((pair) => {
+          const entries = [pair.left, pair.right, pair.spanning].filter((entry): entry is IndexedDiffRow => !!entry);
+          return {
+            index: entries.find((entry) => entry.row.kind === "deletion" || entry.row.kind === "addition")?.index ?? entries[0]?.index ?? 0,
+            addition: entries.some((entry) => entry.row.kind === "addition"),
+            deletion: entries.some((entry) => entry.row.kind === "deletion")
+          };
+        });
+    const markers: DiffOverviewMarker[] = [];
+    let index = 0;
+    while (index < overviewRows.length) {
+      if (!overviewRows[index].addition && !overviewRows[index].deletion) {
+        index += 1;
+        continue;
+      }
+      const start = index;
+      let additions = false;
+      let deletions = false;
+      while (overviewRows[index]?.addition || overviewRows[index]?.deletion) {
+        additions ||= overviewRows[index].addition;
+        deletions ||= overviewRows[index].deletion;
+        index += 1;
+      }
+      const targetIndex = overviewRows[start].index;
+      const line = this.lineFor(rows[targetIndex]);
+      markers.push({
+        index: targetIndex,
+        position: overviewRows.length > 0 ? start / overviewRows.length * 100 : 0,
+        size: overviewRows.length > 0 ? (index - start) / overviewRows.length * 100 : 0,
+        kind: additions && deletions ? "change" : additions ? "addition" : "deletion",
+        label: line ? `Jump to changed region near line ${line}` : "Jump to changed region"
+      });
+    }
+    return markers;
+  });
   readonly diffScroll = viewChild<ElementRef<HTMLDivElement>>("diffScroll");
   readonly chatThread = viewChild<ElementRef<HTMLDivElement>>("chatThread");
   readonly chatContent = viewChild<ElementRef<HTMLDivElement>>("chatContent");
@@ -728,6 +779,12 @@ export class AppComponent implements OnInit, OnDestroy {
       this.diffMode.set(event.target.value as DiffMode);
       this.resetHorizontalScroll();
     }
+  }
+
+  scrollToDiffRegion(index: number): void {
+    const row = this.diffScroll()?.nativeElement.querySelector<HTMLElement>(`[data-diff-index="${index}"]`);
+    const behavior = window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+    row?.scrollIntoView({ block: "center", behavior });
   }
 
   updateFileFilter(event: Event): void {

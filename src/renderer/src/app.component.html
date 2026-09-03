@@ -398,6 +398,7 @@
             </label>
           </div>
         </div>
+        <div class="diff-viewport">
         <div #diffScroll class="diff-scroll" role="listbox" aria-multiselectable="true" aria-label="Changed lines">
           @if (patch()?.binary) {
             <p class="empty-copy">Binary file cannot be displayed.</p>
@@ -405,6 +406,7 @@
             @for (row of rows(); track $index) {
               <div
                 class="diff-row {{ row.kind }}"
+                [attr.data-diff-index]="$index"
                 [class.line-selected]="isRowSelected($index, row)"
                 [attr.tabindex]="isSelectable(row) ? 0 : -1"
                 [attr.role]="isSelectable(row) ? 'option' : null"
@@ -446,7 +448,7 @@
               @for (pair of splitRows(); track $index) {
                 @if (pair.spanning; as entry) {
                   <div class="split-spanning">
-                    <div class="diff-row {{ entry.row.kind }}">
+                    <div class="diff-row {{ entry.row.kind }}" [attr.data-diff-index]="entry.index">
                       <span class="line-number"></span>
                       <span class="line-number"></span>
                       <span class="line-prefix"></span>
@@ -458,6 +460,7 @@
                     @if (pair.left; as left) {
                       <div
                         class="split-side left {{ left.row.kind }}"
+                        [attr.data-diff-index]="left.index"
                         [class.line-selected]="isRowSelected(left.index, left.row)"
                         tabindex="0"
                         role="option"
@@ -492,6 +495,7 @@
                     @if (pair.right; as right) {
                       <div
                         class="split-side right {{ right.row.kind }}"
+                        [attr.data-diff-index]="right.index"
                         [class.line-selected]="isRowSelected(right.index, right.row)"
                         [attr.tabindex]="pair.left?.index === right.index ? -1 : 0"
                         [attr.role]="pair.left?.index === right.index ? null : 'option'"
@@ -531,6 +535,21 @@
             </div>
           }
           @if (selectedFile() && !patch()) { <p class="empty-copy">Loading patch...</p> }
+        </div>
+        @if (fullFile() && !patch()?.binary && diffOverviewMarkers().length > 0) {
+          <nav class="diff-overview" aria-label="Changed regions in full file">
+            @for (marker of diffOverviewMarkers(); track marker.index) {
+              <button
+                class="diff-overview-marker {{ marker.kind }}"
+                [style.top.%]="marker.position"
+                [style.height.%]="marker.size"
+                [title]="marker.label"
+                [attr.aria-label]="marker.label"
+                (click)="scrollToDiffRegion(marker.index)"
+              ></button>
+            }
+          </nav>
+        }
         </div>
       </section>
       }
