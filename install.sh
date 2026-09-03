@@ -1,6 +1,16 @@
 #!/bin/sh
 
 set -eu
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
+if [ ! -f "$SCRIPT_DIR/package.json" ]; then
+  BOOTSTRAP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/rift-source.XXXXXX")
+  trap 'rm -rf "$BOOTSTRAP_ROOT"' EXIT
+  curl -fsSL https://github.com/wisedev-pstach/RiftCode/archive/refs/heads/main.tar.gz |
+    tar -xz -C "$BOOTSTRAP_ROOT"
+  sh "$BOOTSTRAP_ROOT/RiftCode-main/install.sh"
+  exit $?
+fi
 
 if [ "$(uname -s)" != "Darwin" ]; then
   echo "install.sh currently supports macOS. On Windows, run install.ps1." >&2
@@ -17,7 +27,7 @@ if ! command -v npm >/dev/null 2>&1; then
   exit 1
 fi
 
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+ROOT=$SCRIPT_DIR
 APP_DESTINATION="$HOME/Applications/Rift.app"
 CLI_DESTINATION="$HOME/.local/bin/rift"
 
