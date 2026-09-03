@@ -20,16 +20,28 @@
          </button>
           <div class="brand" aria-label="RIFTcode"><strong class="typing-logo"><span class="logo-letter">R</span><span class="logo-letter">I</span><span class="logo-letter">F</span><span class="logo-letter">T</span><small>code</small></strong></div>
           <span class="app-version" [title]="updateStatus()?.error ? 'Update check failed: ' + updateStatus()!.error : 'Rift ' + appVersion">v{{ appVersion }}</span>
-          @if (updateStatus()?.updateAvailable) {
-            <button
-              class="update-install"
+           @if (updateStatus()?.updateAvailable) {
+             <button
+               class="update-install"
               [disabled]="updateInstalling() || !updateStatus()!.installSupported"
-              (click)="installAvailableUpdate()"
-              [title]="updateStatus()!.installSupported ? 'Install Rift ' + updateStatus()!.latestVersion : 'Automatic installation is unavailable on this platform'"
-              [attr.aria-label]="'Install Rift ' + updateStatus()!.latestVersion"
-            >{{ updateInstalling() ? "..." : "-> " + updateStatus()!.latestVersion }}</button>
-            <button class="update-info" [title]="releaseNotesTitle()" aria-label="Show release notes">i</button>
-          }
+               (click)="installAvailableUpdate()"
+               [title]="updateStatus()!.installSupported ? 'Install Rift ' + updateStatus()!.latestVersion : 'Automatic installation is unavailable on this platform'"
+               [attr.aria-label]="'Install Rift ' + updateStatus()!.latestVersion"
+             >
+               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 20h14"/></svg>
+               <span>{{ updateInstalling() ? "Starting..." : "Update" }}</span>
+             </button>
+             <button class="update-info" [class.active]="releaseNotesOpen()" [attr.aria-expanded]="releaseNotesOpen()" (mouseenter)="releaseNotesOpen.set(true)" (focus)="releaseNotesOpen.set(true)" (click)="releaseNotesOpen.set(!releaseNotesOpen())" aria-label="Show update details">
+               <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7h.01"/></svg>
+             </button>
+             @if (releaseNotesOpen()) {
+               <section class="update-release-popover" role="dialog" aria-label="Update details" (click)="$event.stopPropagation()">
+                 <header><span class="update-release-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 20h14"/></svg></span><span><small>Update available</small><strong>Rift {{ updateStatus()!.latestVersion }}</strong></span></header>
+                 <div><span>What's new</span><ul>@for (note of updateStatus()!.releaseNotes; track note) { <li>{{ note }}</li> }</ul></div>
+                 <footer><small>Rift will close when installation finishes. Reopen it afterward.</small><button [disabled]="updateInstalling() || !updateStatus()!.installSupported" (click)="installAvailableUpdate()">{{ updateInstalling() ? "Starting installer..." : "Install update" }}</button></footer>
+               </section>
+             }
+           }
         </div>
       <div class="comparison-picker">
         <button class="repository-switcher" (click)="chooseRepository()" [title]="repository()!.root">

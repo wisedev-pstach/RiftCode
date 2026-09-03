@@ -437,11 +437,7 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly appVersion = versionManifest.version;
   readonly updateStatus = signal<UpdateStatus | null>(null);
   readonly updateInstalling = signal(false);
-  readonly releaseNotesTitle = computed(() => {
-    const status = this.updateStatus();
-    if (!status?.updateAvailable || !status.latestVersion) return "";
-    return [`What's new in Rift ${status.latestVersion}`, "", ...status.releaseNotes.map((note) => `- ${note}`)].join("\n");
-  });
+  readonly releaseNotesOpen = signal(false);
   readonly darkTheme = signal(this.loadDarkTheme());
   readonly repository = signal<RepositorySnapshot | null>(null);
   readonly selectedPath = signal<string | null>(null);
@@ -769,7 +765,8 @@ export class AppComponent implements OnInit, OnDestroy {
     this.updateInstalling.set(true);
     try {
       const started = await window.rift.installUpdate();
-      if (!started) this.updateInstalling.set(false);
+      if (started) this.releaseNotesOpen.set(false);
+      else this.updateInstalling.set(false);
     } catch (reason) {
       this.updateInstalling.set(false);
       this.updateStatus.update((status) => status ? { ...status, error: reason instanceof Error ? reason.message : String(reason) } : status);
@@ -2283,8 +2280,11 @@ export class AppComponent implements OnInit, OnDestroy {
 
   @HostListener("document:pointerdown", ["$event"])
   dismissTools(event: PointerEvent): void {
-    if (!this.toolsMenu() && !this.fileToolsMenu()) return;
     const target = event.target;
+    if (this.releaseNotesOpen() && target instanceof Element && !target.closest(".update-info") && !target.closest(".update-release-popover")) {
+      this.releaseNotesOpen.set(false);
+    }
+    if (!this.toolsMenu() && !this.fileToolsMenu()) return;
     if (target instanceof Element && !target.closest(".selection-tools") && !target.closest(".file-tools")) {
       this.toolsMenu.set(null);
       this.fileToolsMenu.set(null);
@@ -2299,6 +2299,7 @@ export class AppComponent implements OnInit, OnDestroy {
   @HostListener("document:keydown.escape")
   closeTools(): void {
     if (this.repositorySearchOpen()) this.closeRepositorySearch();
+    else if (this.releaseNotesOpen()) this.releaseNotesOpen.set(false);
     else if (this.selectedToolCall()) this.closeToolCall();
     else if (this.agentModalOpen()) this.closeAgentModal();
     else if (this.noteComposerOpen()) this.cancelNote();

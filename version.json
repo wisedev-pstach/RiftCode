@@ -1,8 +1,8 @@
 {
-  "version": "0.5.1",
+  "version": "0.5.2",
   "releaseNotes": [
     "Added Ctrl/Cmd+F repository-wide search across file names and contents.",
     "Added glassy search results with instant file previews and read-only viewing for unchanged files.",
-    "Fixed the exclusion filter appearance in light mode."
+    "Improved update controls and release-note details, and fixed the exclusion filter in light mode."
   ]
 }
