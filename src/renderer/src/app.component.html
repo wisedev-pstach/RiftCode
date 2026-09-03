@@ -540,12 +540,13 @@
           <nav class="diff-overview" aria-label="Changed regions in full file">
             @for (marker of diffOverviewMarkers(); track marker.index) {
               <button
+                type="button"
                 class="diff-overview-marker {{ marker.kind }}"
                 [style.top.%]="marker.position"
                 [style.height.%]="marker.size"
                 [title]="marker.label"
                 [attr.aria-label]="marker.label"
-                (click)="scrollToDiffRegion(marker.index)"
+                (click)="scrollToDiffRegion(marker.position)"
               ></button>
             }
           </nav>
