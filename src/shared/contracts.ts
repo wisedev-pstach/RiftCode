@@ -8,6 +8,11 @@ export interface ComparisonOption {
   detail: string;
 }
 
+export interface ComparisonBranch {
+  ref: string;
+  label: string;
+}
+
 export interface ChangedFile {
   path: string;
   previousPath?: string;
@@ -21,6 +26,8 @@ export interface RepositorySnapshot {
   name: string;
   branch: string;
   baseBranch: string | null;
+  targetBranch: string | null;
+  targetBranches: ComparisonBranch[];
   comparisonId: string;
   comparisonLabel: string;
   startRevision: string;
@@ -139,6 +146,7 @@ export interface RiftApi {
   chooseRepository(): Promise<RepositorySnapshot | null>;
   chooseContextResources(kind: "files" | "directory"): Promise<ContextResourcePath[]>;
   selectComparison(id: string): Promise<RepositorySnapshot>;
+  selectTargetBranch(ref: string): Promise<RepositorySnapshot>;
   listAgents(): Promise<AgentOption[]>;
   listAgentModels(id: AgentId): Promise<string[]>;
   listAgentSessions(id: AgentId): Promise<AgentSession[]>;

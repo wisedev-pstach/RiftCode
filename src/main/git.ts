@@ -4,6 +4,7 @@ import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type {
   ChangedFile,
   ChangeStatus,
+  ComparisonBranch,
   ComparisonOption,
   FilePatch,
   RepositoryFileView,
@@ -153,7 +154,32 @@ async function refExists(root: string, ref: string): Promise<boolean> {
   return result.code === 0;
 }
 
-async function detectBase(root: string, branch: string): Promise<{ label: string | null; ref: string }> {
+async function targetBranches(root: string, branch: string): Promise<ComparisonBranch[]> {
+  const result = await git(root, [
+    "for-each-ref",
+    "--format=%(refname:short)%09%(symref)",
+    "refs/heads",
+    "refs/remotes"
+  ]);
+  return result.stdout
+    .split("\n")
+    .map((line) => line.split("\t"))
+    .filter(([ref, symbolicTarget]) => ref && ref !== branch && !symbolicTarget)
+    .map(([ref]) => ref)
+    .map((ref) => ({ ref, label: ref }));
+}
+
+async function detectBase(
+  root: string,
+  branch: string,
+  requestedTarget: string,
+  branches: ComparisonBranch[]
+): Promise<{ label: string | null; ref: string }> {
+  if (requestedTarget !== "auto") {
+    const target = branches.find((candidate) => candidate.ref === requestedTarget);
+    if (target) return { label: target.label, ref: target.ref };
+  }
+
   if (branch === "HEAD") return { label: null, ref: "HEAD" };
 
   const remoteHead = await git(root, ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"], [0, 1]);
@@ -270,13 +296,18 @@ async function untrackedStats(root: string, path: string): Promise<number> {
   }
 }
 
-export async function loadRepository(requestedPath: string, comparisonId = "auto"): Promise<RepositorySnapshot> {
+export async function loadRepository(
+  requestedPath: string,
+  comparisonId = "auto",
+  requestedTarget = "auto"
+): Promise<RepositorySnapshot> {
   const candidate = resolve(requestedPath);
   const rootResult = await git(candidate, ["rev-parse", "--show-toplevel"]);
   const root = rootResult.stdout.trim();
   const branchResult = await git(root, ["branch", "--show-current"]);
   const branch = branchResult.stdout.trim() || "HEAD";
-  const base = await detectBase(root, branch);
+  const branches = await targetBranches(root, branch);
+  const base = await detectBase(root, branch, requestedTarget, branches);
   const comparisons = await comparisonDefinitions(root, branch, base);
   const requestedComparisonId = comparisonId === "auto"
     ? defaultComparisonId(comparisons)
@@ -315,6 +346,8 @@ export async function loadRepository(requestedPath: string, comparisonId = "auto
     name: basename(root),
     branch,
     baseBranch: base.label,
+    targetBranch: base.label ? base.ref : null,
+    targetBranches: branches,
     comparisonId: comparison.id,
     comparisonLabel: comparison.detail,
     startRevision: comparison.startRevision,

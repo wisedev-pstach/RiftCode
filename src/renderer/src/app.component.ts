@@ -1261,6 +1261,26 @@ export class AppComponent implements OnInit, OnDestroy {
       if (request === this.repositorySearchRequest) this.repositorySearchLoading.set(false);
     }
   }
+
+  async selectTargetBranch(event: Event): Promise<void> {
+    if (!(event.target instanceof HTMLSelectElement)) return;
+    const select = event.target;
+    const request = ++this.repositoryRequest;
+    this.comparisonChanging.set(true);
+    this.selectedRange.set(null);
+    this.allChangesSelected.set(false);
+    try {
+      const repository = await window.rift.selectTargetBranch(select.value);
+      if (request === this.repositoryRequest) this.acceptRepository(repository);
+    } catch (reason) {
+      if (request === this.repositoryRequest) {
+        select.value = this.repository()?.targetBranch ?? "";
+        this.error.set(reason instanceof Error ? reason.message : String(reason));
+      }
+    } finally {
+      this.comparisonChanging.set(false);
+    }
+  }
   async saveCurrentFile(): Promise<void> {
     const path = this.selectedPath();
     const original = path ? this.fileContents().get(path) : undefined;
@@ -2467,6 +2487,7 @@ export class AppComponent implements OnInit, OnDestroy {
     const previousComparison = this.repository()?.comparisonId;
     const previousRoot = this.repository()?.root;
     const previousBranch = this.repository()?.branch;
+    const previousTargetBranch = this.repository()?.targetBranch;
     this.repository.set(repository);
     if (previousRoot !== repository.root) {
       this.repositoryViewRequest += 1;
@@ -2491,6 +2512,7 @@ export class AppComponent implements OnInit, OnDestroy {
       previousRoot !== repository.root
       || previousBranch !== repository.branch
       || previousComparison !== repository.comparisonId
+      || previousTargetBranch !== repository.targetBranch
     ) {
       this.reviewQuestion.set("");
       this.reviewResult.set(null);
@@ -2509,6 +2531,7 @@ export class AppComponent implements OnInit, OnDestroy {
     const nextPath = visibleFiles.some((file) => file.path === current) ? current : visibleFiles[0]?.path ?? null;
     const keepSelection = preserveSelection
       && previousComparison === repository.comparisonId
+      && previousTargetBranch === repository.targetBranch
       && previousPath === nextPath;
     if (!keepSelection) this.selectedRange.set(null);
     if (!keepSelection) this.allChangesSelected.set(false);
@@ -2623,6 +2646,13 @@ export class AppComponent implements OnInit, OnDestroy {
   private reviewSessionStorageKey(): string | null {
     const repository = this.repository();
     return repository
+      ? `rift:review-session:${repository.root}:${repository.branch}:${repository.comparisonId}:${repository.targetBranch ?? "none"}`
+      : null;
+  }
+
+  private previousReviewSessionStorageKey(): string | null {
+    const repository = this.repository();
+    return repository
       ? `rift:review-session:${repository.root}:${repository.branch}:${repository.comparisonId}`
       : null;
   }
@@ -2636,7 +2666,10 @@ export class AppComponent implements OnInit, OnDestroy {
     const key = this.reviewSessionStorageKey();
     if (!key) return;
     try {
-      const raw = localStorage.getItem(key);
+      const previousKey = this.previousReviewSessionStorageKey();
+      let raw = localStorage.getItem(key);
+      const previousRaw = !raw && previousKey ? localStorage.getItem(previousKey) : null;
+      raw ??= previousRaw;
       if (raw) {
         const stored: unknown = JSON.parse(raw);
         if (!isReviewSessionData(stored)) throw new Error("Invalid review session");
@@ -2665,6 +2698,9 @@ export class AppComponent implements OnInit, OnDestroy {
         ]);
         this.conversationRequest = Math.max(this.conversationRequest, ...restored.map((conversation) => conversation.id), 0);
         this.clearSessionArmed.set(false);
+        if (previousRaw && previousKey) {
+          if (this.persistReviewSession()) localStorage.removeItem(previousKey);
+        }
         return;
       }
       const legacyKey = this.legacyNotesStorageKey();
@@ -2692,9 +2728,9 @@ export class AppComponent implements OnInit, OnDestroy {
     }
   }
 
-  private persistReviewSession(): void {
+  private persistReviewSession(): boolean {
     const key = this.reviewSessionStorageKey();
-    if (!key) return;
+    if (!key) return false;
     try {
       const session: ReviewSessionData = {
         version: 4,
@@ -2710,8 +2746,10 @@ export class AppComponent implements OnInit, OnDestroy {
         }
       };
       localStorage.setItem(key, JSON.stringify(session));
+      return true;
     } catch {
       this.reviewMessage.set("Could not persist review session");
+      return false;
     }
   }
 

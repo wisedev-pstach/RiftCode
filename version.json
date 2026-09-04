@@ -1,8 +1,7 @@
 {
-  "version": "0.5.3",
+  "version": "0.5.4",
   "releaseNotes": [
-    "Redesigned the update action so new versions are clearly labeled and easier to install.",
-    "Added an interactive release-notes panel with update details and restart guidance.",
-    "Added a visible Ctrl/Cmd+F repository-search shortcut beside the active file."
+    "Added a target branch selector for comparing the current branch against any local or remote branch.",
+    "Repository refreshes now retain the selected target comparison branch."
   ]
 }

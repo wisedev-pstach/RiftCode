@@ -73,7 +73,10 @@ button { color: inherit; font: inherit; }
 .repository-switcher { -webkit-app-region: no-drag; border: 0; border-radius: 5px; padding: 6px 8px; background: transparent; font-weight: 650; cursor: pointer; }
 .repository-switcher:hover { background: #1a1e24; }
 .comparison-arrow { color: #505966; }
-.comparison-picker select { width: min(520px, 42vw); border: 0; outline: 0; padding: 6px 26px 6px 7px; color: #9da6b4; background: #13171c; font: 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; cursor: pointer; }
+.comparison-picker select { width: min(340px, 28vw); border: 0; outline: 0; padding: 6px 26px 6px 7px; color: #9da6b4; background: #13171c; font: 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; cursor: pointer; }
+.target-branch-picker { display: flex; align-items: center; }
+.target-branch-prefix { color: #68737f; font: 9px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; text-transform: uppercase; }
+.comparison-picker .target-branch-picker select { width: min(150px, 14vw); color: #c5d5aa; }
 .comparison-picker select:focus-visible { box-shadow: 0 0 0 1px #c8ff63; }
 .comparison-picker select:disabled { cursor: wait; opacity: .55; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
@@ -990,7 +993,8 @@ button { color: inherit; font: inherit; }
   .workspace { grid-template-columns: min(var(--changes-width, 220px), calc(100vw - 548px)) minmax(460px, 1fr) 88px; }
   .workspace.review-open { grid-template-columns: min(var(--changes-width, 220px), calc(100vw - 710px)) minmax(460px, 1fr) 250px; }
   .topbar { grid-template-columns: 140px minmax(0, 1fr) 140px; }
-  .comparison-picker select { width: min(390px, 38vw); }
+  .comparison-picker select { width: min(260px, 25vw); }
+  .comparison-picker .target-branch-picker select { width: min(120px, 12vw); }
   .chat-page-header { grid-template-columns: 105px minmax(50px, 1fr) auto; gap: 7px; padding-inline: 10px; }
   .chat-page-header > span small, .chat-font-control { display: none; }
   .chat-provider-control select { max-width: 105px; }

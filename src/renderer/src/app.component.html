@@ -47,7 +47,25 @@
         <button class="repository-switcher" (click)="chooseRepository()" [title]="repository()!.root">
           {{ repository()!.name }}
         </button>
-        <span class="comparison-arrow">/</span>
+         <span class="comparison-arrow">/</span>
+         @if (repository()!.targetBranches.length > 0) {
+           <label class="target-branch-picker">
+             <span class="visually-hidden">Select target comparison branch</span>
+             <span class="target-branch-prefix">vs</span>
+             <select
+               [value]="repository()!.targetBranch"
+               [disabled]="comparisonChanging()"
+               (change)="selectTargetBranch($event)"
+               title="Choose the target comparison branch"
+             >
+               <option value="" disabled>Select target</option>
+               @for (branch of repository()!.targetBranches; track branch.ref) {
+                 <option [value]="branch.ref" [selected]="branch.ref === repository()!.targetBranch">{{ branch.label }}</option>
+               }
+             </select>
+           </label>
+           <span class="comparison-arrow">/</span>
+         }
          <label>
           <span class="visually-hidden">Select comparison</span>
           <select

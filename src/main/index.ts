@@ -26,6 +26,7 @@ let watcher: FSWatcher | null = null;
 let watchedRoot: string | null = null;
 let refreshTimer: NodeJS.Timeout | null = null;
 let activeComparisonId = "auto";
+let activeTargetBranch = "auto";
 let repositoryLoadQueue = Promise.resolve();
 let repositoryGeneration = 0;
 let currentRepositoryPath: string | null = null;
@@ -646,14 +647,15 @@ function watchRepository(root: string): void {
   }
 }
 
-function queueRepositoryLoad(path: string, comparisonId: string, generation: number): Promise<RepositorySnapshot> {
-  const load = repositoryLoadQueue.then(() => loadRepository(path, comparisonId));
+function queueRepositoryLoad(path: string, comparisonId: string, targetBranch: string, generation: number): Promise<RepositorySnapshot> {
+  const load = repositoryLoadQueue.then(() => loadRepository(path, comparisonId, targetBranch));
   repositoryLoadQueue = load.then(() => undefined, () => undefined);
   return load.then((loaded) => {
     if (repositoryGeneration === generation) {
       snapshot = loaded;
       currentRepositoryPath = loaded.root;
       if (activeComparisonId === comparisonId) activeComparisonId = loaded.comparisonId;
+      if (activeTargetBranch === targetBranch) activeTargetBranch = loaded.targetBranch ?? "auto";
     }
     return loaded;
   });
@@ -669,11 +671,13 @@ function repositoryFilePath(path: unknown): string {
 async function openRepository(path: string): Promise<RepositorySnapshot> {
   const previousPath = currentRepositoryPath;
   const previousComparisonId = activeComparisonId;
+  const previousTargetBranch = activeTargetBranch;
   const generation = ++repositoryGeneration;
   currentRepositoryPath = path;
   activeComparisonId = "auto";
+  activeTargetBranch = "auto";
   try {
-    const loaded = await queueRepositoryLoad(path, activeComparisonId, generation);
+    const loaded = await queueRepositoryLoad(path, activeComparisonId, activeTargetBranch, generation);
     if (repositoryGeneration === generation) {
       if (refreshTimer) clearTimeout(refreshTimer);
       refreshTimer = null;
@@ -684,6 +688,7 @@ async function openRepository(path: string): Promise<RepositorySnapshot> {
     if (repositoryGeneration === generation) {
       currentRepositoryPath = previousPath;
       activeComparisonId = previousComparisonId;
+      activeTargetBranch = previousTargetBranch;
     }
     throw error;
   }
@@ -780,7 +785,7 @@ function registerIpc(): void {
 
   ipcMain.handle("repository:refresh", async () => {
     if (!currentRepositoryPath) throw new Error("No repository is open.");
-    return queueRepositoryLoad(currentRepositoryPath, activeComparisonId, repositoryGeneration);
+    return queueRepositoryLoad(currentRepositoryPath, activeComparisonId, activeTargetBranch, repositoryGeneration);
   });
 
   ipcMain.handle("repository:compare", async (_event, comparisonId: string) => {
@@ -791,9 +796,34 @@ function registerIpc(): void {
     const previousComparisonId = activeComparisonId;
     activeComparisonId = comparisonId;
     try {
-      return await queueRepositoryLoad(currentRepositoryPath, comparisonId, repositoryGeneration);
+      return await queueRepositoryLoad(currentRepositoryPath, comparisonId, activeTargetBranch, repositoryGeneration);
     } catch (error) {
       activeComparisonId = previousComparisonId;
+      throw error;
+    }
+  });
+
+  ipcMain.handle("repository:target-branch", async (_event, targetBranch: string) => {
+    if (!currentRepositoryPath) throw new Error("No repository is open.");
+    if (!snapshot?.targetBranches.some((option) => option.ref === targetBranch)) {
+      throw new Error(`Unknown target branch: ${targetBranch}`);
+    }
+    const previousComparisonId = activeComparisonId;
+    const previousTargetBranch = activeTargetBranch;
+    const generation = repositoryGeneration;
+    activeComparisonId = "current-branch";
+    activeTargetBranch = targetBranch;
+    try {
+      return await queueRepositoryLoad(currentRepositoryPath, activeComparisonId, targetBranch, generation);
+    } catch (error) {
+      if (
+        repositoryGeneration === generation
+        && activeComparisonId === "current-branch"
+        && activeTargetBranch === targetBranch
+      ) {
+        activeComparisonId = previousComparisonId;
+        activeTargetBranch = previousTargetBranch;
+      }
       throw error;
     }
   });

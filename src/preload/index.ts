@@ -17,6 +17,7 @@ const api: RiftApi = {
   chooseRepository: () => ipcRenderer.invoke("repository:choose"),
   chooseContextResources: (kind) => ipcRenderer.invoke("context:choose-resources", kind),
   selectComparison: (id) => ipcRenderer.invoke("repository:compare", id),
+  selectTargetBranch: (ref) => ipcRenderer.invoke("repository:target-branch", ref),
   listAgents: () => ipcRenderer.invoke("agent:list"),
   listAgentModels: (id) => ipcRenderer.invoke("agent:models", id),
   listAgentSessions: (id) => ipcRenderer.invoke("agent:sessions", id),
