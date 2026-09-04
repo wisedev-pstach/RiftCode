@@ -1,16 +1,23 @@
 import { execFile } from "node:child_process";
-import { readFile, stat } from "node:fs/promises";
-import { basename, join, resolve } from "node:path";
+import { readFile, realpath, stat } from "node:fs/promises";
+import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type {
   ChangedFile,
   ChangeStatus,
   ComparisonOption,
   FilePatch,
+  RepositoryFileView,
+  RepositorySearchResponse,
+  RepositorySearchResult,
   RepositorySnapshot
 } from "../shared/contracts";
 
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 const FULL_FILE_CONTEXT_LINES = 2_147_483_647;
+const SEARCH_FILE_LIMIT = 512 * 1024;
+const SEARCH_RESULT_LIMIT = 80;
+const VIEW_FILE_LIMIT = 2 * 1024 * 1024;
+const VIEW_LINE_LIMIT = 10_000;
 
 interface GitResult {
   stdout: string;
@@ -45,6 +52,100 @@ function run(
 
 function git(cwd: string, args: string[], acceptedCodes = [0], signal?: AbortSignal): Promise<GitResult> {
   return run("git", ["-c", "core.quotepath=false", ...args], cwd, acceptedCodes, signal);
+}
+
+async function safeRepositoryFile(root: string, path: string): Promise<string> {
+  if (!path || path.includes("\0") || isAbsolute(path)) throw new Error("Invalid repository file path.");
+  const canonicalRoot = await realpath(root);
+  const candidate = resolve(canonicalRoot, path);
+  const lexicalRelative = relative(canonicalRoot, candidate);
+  if (!lexicalRelative || lexicalRelative.startsWith(`..${sep}`) || lexicalRelative === ".." || isAbsolute(lexicalRelative)) {
+    throw new Error("The file is outside the repository.");
+  }
+  const canonicalFile = await realpath(candidate);
+  const canonicalRelative = relative(canonicalRoot, canonicalFile);
+  if (!canonicalRelative || canonicalRelative.startsWith(`..${sep}`) || canonicalRelative === ".." || isAbsolute(canonicalRelative)) {
+    throw new Error("The file is outside the repository.");
+  }
+  return canonicalFile;
+}
+
+async function searchableText(root: string, path: string, limit = SEARCH_FILE_LIMIT): Promise<string | null> {
+  try {
+    const file = await safeRepositoryFile(root, path);
+    const info = await stat(file);
+    if (!info.isFile() || info.size > limit) return null;
+    const content = await readFile(file);
+    if (content.includes(0)) return null;
+    return content.toString("utf8");
+  } catch {
+    return null;
+  }
+}
+
+function searchResult(path: string, text: string | null, query: string): RepositorySearchResult | null {
+  const lowerQuery = query.toLocaleLowerCase();
+  const nameMatch = path.toLocaleLowerCase().includes(lowerQuery);
+  if (text === null) return nameMatch ? { path, nameMatch, matches: [], preview: "Preview unavailable", previewStartLine: 1 } : null;
+  const lines = text.split(/\r?\n/);
+  const matchingLines: number[] = [];
+  for (let index = 0; index < lines.length && matchingLines.length < 3; index += 1) {
+    if (lines[index].toLocaleLowerCase().includes(lowerQuery)) matchingLines.push(index);
+  }
+  if (!nameMatch && matchingLines.length === 0) return null;
+  const previewStart = Math.max(0, (matchingLines[0] ?? 5) - 5);
+  return {
+    path,
+    nameMatch,
+    matches: matchingLines.map((line) => ({ line: line + 1, text: lines[line].slice(0, 500) })),
+    preview: lines.slice(previewStart, previewStart + 16).join("\n").slice(0, 12_000),
+    previewStartLine: previewStart + 1
+  };
+}
+
+export async function searchRepository(root: string, query: string): Promise<RepositorySearchResponse> {
+  const [allResult, contentMatchesResult] = await Promise.all([
+    git(root, ["ls-files", "--cached", "--others", "--exclude-standard", "-z"]),
+    git(root, ["grep", "--untracked", "-l", "-I", "-F", "-i", "-z", "-e", query, "--"], [0, 1])
+  ]);
+  const lowerQuery = query.toLocaleLowerCase();
+  const allPaths = allResult.stdout.split("\0").filter(Boolean);
+  const candidates = new Set([
+    ...allPaths.filter((path) => path.toLocaleLowerCase().includes(lowerQuery)),
+    ...contentMatchesResult.stdout.split("\0").filter(Boolean)
+  ]);
+
+  const ordered = [...candidates].sort((left, right) => {
+    const leftName = left.toLocaleLowerCase().includes(lowerQuery);
+    const rightName = right.toLocaleLowerCase().includes(lowerQuery);
+    return Number(rightName) - Number(leftName) || left.localeCompare(right);
+  });
+  const results: RepositorySearchResult[] = [];
+  for (const path of ordered.slice(0, SEARCH_RESULT_LIMIT)) {
+    const result = searchResult(path, await searchableText(root, path), query);
+    if (result) results.push(result);
+  }
+  return { results, limited: ordered.length > SEARCH_RESULT_LIMIT };
+}
+
+export async function readRepositoryViewFile(root: string, path: string): Promise<RepositoryFileView> {
+  const listed = await git(root, ["ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", path]);
+  if (!listed.stdout.split("\0").includes(path)) throw new Error("The file is not tracked or available in the repository.");
+  const file = await safeRepositoryFile(root, path);
+  const info = await stat(file);
+  if (!info.isFile()) throw new Error("The selected path is not a file.");
+  const content = await readFile(file);
+  if (content.includes(0)) return { path, content: "", binary: true, truncated: false };
+  const sizeTruncated = content.length > VIEW_FILE_LIMIT;
+  const text = content.subarray(0, VIEW_FILE_LIMIT).toString("utf8");
+  const lines = text.split(/\r?\n/);
+  const lineTruncated = lines.length > VIEW_LINE_LIMIT;
+  return {
+    path,
+    content: lines.slice(0, VIEW_LINE_LIMIT).join("\n"),
+    binary: false,
+    truncated: sizeTruncated || lineTruncated
+  };
 }
 
 async function refExists(root: string, ref: string): Promise<boolean> {

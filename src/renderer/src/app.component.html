@@ -1,8 +1,8 @@
 @if (loading()) {
-  <main class="center-state"><span class="loading-wordmark"><strong>RIFT</strong><small>/code</small></span><p>Opening repository...</p></main>
+  <main class="center-state"><span class="loading-wordmark"><strong>RIFT</strong><small>/code</small><em>v{{ appVersion }}</em></span><p>Opening repository...</p></main>
 } @else if (!repository()) {
   <main class="center-state">
-    <span class="loading-wordmark"><strong>RIFT</strong><small>/code</small></span>
+    <span class="loading-wordmark"><strong>RIFT</strong><small>/code</small><em>v{{ appVersion }}</em></span>
     <h1>Open a Git repository</h1>
     <p>{{ error() || "Launch Rift from a repository or choose one here." }}</p>
     <button class="primary-button" (click)="chooseRepository()">Choose repository</button>
@@ -18,8 +18,31 @@
              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.2 15.2A8.5 8.5 0 0 1 8.8 3.8 8.5 8.5 0 1 0 20.2 15.2Z"/></svg>
            }
          </button>
-         <div class="brand" aria-label="RIFTcode"><strong class="typing-logo"><span class="logo-letter">R</span><span class="logo-letter">I</span><span class="logo-letter">F</span><span class="logo-letter">T</span><small>code</small></strong></div>
-       </div>
+          <div class="brand" aria-label="RIFTcode"><strong class="typing-logo"><span class="logo-letter">R</span><span class="logo-letter">I</span><span class="logo-letter">F</span><span class="logo-letter">T</span><small>code</small></strong></div>
+          <span class="app-version" [title]="updateStatus()?.error ? 'Update check failed: ' + updateStatus()!.error : 'Rift ' + appVersion">v{{ appVersion }}</span>
+           @if (updateStatus()?.updateAvailable) {
+             <button
+               class="update-install"
+              [disabled]="updateInstalling() || !updateStatus()!.installSupported"
+               (click)="installAvailableUpdate()"
+               [title]="updateStatus()!.installSupported ? 'Install Rift ' + updateStatus()!.latestVersion : 'Automatic installation is unavailable on this platform'"
+               [attr.aria-label]="'Install Rift ' + updateStatus()!.latestVersion"
+             >
+               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 20h14"/></svg>
+               <span>{{ updateInstalling() ? "Starting..." : "Update" }}</span>
+             </button>
+             <button class="update-info" [class.active]="releaseNotesOpen()" [attr.aria-expanded]="releaseNotesOpen()" (mouseenter)="releaseNotesOpen.set(true)" (focus)="releaseNotesOpen.set(true)" (click)="releaseNotesOpen.set(!releaseNotesOpen())" aria-label="Show update details">
+               <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7h.01"/></svg>
+             </button>
+             @if (releaseNotesOpen()) {
+               <section class="update-release-popover" role="dialog" aria-label="Update details" (click)="$event.stopPropagation()">
+                 <header><span class="update-release-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 20h14"/></svg></span><span><small>Update available</small><strong>Rift {{ updateStatus()!.latestVersion }}</strong></span></header>
+                 <div><span>What's new</span><ul>@for (note of updateStatus()!.releaseNotes; track note) { <li>{{ note }}</li> }</ul></div>
+                 <footer><small>Rift will close when installation finishes. Reopen it afterward.</small><button [disabled]="updateInstalling() || !updateStatus()!.installSupported" (click)="installAvailableUpdate()">{{ updateInstalling() ? "Starting installer..." : "Install update" }}</button></footer>
+               </section>
+             }
+           }
+        </div>
       <div class="comparison-picker">
         <button class="repository-switcher" (click)="chooseRepository()" [title]="repository()!.root">
           {{ repository()!.name }}
@@ -380,8 +403,9 @@
       <section class="diff-panel">
         <div class="diff-toolbar">
           <div>
-            <strong>{{ selectedFile() ? shortName(selectedFile()!.path) : "No file selected" }}</strong>
-            @if (selectedFile()) { <span>{{ selectedFile()!.path }}</span> }
+            <strong>{{ selectedPath() ? shortName(selectedPath()!) : "No file selected" }}</strong>
+            @if (selectedPath()) { <span>{{ selectedPath() }}</span> }
+            <button class="search-shortcut-hint" (click)="openRepositorySearch()" title="Search all repository files and contents"><kbd>{{ platform === "darwin" ? "Cmd+F" : "Ctrl+F" }}</kbd><span>Search repo</span></button>
           </div>
           <div class="diff-options">
             <button class="edit-file-button" [class.active]="editMode()" [disabled]="!selectedFile() || selectedFile()?.status === 'deleted' || patch()?.binary" (click)="toggleEditMode()" [title]="editMode() ? 'Exit edit mode (Escape)' : 'Enter edit mode (Ctrl+E)'">{{ editMode() ? "Editing" : "Edit" }}</button>
@@ -410,7 +434,20 @@
         </div>
         <div class="diff-viewport">
         <div #diffScroll class="diff-scroll" role="listbox" aria-multiselectable="true" aria-label="Changed lines">
-          @if (patch()?.binary) {
+          @if (repositoryFileLoading()) {
+            <p class="empty-copy">Opening repository file...</p>
+          } @else if (repositoryFileError()) {
+            <p class="empty-copy">{{ repositoryFileError() }}</p>
+          } @else if (repositoryFileView()?.binary) {
+            <p class="empty-copy">Binary file cannot be displayed.</p>
+          } @else if (repositoryFileView(); as repositoryFile) {
+            @if (repositoryFile.truncated) { <p class="repository-file-notice">Large file preview truncated</p> }
+            <div class="repository-file-lines">
+              @for (line of repositoryFileLines(); track $index) {
+                <div class="repository-file-row"><span>{{ $index + 1 }}</span><code>{{ line || " " }}</code></div>
+              }
+            </div>
+          } @else if (patch()?.binary) {
             <p class="empty-copy">Binary file cannot be displayed.</p>
           } @else if (diffMode() === "unified") {
             @for (row of rows(); track $index) {
@@ -755,6 +792,60 @@
           </button>
         }
       </section>
+    }
+
+    @if (repositorySearchOpen()) {
+      <div class="repository-search-backdrop" role="presentation" (click)="closeRepositorySearch()">
+        <section class="repository-search-dialog" role="dialog" aria-modal="true" aria-labelledby="repository-search-title" (click)="$event.stopPropagation()">
+          <header>
+            <span><strong id="repository-search-title">Search repository</strong><small>Files, paths, and content across {{ repository()!.name }}</small></span>
+            <kbd>{{ platform === "darwin" ? "Cmd F" : "Ctrl F" }}</kbd>
+          </header>
+          <div class="repository-search-box">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg>
+            <input #repositorySearchInput type="search" maxlength="200" autocomplete="off" spellcheck="false" placeholder="Search file names and contents..." [value]="repositorySearchQuery()" (input)="updateRepositorySearch($event)" (keydown)="handleRepositorySearchKeydown($event)">
+            @if (repositorySearchLoading()) { <span class="repository-search-spinner" aria-label="Searching"></span> }
+          </div>
+          <div class="repository-search-content">
+            <div class="repository-search-results" role="listbox" aria-label="Repository search results">
+              @for (result of repositorySearchResults(); track result.path; let index = $index) {
+                <button
+                  class="repository-search-result"
+                  [class.active]="index === activeSearchResult()"
+                  [class.changed]="isChangedFile(result.path)"
+                  role="option"
+                  [attr.aria-selected]="index === activeSearchResult()"
+                  (pointerenter)="activeSearchResult.set(index)"
+                  (focus)="activeSearchResult.set(index)"
+                  (click)="openSearchResult(result)"
+                >
+                  <span class="repository-search-file-mark">{{ result.nameMatch ? "FILE" : "TEXT" }}</span>
+                  <span><strong>{{ shortName(result.path) }}</strong><small>{{ result.path }}</small>@if (result.matches[0]; as match) { <em><b>{{ match.line }}</b>{{ match.text }}</em> }</span>
+                </button>
+              } @empty {
+                <div class="repository-search-empty">
+                  @if (repositorySearchError()) { <strong>Search failed</strong><span>{{ repositorySearchError() }}</span> }
+                  @else if (repositorySearchQuery().trim() && !repositorySearchLoading()) { <strong>No matches</strong><span>Try another file name or phrase.</span> }
+                  @else { <strong>Find anything</strong><span>Search tracked and non-ignored files without leaving the review.</span> }
+                </div>
+              }
+            </div>
+            <aside class="repository-search-preview">
+              @if (searchPreview(); as preview) {
+                <header><span><strong>{{ shortName(preview.path) }}</strong><small>{{ preview.path }}</small></span><em>{{ preview.matches.length ? "Content match" : "Name match" }}</em></header>
+                <div>
+                  @for (line of preview.preview.split("\n"); track $index) {
+                    <p [class.match]="preview.matches[0]?.line === preview.previewStartLine + $index"><span>{{ preview.previewStartLine + $index }}</span><code>{{ line || " " }}</code></p>
+                  }
+                </div>
+              } @else {
+                <div class="repository-search-preview-empty">Hover a result to preview it</div>
+              }
+            </aside>
+          </div>
+          <footer><span>{{ repositorySearchLimited() ? "Showing the first 80 matches" : repositorySearchResults().length + " results" }}</span><span><kbd>Up/Down</kbd> Navigate <kbd>Enter</kbd> Open <kbd>Esc</kbd> Close</span></footer>
+        </section>
+      </div>
     }
 
     @if (conversationChoiceOpen() && pendingExplain(); as pending) {

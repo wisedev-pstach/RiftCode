@@ -39,6 +39,31 @@ export interface FilePatch {
   binary: boolean;
 }
 
+export interface RepositorySearchMatch {
+  line: number;
+  text: string;
+}
+
+export interface RepositorySearchResult {
+  path: string;
+  nameMatch: boolean;
+  matches: RepositorySearchMatch[];
+  preview: string;
+  previewStartLine: number;
+}
+
+export interface RepositorySearchResponse {
+  results: RepositorySearchResult[];
+  limited: boolean;
+}
+
+export interface RepositoryFileView {
+  path: string;
+  content: string;
+  binary: boolean;
+  truncated: boolean;
+}
+
 export type AgentId = "opencode" | "claude";
 export type AgentMode = "review" | "edit";
 
@@ -89,6 +114,15 @@ export interface AgentStreamEvent {
   result: AgentRunResult;
 }
 
+export interface UpdateStatus {
+  currentVersion: string;
+  latestVersion: string | null;
+  releaseNotes: string[];
+  updateAvailable: boolean;
+  installSupported: boolean;
+  error: string | null;
+}
+
 export interface RiftApi {
   platform: "darwin" | "linux" | "win32";
   setTheme(theme: "dark" | "light"): Promise<void>;
@@ -100,6 +134,8 @@ export interface RiftApi {
   openRepository(path?: string): Promise<RepositorySnapshot>;
   refreshRepository(): Promise<RepositorySnapshot>;
   getFilePatch(path: string, fullFile: boolean): Promise<FilePatch>;
+  searchRepository(query: string): Promise<RepositorySearchResponse>;
+  readRepositoryViewFile(path: string): Promise<RepositoryFileView>;
   chooseRepository(): Promise<RepositorySnapshot | null>;
   chooseContextResources(kind: "files" | "directory"): Promise<ContextResourcePath[]>;
   selectComparison(id: string): Promise<RepositorySnapshot>;
@@ -110,6 +146,8 @@ export interface RiftApi {
   runAgent(runId: string, id: AgentId, model: string | null, mode: AgentMode, prompt: string, resourcePaths: string[], sessionId?: string): Promise<AgentRunResult>;
   cancelAgent(): Promise<void>;
   copyText(text: string): Promise<void>;
+  checkForUpdate(): Promise<UpdateStatus>;
+  installUpdate(): Promise<boolean>;
   onRepositoryChanged(listener: () => void): () => void;
   onAgentEvent(listener: (event: AgentStreamEvent) => void): () => void;
 }

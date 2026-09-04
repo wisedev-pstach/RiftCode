@@ -11,7 +11,8 @@ import {
   viewChild
 } from "@angular/core";
 import { marked } from "marked";
-import type { AgentConversationHistory, AgentId, AgentMode, AgentOption, AgentRunResult, AgentSession, AgentStreamEvent, AgentToolEvent, ChangedFile, ContextResourcePath, FilePatch, RepositorySnapshot } from "../../shared/contracts";
+import type { AgentConversationHistory, AgentId, AgentMode, AgentOption, AgentRunResult, AgentSession, AgentStreamEvent, AgentToolEvent, ChangedFile, ContextResourcePath, FilePatch, RepositoryFileView, RepositorySearchResult, RepositorySnapshot, UpdateStatus } from "../../shared/contracts";
+import versionManifest from "../../../version.json";
 
 type DiffKind = "header" | "hunk" | "context" | "addition" | "deletion" | "meta";
 type DiffMode = "unified" | "split";
@@ -433,10 +434,26 @@ function pairSplitRows(rows: DiffRow[]): SplitDiffRow[] {
 })
 export class AppComponent implements OnInit, OnDestroy {
   readonly platform = window.rift.platform;
+  readonly appVersion = versionManifest.version;
+  readonly updateStatus = signal<UpdateStatus | null>(null);
+  readonly updateInstalling = signal(false);
+  readonly releaseNotesOpen = signal(false);
   readonly darkTheme = signal(this.loadDarkTheme());
   readonly repository = signal<RepositorySnapshot | null>(null);
   readonly selectedPath = signal<string | null>(null);
   readonly patch = signal<FilePatch | null>(null);
+  readonly repositoryFileView = signal<RepositoryFileView | null>(null);
+  readonly repositoryFileLoading = signal(false);
+  readonly repositoryFileError = signal<string | null>(null);
+  readonly repositoryFileLines = computed(() => this.repositoryFileView()?.content.split("\n") ?? []);
+  readonly repositorySearchOpen = signal(false);
+  readonly repositorySearchQuery = signal("");
+  readonly repositorySearchResults = signal<RepositorySearchResult[]>([]);
+  readonly repositorySearchLoading = signal(false);
+  readonly repositorySearchError = signal<string | null>(null);
+  readonly repositorySearchLimited = signal(false);
+  readonly activeSearchResult = signal(0);
+  readonly searchPreview = computed(() => this.repositorySearchResults()[this.activeSearchResult()] ?? null);
   readonly diffMode = signal<DiffMode>("unified");
   readonly fullFile = signal(this.loadFullFile());
   readonly fileFilter = signal(this.loadFileFilter());
@@ -589,6 +606,7 @@ export class AppComponent implements OnInit, OnDestroy {
     return markers;
   });
   readonly diffScroll = viewChild<ElementRef<HTMLDivElement>>("diffScroll");
+  readonly repositorySearchInput = viewChild<ElementRef<HTMLInputElement>>("repositorySearchInput");
   readonly chatThread = viewChild<ElementRef<HTMLDivElement>>("chatThread");
   readonly chatContent = viewChild<ElementRef<HTMLDivElement>>("chatContent");
   readonly chatBottom = viewChild<ElementRef<HTMLDivElement>>("chatBottom");
@@ -668,6 +686,9 @@ export class AppComponent implements OnInit, OnDestroy {
   private selecting = false;
   private patchRequest = 0;
   private repositoryRequest = 0;
+  private repositorySearchRequest = 0;
+  private repositoryViewRequest = 0;
+  private repositorySearchTimer: ReturnType<typeof setTimeout> | undefined;
   private highlightRequest = 0;
   private agentRequest = 0;
   private modelRequest = 0;
@@ -709,6 +730,7 @@ export class AppComponent implements OnInit, OnDestroy {
   ngOnInit(): void {
     this.migratePreferences();
     this.applyTheme();
+    void window.rift.checkForUpdate().then((status) => this.updateStatus.set(status));
     this.highlightWorker.onmessage = ({ data }: MessageEvent<HighlightResponse>) => {
       if (data.requestId === this.highlightRequest) this.highlightedRows.set(data.rows);
     };
@@ -738,10 +760,24 @@ export class AppComponent implements OnInit, OnDestroy {
     });
   }
 
+  async installAvailableUpdate(): Promise<void> {
+    if (this.updateInstalling()) return;
+    this.updateInstalling.set(true);
+    try {
+      const started = await window.rift.installUpdate();
+      if (started) this.releaseNotesOpen.set(false);
+      else this.updateInstalling.set(false);
+    } catch (reason) {
+      this.updateInstalling.set(false);
+      this.updateStatus.update((status) => status ? { ...status, error: reason instanceof Error ? reason.message : String(reason) } : status);
+    }
+  }
+
   ngOnDestroy(): void {
     this.removeRepositoryListener?.();
     this.removeAgentListener?.();
     if (this.chatFollowTimer) clearTimeout(this.chatFollowTimer);
+    if (this.repositorySearchTimer) clearTimeout(this.repositorySearchTimer);
     this.chatResizeObserver.disconnect();
     this.highlightWorker.terminate();
     this.revokeImagePreviews(this.questionImageAttachments());
@@ -995,7 +1031,12 @@ export class AppComponent implements OnInit, OnDestroy {
     this.fileToolsMenu.set(null);
     this.chatPageOpen.set(false);
     this.reviewPageOpen.set(false);
-    if (path === this.selectedPath()) return;
+    const wasRepositoryView = this.repositoryFileView() !== null;
+    this.repositoryViewRequest += 1;
+    this.repositoryFileView.set(null);
+    this.repositoryFileLoading.set(false);
+    this.repositoryFileError.set(null);
+    if (path === this.selectedPath() && !wasRepositoryView) return;
     this.selectedPath.set(path);
     this.selectedRange.set(null);
     this.allChangesSelected.set(false);
@@ -1093,6 +1134,11 @@ export class AppComponent implements OnInit, OnDestroy {
   @HostListener("document:keydown", ["$event"])
   handleKeyboardShortcut(event: KeyboardEvent): void {
     if (!(event.ctrlKey || event.metaKey)) return;
+    if (event.key.toLowerCase() === "f") {
+      event.preventDefault();
+      this.openRepositorySearch();
+      return;
+    }
     if (event.key.toLowerCase() === "e") {
       const target = event.target;
       if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement || (target instanceof HTMLElement && target.isContentEditable)) return;
@@ -1108,6 +1154,113 @@ export class AppComponent implements OnInit, OnDestroy {
     }
   }
 
+  openRepositorySearch(): void {
+    this.repositorySearchOpen.set(true);
+    this.repositorySearchError.set(null);
+    requestAnimationFrame(() => {
+      const input = this.repositorySearchInput()?.nativeElement;
+      input?.focus();
+      input?.select();
+    });
+  }
+
+  closeRepositorySearch(): void {
+    this.repositorySearchOpen.set(false);
+    this.repositorySearchRequest += 1;
+    this.repositorySearchLoading.set(false);
+    if (this.repositorySearchTimer) clearTimeout(this.repositorySearchTimer);
+    this.repositorySearchTimer = undefined;
+  }
+
+  updateRepositorySearch(event: Event): void {
+    if (!(event.target instanceof HTMLInputElement)) return;
+    const query = event.target.value.slice(0, 200);
+    this.repositorySearchQuery.set(query);
+    this.repositorySearchError.set(null);
+    if (this.repositorySearchTimer) clearTimeout(this.repositorySearchTimer);
+    const request = ++this.repositorySearchRequest;
+    if (!query.trim()) {
+      this.repositorySearchResults.set([]);
+      this.repositorySearchLimited.set(false);
+      this.repositorySearchLoading.set(false);
+      this.activeSearchResult.set(0);
+      return;
+    }
+    this.repositorySearchLoading.set(true);
+    this.repositorySearchTimer = setTimeout(() => void this.runRepositorySearch(query.trim(), request), 180);
+  }
+
+  handleRepositorySearchKeydown(event: KeyboardEvent): void {
+    const results = this.repositorySearchResults();
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      this.closeRepositorySearch();
+      return;
+    }
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      if (results.length === 0) return;
+      const direction = event.key === "ArrowDown" ? 1 : -1;
+      this.activeSearchResult.set((this.activeSearchResult() + direction + results.length) % results.length);
+      requestAnimationFrame(() => document.querySelector(".repository-search-result.active")?.scrollIntoView({ block: "nearest" }));
+      return;
+    }
+    if (event.key === "Enter" && !event.isComposing) {
+      const result = results[this.activeSearchResult()];
+      if (result) {
+        event.preventDefault();
+        void this.openSearchResult(result);
+      }
+    }
+  }
+
+  async openSearchResult(result: RepositorySearchResult): Promise<void> {
+    this.closeRepositorySearch();
+    if (this.repository()?.files.some((file) => file.path === result.path)) {
+      this.selectFile(result.path);
+      return;
+    }
+    const request = ++this.repositoryViewRequest;
+    this.chatPageOpen.set(false);
+    this.reviewPageOpen.set(false);
+    this.editMode.set(false);
+    this.selectedPath.set(result.path);
+    this.selectedRange.set(null);
+    this.allChangesSelected.set(false);
+    this.patchRequest += 1;
+    this.patch.set(null);
+    this.highlightedRows.set(null);
+    this.repositoryFileView.set(null);
+    this.repositoryFileError.set(null);
+    this.repositoryFileLoading.set(true);
+    this.resetHorizontalScroll();
+    try {
+      const file = await window.rift.readRepositoryViewFile(result.path);
+      if (request === this.repositoryViewRequest && this.selectedPath() === result.path) this.repositoryFileView.set(file);
+    } catch (reason) {
+      if (request === this.repositoryViewRequest) this.repositoryFileError.set(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      if (request === this.repositoryViewRequest) this.repositoryFileLoading.set(false);
+    }
+  }
+
+  private async runRepositorySearch(query: string, request: number): Promise<void> {
+    try {
+      const response = await window.rift.searchRepository(query);
+      if (request !== this.repositorySearchRequest || !this.repositorySearchOpen()) return;
+      this.repositorySearchResults.set(response.results);
+      this.repositorySearchLimited.set(response.limited);
+      this.activeSearchResult.set(0);
+    } catch (reason) {
+      if (request === this.repositorySearchRequest) {
+        this.repositorySearchResults.set([]);
+        this.repositorySearchError.set(reason instanceof Error ? reason.message : String(reason));
+      }
+    } finally {
+      if (request === this.repositorySearchRequest) this.repositorySearchLoading.set(false);
+    }
+  }
   async saveCurrentFile(): Promise<void> {
     const path = this.selectedPath();
     const original = path ? this.fileContents().get(path) : undefined;
@@ -2126,8 +2279,11 @@ export class AppComponent implements OnInit, OnDestroy {
 
   @HostListener("document:pointerdown", ["$event"])
   dismissTools(event: PointerEvent): void {
-    if (!this.toolsMenu() && !this.fileToolsMenu()) return;
     const target = event.target;
+    if (this.releaseNotesOpen() && target instanceof Element && !target.closest(".update-info") && !target.closest(".update-release-popover")) {
+      this.releaseNotesOpen.set(false);
+    }
+    if (!this.toolsMenu() && !this.fileToolsMenu()) return;
     if (target instanceof Element && !target.closest(".selection-tools") && !target.closest(".file-tools")) {
       this.toolsMenu.set(null);
       this.fileToolsMenu.set(null);
@@ -2141,7 +2297,9 @@ export class AppComponent implements OnInit, OnDestroy {
 
   @HostListener("document:keydown.escape")
   closeTools(): void {
-    if (this.selectedToolCall()) this.closeToolCall();
+    if (this.repositorySearchOpen()) this.closeRepositorySearch();
+    else if (this.releaseNotesOpen()) this.releaseNotesOpen.set(false);
+    else if (this.selectedToolCall()) this.closeToolCall();
     else if (this.agentModalOpen()) this.closeAgentModal();
     else if (this.noteComposerOpen()) this.cancelNote();
     else if (this.questionComposerOpen()) {
@@ -2226,6 +2384,10 @@ export class AppComponent implements OnInit, OnDestroy {
     return path.split("/").at(-1) || path;
   }
 
+  isChangedFile(path: string): boolean {
+    return this.repository()?.files.some((file) => file.path === path) ?? false;
+  }
+
   agentLabel(id: AgentId): string {
     return this.agents().find((agent) => agent.id === id)?.label ?? id;
   }
@@ -2307,6 +2469,11 @@ export class AppComponent implements OnInit, OnDestroy {
     const previousBranch = this.repository()?.branch;
     this.repository.set(repository);
     if (previousRoot !== repository.root) {
+      this.repositoryViewRequest += 1;
+      this.repositoryFileView.set(null);
+      this.repositoryFileLoading.set(false);
+      this.repositoryFileError.set(null);
+      this.closeRepositorySearch();
       this.sessionListRequest += 1;
       this.providerSessionRequest += 1;
       this.activeConversationId.set(null);
@@ -2332,6 +2499,11 @@ export class AppComponent implements OnInit, OnDestroy {
       this.loadReviewSession();
     }
     this.error.set(null);
+    if (preserveSelection && previousRoot === repository.root && this.repositoryFileView()?.path === previousPath) {
+      if (previousPath && repository.files.some((file) => file.path === previousPath)) this.selectFile(previousPath);
+      return;
+    }
+    if (preserveSelection && previousRoot === repository.root && this.repositoryFileLoading() && this.selectedPath() === previousPath) return;
     const current = this.selectedPath();
     const visibleFiles = this.filteredFiles();
     const nextPath = visibleFiles.some((file) => file.path === current) ? current : visibleFiles[0]?.path ?? null;
@@ -2811,6 +2983,7 @@ export class AppComponent implements OnInit, OnDestroy {
   private reconcileFilteredSelection(): void {
     const files = this.filteredFiles();
     const current = this.selectedPath();
+    if (current && (this.repositoryFileView()?.path === current || this.repositoryFileLoading())) return;
     if (current && files.some((file) => file.path === current)) return;
     const next = files[0]?.path;
     if (next) {

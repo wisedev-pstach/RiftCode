@@ -12,6 +12,8 @@ const api: RiftApi = {
   openRepository: (path) => ipcRenderer.invoke("repository:open", path),
   refreshRepository: () => ipcRenderer.invoke("repository:refresh"),
   getFilePatch: (path, fullFile) => ipcRenderer.invoke("repository:patch", path, fullFile),
+  searchRepository: (query) => ipcRenderer.invoke("repository:search", query),
+  readRepositoryViewFile: (path) => ipcRenderer.invoke("repository:read-view-file", path),
   chooseRepository: () => ipcRenderer.invoke("repository:choose"),
   chooseContextResources: (kind) => ipcRenderer.invoke("context:choose-resources", kind),
   selectComparison: (id) => ipcRenderer.invoke("repository:compare", id),
@@ -22,6 +24,8 @@ const api: RiftApi = {
   runAgent: (runId, id, model, mode, prompt, resourcePaths, sessionId) => ipcRenderer.invoke("agent:run", runId, id, model, mode, prompt, resourcePaths, sessionId),
   cancelAgent: () => ipcRenderer.invoke("agent:cancel"),
   copyText: (text) => ipcRenderer.invoke("clipboard:write", text),
+  checkForUpdate: () => ipcRenderer.invoke("update:check"),
+  installUpdate: () => ipcRenderer.invoke("update:install"),
   onRepositoryChanged: (listener) => {
     const handler = (): void => listener();
     ipcRenderer.on("repository:changed", handler);

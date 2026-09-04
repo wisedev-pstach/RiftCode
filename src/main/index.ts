@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, net } from "electron";
 import { execFile, spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { existsSync, statSync, watch, type FSWatcher } from "node:fs";
@@ -6,9 +6,10 @@ import { mkdir, open, readFile, readdir, rm, stat, writeFile } from "node:fs/pro
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
-import { loadFilePatch, loadRepository } from "./git";
+import { loadFilePatch, loadRepository, readRepositoryViewFile, searchRepository } from "./git";
 import type { IpcMainInvokeEvent } from "electron";
-import type { AgentConversationHistory, AgentConversationMessage, AgentId, AgentMode, AgentOption, AgentRunResult, AgentSession, AgentStreamEvent, AgentToolEvent, RepositorySnapshot } from "../shared/contracts";
+import type { AgentConversationHistory, AgentConversationMessage, AgentId, AgentMode, AgentOption, AgentRunResult, AgentSession, AgentStreamEvent, AgentToolEvent, RepositorySnapshot, UpdateStatus } from "../shared/contracts";
+import versionManifest from "../../version.json";
 
 const AGENTS: Readonly<Record<AgentId, { label: string; args: (prompt: string, model: string | null, mode: AgentMode, sessionId: string | undefined, resourcePaths: string[]) => string[]; promptViaStdin?: boolean }>> = {
   opencode: { label: "OpenCode", args: (prompt, model, mode, sessionId, resourcePaths) => ["run", "--pure", "--agent", mode === "edit" ? "build" : "plan", "--format", "json", "--auto", ...(model ? ["--model", model] : []), ...(sessionId ? ["--session", sessionId] : []), ...resourcePaths.filter((path) => !statSync(path).isDirectory()).flatMap((path) => ["--file", path]), prompt] },
@@ -33,7 +34,11 @@ let agentCancellationRequested = false;
 let activePatchController: AbortController | null = null;
 let attachmentDirectory: string | null = null;
 const AGENT_INACTIVITY_TIMEOUT_MS = 15 * 60 * 1000;
+const UPDATE_MANIFEST_URL = "https://raw.githubusercontent.com/wisedev-pstach/RiftCode/main/version.json";
+const MAC_INSTALL_URL = "https://raw.githubusercontent.com/wisedev-pstach/RiftCode/main/install.sh";
+const WINDOWS_INSTALL_URL = "https://raw.githubusercontent.com/wisedev-pstach/RiftCode/main/install.ps1";
 const initialRepository = repositoryArgument(process.argv);
+let updateCheck: Promise<UpdateStatus> | null = null;
 
 function repositoryArgument(argv: string[]): string | undefined {
   const explicit = argv.find((argument) => argument.startsWith("--repository="));
@@ -56,6 +61,103 @@ function execute(command: string, args: string[], cwd = process.cwd(), maxBuffer
       }
     );
   });
+}
+
+function versionParts(version: string): [number, number, number] | null {
+  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
+  return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : null;
+}
+
+function isNewerVersion(candidate: string, current: string): boolean {
+  const candidateParts = versionParts(candidate);
+  const currentParts = versionParts(current);
+  if (!candidateParts || !currentParts) return false;
+  for (let index = 0; index < candidateParts.length; index += 1) {
+    if (candidateParts[index] !== currentParts[index]) return candidateParts[index] > currentParts[index];
+  }
+  return false;
+}
+
+async function loadUpdateStatus(): Promise<UpdateStatus> {
+  const base: UpdateStatus = {
+    currentVersion: versionManifest.version,
+    latestVersion: null,
+    releaseNotes: [],
+    updateAvailable: false,
+    installSupported: process.platform === "darwin" || process.platform === "win32",
+    error: null
+  };
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10_000);
+  try {
+    const response = await net.fetch(UPDATE_MANIFEST_URL, {
+      cache: "no-store",
+      signal: controller.signal,
+      headers: { Accept: "application/json" }
+    });
+    if (!response.ok) throw new Error(`GitHub returned HTTP ${response.status}.`);
+    const content = await response.text();
+    if (content.length > 64 * 1024) throw new Error("The update manifest is too large.");
+    const remote: unknown = JSON.parse(content);
+    if (!remote || typeof remote !== "object") throw new Error("The update manifest is invalid.");
+    const candidate = remote as Record<string, unknown>;
+    if (typeof candidate.version !== "string" || !versionParts(candidate.version)) throw new Error("The update version is invalid.");
+    if (!Array.isArray(candidate.releaseNotes) || candidate.releaseNotes.some((note) => typeof note !== "string" || note.length > 2_000)) {
+      throw new Error("The release notes are invalid.");
+    }
+    const available = isNewerVersion(candidate.version, versionManifest.version);
+    return {
+      ...base,
+      latestVersion: candidate.version,
+      releaseNotes: available ? candidate.releaseNotes as string[] : [],
+      updateAvailable: available
+    };
+  } catch (reason) {
+    return { ...base, error: reason instanceof Error ? reason.message : String(reason) };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function checkForUpdate(): Promise<UpdateStatus> {
+  updateCheck ??= loadUpdateStatus();
+  return updateCheck;
+}
+
+function launchDetached(command: string, args: string[]): Promise<void> {
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn(command, args, { detached: true, windowsHide: false, stdio: "ignore" });
+    child.once("error", reject);
+    child.once("spawn", () => {
+      child.unref();
+      resolvePromise();
+    });
+  });
+}
+
+async function installUpdate(): Promise<boolean> {
+  if (!mainWindow) throw new Error("The Rift window is unavailable.");
+  const status = await checkForUpdate();
+  if (!status.updateAvailable || !status.latestVersion) throw new Error("No update is available.");
+  if (!status.installSupported) throw new Error("Automatic installation is only supported on macOS and Windows.");
+  const confirmation = await dialog.showMessageBox(mainWindow, {
+    type: "info",
+    buttons: ["Install update", "Cancel"],
+    defaultId: 0,
+    cancelId: 1,
+    title: `Update Rift to ${status.latestVersion}`,
+    message: `Rift ${status.latestVersion} is available.`,
+    detail: "The installer will open in a terminal and build the latest version from GitHub. Keep Rift open while it runs; Rift will close when its files are replaced. Reopen Rift after the installer reports completion. Node.js 24 or newer is required."
+  });
+  if (confirmation.response !== 0) return false;
+  if (process.platform === "darwin") {
+    const command = `curl -fsSL '${MAC_INSTALL_URL}' | /bin/sh`;
+    const script = `tell application "Terminal" to do script "${command.replace(/\\/g, "\\\\").replace(/\"/g, "\\\"")}"`;
+    await launchDetached("/usr/bin/osascript", ["-e", script, "-e", "tell application \"Terminal\" to activate"]);
+  } else {
+    await launchDetached("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", `irm '${WINDOWS_INSTALL_URL}' | iex`]);
+  }
+  return true;
 }
 
 function executeAgent(command: string, args: string[], cwd: string, onOutput: (chunk: string) => void, input?: string): Promise<string> {
@@ -658,6 +760,18 @@ function registerIpc(): void {
     return content;
   });
 
+  ipcMain.handle("repository:search", (event, query: unknown) => {
+    assertTrustedSender(event);
+    if (!snapshot) throw new Error("No repository is open.");
+    if (typeof query !== "string" || !query.trim() || query.length > 200) throw new Error("Enter a search query of up to 200 characters.");
+    return searchRepository(snapshot.root, query.trim());
+  });
+
+  ipcMain.handle("repository:read-view-file", (event, path: unknown) => {
+    assertTrustedSender(event);
+    if (!snapshot || typeof path !== "string" || path.length > 10_000) throw new Error("Invalid repository file.");
+    return readRepositoryViewFile(snapshot.root, path);
+  });
   ipcMain.handle("repository:write-file", async (event, path: unknown, content: unknown) => {
     assertTrustedSender(event);
     if (typeof content !== "string" || content.length > 20 * 1024 * 1024) throw new Error("The file content is too large.");
@@ -776,6 +890,16 @@ function registerIpc(): void {
     assertTrustedSender(event);
     if (typeof text !== "string" || text.length > 1_000_000) throw new Error("Clipboard content is too large.");
     clipboard.writeText(text);
+  });
+
+  ipcMain.handle("update:check", (event) => {
+    assertTrustedSender(event);
+    return checkForUpdate();
+  });
+
+  ipcMain.handle("update:install", (event) => {
+    assertTrustedSender(event);
+    return installUpdate();
   });
 
 }

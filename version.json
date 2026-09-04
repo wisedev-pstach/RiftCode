@@ -1,0 +1,8 @@
+{
+  "version": "0.5.3",
+  "releaseNotes": [
+    "Redesigned the update action so new versions are clearly labeled and easier to install.",
+    "Added an interactive release-notes panel with update details and restart guidance.",
+    "Added a visible Ctrl/Cmd+F repository-search shortcut beside the active file."
+  ]
+}
