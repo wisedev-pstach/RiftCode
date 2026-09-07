@@ -148,7 +148,9 @@ async function installUpdate(): Promise<boolean> {
     cancelId: 1,
     title: `Update Rift to ${status.latestVersion}`,
     message: `Rift ${status.latestVersion} is available.`,
-    detail: "The installer will open in a terminal and build the latest version from GitHub. Keep Rift open while it runs; Rift will close when its files are replaced. Reopen Rift after the installer reports completion. Node.js 24 or newer is required."
+    detail: process.platform === "win32"
+      ? "The installer will open in a terminal and download the latest Windows package from GitHub. Rift will close while its files are replaced. Reopen Rift after the installer reports completion."
+      : "The installer will open in Terminal and build the latest version from GitHub. Rift will close while its files are replaced. Reopen Rift after the installer reports completion. Node.js 24 or newer is required."
   });
   if (confirmation.response !== 0) return false;
   if (process.platform === "darwin") {
@@ -158,6 +160,7 @@ async function installUpdate(): Promise<boolean> {
   } else {
     await launchDetached("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", `irm '${WINDOWS_INSTALL_URL}' | iex`]);
   }
+  setTimeout(() => app.quit(), 250);
   return true;
 }
 

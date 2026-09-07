@@ -5,23 +5,6 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 $scriptRoot = if ([string]::IsNullOrWhiteSpace($PSScriptRoot)) { (Get-Location).Path } else { $PSScriptRoot }
 
-if (-not (Test-Path -LiteralPath (Join-Path $scriptRoot "package.json")) -or
-    -not (Test-Path -LiteralPath (Join-Path $scriptRoot "version.json"))) {
-    $bootstrapRoot = Join-Path ([IO.Path]::GetTempPath()) "rift-source-$([guid]::NewGuid())"
-    $archive = Join-Path $bootstrapRoot "rift.zip"
-    $sourceRoot = Join-Path $bootstrapRoot "RiftCode-main"
-    New-Item -ItemType Directory -Path $bootstrapRoot | Out-Null
-    try {
-        Invoke-WebRequest "https://github.com/wisedev-pstach/RiftCode/archive/refs/heads/main.zip" -OutFile $archive
-        Expand-Archive -LiteralPath $archive -DestinationPath $bootstrapRoot
-        & (Join-Path $sourceRoot "install.ps1")
-        return
-    }
-    finally {
-        Remove-Item -LiteralPath $bootstrapRoot -Recurse -Force -ErrorAction SilentlyContinue
-    }
-}
-
 function Invoke-Checked {
     param(
         [Parameter(Mandatory)]
@@ -236,13 +219,78 @@ function Remove-InstallDirectory {
     }
 }
 
+function Install-PackagedRift {
+    param(
+        [Parameter(Mandatory)]
+        [string] $PackagedApp
+    )
+
+    $destination = Join-Path $env:LOCALAPPDATA "Programs\Rift"
+    $binDestination = Join-Path $destination "bin"
+    $destinationParent = Split-Path -Parent $destination
+    New-Item -ItemType Directory -Path $destinationParent -Force | Out-Null
+    Stop-InstalledRift -InstallPath $destination
+    Remove-InstallDirectory -Path $destination
+    Copy-Item -LiteralPath $PackagedApp -Destination $destination -Recurse
+    New-Item -ItemType Directory -Path $binDestination -Force | Out-Null
+    $launcher = @'
+param([string] $Repository = ".")
+
+$repositoryPath = (Resolve-Path -LiteralPath $Repository -ErrorAction Stop).Path
+$executable = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..\Rift.exe") -ErrorAction Stop).Path
+Start-Process -FilePath $executable -ArgumentList "--repository=`"$repositoryPath`""
+'@
+    Set-Content -LiteralPath (Join-Path $binDestination "rift.ps1") -Value $launcher -Encoding UTF8
+
+    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    $pathEntries = @($userPath -split ";" | Where-Object { $_ })
+    $hasBinPath = $pathEntries | Where-Object {
+        [string]::Equals($_.TrimEnd("\"), $binDestination.TrimEnd("\"), [StringComparison]::OrdinalIgnoreCase)
+    }
+    if (-not $hasBinPath) {
+        $newPath = (@($pathEntries) + $binDestination) -join ";"
+        [Environment]::SetEnvironmentVariable("Path", $newPath, "User")
+    }
+
+    Write-Host "Rift was installed at $destination"
+    Write-Host "Existing Rift data was retained."
+    Write-Host "Open a new terminal, then run: rift <repository-path>"
+}
+
+$hasSource = (Test-Path -LiteralPath (Join-Path $scriptRoot "package.json")) -and
+    (Test-Path -LiteralPath (Join-Path $scriptRoot "version.json"))
+
+if (-not $hasSource) {
+    $bootstrapRoot = Join-Path ([IO.Path]::GetTempPath()) "rift-update-$([guid]::NewGuid())"
+    $archive = Join-Path $bootstrapRoot "rift.zip"
+    $packagedApp = Join-Path $bootstrapRoot "app"
+    New-Item -ItemType Directory -Path $packagedApp -Force | Out-Null
+    try {
+        $manifest = Invoke-RestMethod "https://raw.githubusercontent.com/wisedev-pstach/RiftCode/main/version.json"
+        $version = [string] $manifest.version
+        if ($version -notmatch '^\d+\.\d+\.\d+$') {
+            throw "The Rift update manifest contains an invalid version."
+        }
+        $assetUrl = "https://github.com/wisedev-pstach/RiftCode/releases/download/v$version/Rift-$version-win-x64.zip"
+        Write-Host "Downloading Rift $version..."
+        Invoke-WebRequest $assetUrl -OutFile $archive
+        Expand-Archive -LiteralPath $archive -DestinationPath $packagedApp
+        if (-not (Test-Path -LiteralPath (Join-Path $packagedApp "Rift.exe"))) {
+            throw "The downloaded Rift package is invalid."
+        }
+        Install-PackagedRift -PackagedApp $packagedApp
+        return
+    }
+    finally {
+        Remove-Item -LiteralPath $bootstrapRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 if (-not (Get-Command npm.cmd -ErrorAction SilentlyContinue)) {
-    throw "Node.js 24 or newer is required."
+    throw "Node.js 24 or newer is required to install Rift from source."
 }
 
 $root = $scriptRoot
-$destination = Join-Path $env:LOCALAPPDATA "Programs\Rift"
-$binDestination = Join-Path $destination "bin"
 
 Push-Location $root
 try {
@@ -259,32 +307,4 @@ $packagedApp = Get-ChildItem -LiteralPath (Join-Path $root "release") -Directory
 if (-not $packagedApp -or -not (Test-Path -LiteralPath (Join-Path $packagedApp.FullName "Rift.exe"))) {
     throw "The packaged Rift.exe was not found under $root\release."
 }
-
-$destinationParent = Split-Path -Parent $destination
-New-Item -ItemType Directory -Path $destinationParent -Force | Out-Null
-Stop-InstalledRift -InstallPath $destination
-Remove-InstallDirectory -Path $destination
-Copy-Item -LiteralPath $packagedApp.FullName -Destination $destination -Recurse
-New-Item -ItemType Directory -Path $binDestination -Force | Out-Null
-$launcher = @'
-param([string] $Repository = ".")
-
-$repositoryPath = (Resolve-Path -LiteralPath $Repository -ErrorAction Stop).Path
-$executable = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..\Rift.exe") -ErrorAction Stop).Path
-Start-Process -FilePath $executable -ArgumentList "--repository=`"$repositoryPath`""
-'@
-Set-Content -LiteralPath (Join-Path $binDestination "rift.ps1") -Value $launcher -Encoding UTF8
-
-$userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-$pathEntries = @($userPath -split ";" | Where-Object { $_ })
-$hasBinPath = $pathEntries | Where-Object {
-    [string]::Equals($_.TrimEnd("\"), $binDestination.TrimEnd("\"), [StringComparison]::OrdinalIgnoreCase)
-}
-if (-not $hasBinPath) {
-    $newPath = (@($pathEntries) + $binDestination) -join ";"
-    [Environment]::SetEnvironmentVariable("Path", $newPath, "User")
-}
-
-Write-Host "Rift was installed at $destination"
-Write-Host "Existing Rift data is retained; incompatible saved selections are migrated when Rift starts."
-Write-Host "Open a new terminal, then run: rift <repository-path>"
+Install-PackagedRift -PackagedApp $packagedApp.FullName

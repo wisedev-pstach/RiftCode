@@ -1,8 +1,8 @@
 {
-  "version": "0.6.1",
+  "version": "0.6.2",
   "releaseNotes": [
-    "Added character-level text selection and visible selection highlighting in diff code.",
-    "Improved C# syntax highlighting with IDE-style colors for types, methods, parameters, and language constructs.",
-    "Added syntax highlighting to repository search previews with matching-line emphasis."
+    "Fixed Windows updates so they install a prebuilt package without requiring Node.js or npm.",
+    "Fixed the update action remaining stuck on Starting when handing installation to PowerShell.",
+    "Includes character-level text selection and improved C# and repository-search syntax highlighting."
   ]
 }
