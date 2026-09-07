@@ -2,6 +2,7 @@
   "name": "rift",
   "version": "0.6.4",
   "description": "A visual, AI-native code review workspace focused on branch diffs.",
+  "license": "MIT",
   "main": "app-out/main/index.js",
   "type": "module",
   "bin": {
@@ -26,6 +27,7 @@
     "files": [
       "app-out/**/*",
       "package.json",
+      "LICENSE",
       "version.json"
     ],
     "mac": {
