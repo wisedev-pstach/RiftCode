@@ -136,6 +136,12 @@ function launchDetached(command: string, args: string[]): Promise<void> {
   });
 }
 
+function launchWindowsUpdate(): Promise<void> {
+  const installer = `$ErrorActionPreference = 'Stop'; try { Invoke-Expression (Invoke-RestMethod '${WINDOWS_INSTALL_URL}'); Read-Host 'Update complete. Press Enter to close' } catch { Write-Host $_ -ForegroundColor Red; Read-Host 'Update failed. Press Enter to close'; exit 1 }`;
+  const encodedInstaller = Buffer.from(installer, "utf16le").toString("base64");
+  return launchDetached("conhost.exe", ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encodedInstaller]);
+}
+
 async function installUpdate(): Promise<boolean> {
   if (!mainWindow) throw new Error("The Rift window is unavailable.");
   const status = await checkForUpdate();
@@ -158,9 +164,8 @@ async function installUpdate(): Promise<boolean> {
     const script = `tell application "Terminal" to do script "${command.replace(/\\/g, "\\\\").replace(/\"/g, "\\\"")}"`;
     await launchDetached("/usr/bin/osascript", ["-e", script, "-e", "tell application \"Terminal\" to activate"]);
   } else {
-    await launchDetached("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", `irm '${WINDOWS_INSTALL_URL}' | iex`]);
+    await launchWindowsUpdate();
   }
-  setTimeout(() => app.quit(), 250);
   return true;
 }
 

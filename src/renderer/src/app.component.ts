@@ -790,10 +790,10 @@ export class AppComponent implements OnInit, OnDestroy {
     try {
       const started = await window.rift.installUpdate();
       if (started) this.releaseNotesOpen.set(false);
-      else this.updateInstalling.set(false);
     } catch (reason) {
-      this.updateInstalling.set(false);
       this.updateStatus.update((status) => status ? { ...status, error: reason instanceof Error ? reason.message : String(reason) } : status);
+    } finally {
+      this.updateInstalling.set(false);
     }
   }
 

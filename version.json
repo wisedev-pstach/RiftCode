@@ -1,7 +1,8 @@
 {
-  "version": "0.6.3",
+  "version": "0.6.4",
   "releaseNotes": [
-    "Fixed edit mode so clearing a line removes it from the file instead of leaving an empty line.",
-    "Whitespace-only lines remain supported when intentionally editing file formatting."
+    "Fixed Windows updates so PowerShell opens in an independent visible console and survives the Rift process closing.",
+    "Rift now remains open while the package downloads and closes only when the installer is ready to replace it.",
+    "The update button no longer remains stuck after handing installation to PowerShell."
   ]
 }
