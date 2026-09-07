@@ -257,7 +257,8 @@ Start-Process -FilePath $executable -ArgumentList "--repository=`"$repositoryPat
     Write-Host "Open a new terminal, then run: rift <repository-path>"
 }
 
-$hasSource = (Test-Path -LiteralPath (Join-Path $scriptRoot "package.json")) -and
+$hasSource = -not [string]::IsNullOrWhiteSpace($PSScriptRoot) -and
+    (Test-Path -LiteralPath (Join-Path $scriptRoot "package.json")) -and
     (Test-Path -LiteralPath (Join-Path $scriptRoot "version.json"))
 
 if (-not $hasSource) {
