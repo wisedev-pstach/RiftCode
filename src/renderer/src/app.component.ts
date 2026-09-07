@@ -1322,7 +1322,7 @@ export class AppComponent implements OnInit, OnDestroy {
     const eol = original.includes("\r\n") ? "\r\n" : "\n";
     const lines = original.split(/\r?\n/);
     for (const [line, content] of [...edits.entries()].sort(([left], [right]) => right - left)) {
-      lines.splice(line - 1, 1, ...content.split(/\r?\n/));
+      lines.splice(line - 1, 1, ...(content === "" ? [] : content.split(/\r?\n/)));
     }
     const updated = lines.join(eol);
     this.fileSaving.set(true);

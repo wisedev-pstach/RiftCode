@@ -1,8 +1,7 @@
 {
-  "version": "0.6.2",
+  "version": "0.6.3",
   "releaseNotes": [
-    "Fixed Windows updates so they install a prebuilt package without requiring Node.js or npm.",
-    "Fixed the update action remaining stuck on Starting when handing installation to PowerShell.",
-    "Includes character-level text selection and improved C# and repository-search syntax highlighting."
+    "Fixed edit mode so clearing a line removes it from the file instead of leaving an empty line.",
+    "Whitespace-only lines remain supported when intentionally editing file formatting."
   ]
 }
