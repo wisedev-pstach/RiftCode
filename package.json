@@ -33,7 +33,8 @@
     "mac": {
       "category": "public.app-category.developer-tools",
       "icon": "build/icon.icns",
-      "target": "dir"
+      "target": "dir",
+      "identity": null
     },
     "win": {
       "target": "dir"
