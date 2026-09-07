@@ -93,8 +93,16 @@ interface DiffRow {
 }
 
 interface HighlightResponse {
+  type: "diff";
   requestId: number;
   rows: DiffRow[];
+}
+
+interface SearchHighlightResponse {
+  type: "search";
+  requestId: number;
+  path: string;
+  lines: string[];
 }
 
 interface SelectionRange {
@@ -454,6 +462,18 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly repositorySearchLimited = signal(false);
   readonly activeSearchResult = signal(0);
   readonly searchPreview = computed(() => this.repositorySearchResults()[this.activeSearchResult()] ?? null);
+  readonly repositorySearchHighlights = signal<ReadonlyMap<string, string[]>>(new Map());
+  readonly searchPreviewLines = computed(() => {
+    const preview = this.searchPreview();
+    if (!preview) return [];
+    const highlighted = this.repositorySearchHighlights().get(preview.path);
+    return preview.preview.split("\n").map((content, index) => ({
+      content: content || " ",
+      highlighted: highlighted?.[index],
+      line: preview.previewStartLine + index,
+      match: preview.matches.some((entry) => entry.line === preview.previewStartLine + index)
+    }));
+  });
   readonly diffMode = signal<DiffMode>("unified");
   readonly fullFile = signal(this.loadFullFile());
   readonly fileFilter = signal(this.loadFileFilter());
@@ -687,6 +707,7 @@ export class AppComponent implements OnInit, OnDestroy {
   private patchRequest = 0;
   private repositoryRequest = 0;
   private repositorySearchRequest = 0;
+  private searchHighlightRequest = 0;
   private repositoryViewRequest = 0;
   private repositorySearchTimer: ReturnType<typeof setTimeout> | undefined;
   private highlightRequest = 0;
@@ -731,8 +752,11 @@ export class AppComponent implements OnInit, OnDestroy {
     this.migratePreferences();
     this.applyTheme();
     void window.rift.checkForUpdate().then((status) => this.updateStatus.set(status));
-    this.highlightWorker.onmessage = ({ data }: MessageEvent<HighlightResponse>) => {
-      if (data.requestId === this.highlightRequest) this.highlightedRows.set(data.rows);
+    this.highlightWorker.onmessage = ({ data }: MessageEvent<HighlightResponse | SearchHighlightResponse>) => {
+      if (data.type === "diff" && data.requestId === this.highlightRequest) this.highlightedRows.set(data.rows);
+      if (data.type === "search" && data.requestId === this.searchHighlightRequest) {
+        this.repositorySearchHighlights.update((current) => new Map(current).set(data.path, data.lines));
+      }
     };
     const request = ++this.repositoryRequest;
     void window.rift.openRepository()
@@ -1167,6 +1191,7 @@ export class AppComponent implements OnInit, OnDestroy {
   closeRepositorySearch(): void {
     this.repositorySearchOpen.set(false);
     this.repositorySearchRequest += 1;
+    this.searchHighlightRequest += 1;
     this.repositorySearchLoading.set(false);
     if (this.repositorySearchTimer) clearTimeout(this.repositorySearchTimer);
     this.repositorySearchTimer = undefined;
@@ -1181,6 +1206,7 @@ export class AppComponent implements OnInit, OnDestroy {
     const request = ++this.repositorySearchRequest;
     if (!query.trim()) {
       this.repositorySearchResults.set([]);
+      this.repositorySearchHighlights.set(new Map());
       this.repositorySearchLimited.set(false);
       this.repositorySearchLoading.set(false);
       this.activeSearchResult.set(0);
@@ -1202,7 +1228,7 @@ export class AppComponent implements OnInit, OnDestroy {
       event.preventDefault();
       if (results.length === 0) return;
       const direction = event.key === "ArrowDown" ? 1 : -1;
-      this.activeSearchResult.set((this.activeSearchResult() + direction + results.length) % results.length);
+      this.activateSearchResult((this.activeSearchResult() + direction + results.length) % results.length);
       requestAnimationFrame(() => document.querySelector(".repository-search-result.active")?.scrollIntoView({ block: "nearest" }));
       return;
     }
@@ -1250,8 +1276,9 @@ export class AppComponent implements OnInit, OnDestroy {
       const response = await window.rift.searchRepository(query);
       if (request !== this.repositorySearchRequest || !this.repositorySearchOpen()) return;
       this.repositorySearchResults.set(response.results);
+      this.repositorySearchHighlights.set(new Map());
       this.repositorySearchLimited.set(response.limited);
-      this.activeSearchResult.set(0);
+      this.activateSearchResult(0);
     } catch (reason) {
       if (request === this.repositorySearchRequest) {
         this.repositorySearchResults.set([]);
@@ -1260,6 +1287,12 @@ export class AppComponent implements OnInit, OnDestroy {
     } finally {
       if (request === this.repositorySearchRequest) this.repositorySearchLoading.set(false);
     }
+  }
+
+  activateSearchResult(index: number): void {
+    if (index === this.activeSearchResult() && this.repositorySearchHighlights().has(this.repositorySearchResults()[index]?.path ?? "")) return;
+    this.activeSearchResult.set(index);
+    this.requestSearchPreviewHighlighting();
   }
 
   async selectTargetBranch(event: Event): Promise<void> {
@@ -1311,7 +1344,7 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   beginSelection(index: number, row: DiffRow, event: PointerEvent): void {
-    if (event.button !== 0 || !this.isSelectable(row)) return;
+    if (event.button !== 0 || !this.isSelectable(row) || this.isCodeTextTarget(event.target)) return;
     event.preventDefault();
     (event.currentTarget as HTMLElement).focus({ preventScroll: true });
     if (event.detail > 1 && this.isRowSelected(index, row)) return;
@@ -1355,7 +1388,7 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   openNoteForRow(index: number, row: DiffRow, event: MouseEvent): void {
-    if (!this.isSelectable(row)) return;
+    if (!this.isSelectable(row) || this.isCodeTextTarget(event.target)) return;
     event.preventDefault();
     this.showTools(index, row, event.clientX, event.clientY);
     this.startNote();
@@ -2392,6 +2425,10 @@ export class AppComponent implements OnInit, OnDestroy {
     return row.kind === "addition" || row.kind === "deletion" || row.kind === "context";
   }
 
+  private isCodeTextTarget(target: EventTarget | null): boolean {
+    return target instanceof Element && !!target.closest("code");
+  }
+
   lineFor(row: DiffRow): number | undefined {
     return row.newLine ?? row.oldLine;
   }
@@ -2607,7 +2644,27 @@ export class AppComponent implements OnInit, OnDestroy {
       || characterCount > 30_000
       || rows.some((row) => row.content.length > 10_000)
     ) return;
-    this.highlightWorker.postMessage({ requestId, rows, languageId: language.id });
+    this.highlightWorker.postMessage({
+      type: "diff",
+      requestId,
+      rows,
+      languageId: language.id
+    });
+  }
+
+  private requestSearchPreviewHighlighting(): void {
+    const preview = this.searchPreview();
+    if (!preview || this.repositorySearchHighlights().has(preview.path)) return;
+    const language = detectLanguage(preview.path);
+    if (language.id === "plaintext" || preview.preview.length > 30_000) return;
+    const requestId = ++this.searchHighlightRequest;
+    this.highlightWorker.postMessage({
+      type: "search",
+      requestId,
+      path: preview.path,
+      code: preview.preview,
+      languageId: language.id
+    });
   }
 
   private resetHorizontalScroll(): void {

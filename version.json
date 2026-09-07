@@ -1,7 +1,8 @@
 {
-  "version": "0.5.4",
+  "version": "0.6.1",
   "releaseNotes": [
-    "Added a target branch selector for comparing the current branch against any local or remote branch.",
-    "Repository refreshes now retain the selected target comparison branch."
+    "Added character-level text selection and visible selection highlighting in diff code.",
+    "Improved C# syntax highlighting with IDE-style colors for types, methods, parameters, and language constructs.",
+    "Added syntax highlighting to repository search previews with matching-line emphasis."
   ]
 }

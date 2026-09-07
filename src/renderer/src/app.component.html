@@ -833,8 +833,8 @@
                   [class.changed]="isChangedFile(result.path)"
                   role="option"
                   [attr.aria-selected]="index === activeSearchResult()"
-                  (pointerenter)="activeSearchResult.set(index)"
-                  (focus)="activeSearchResult.set(index)"
+                  (pointerenter)="activateSearchResult(index)"
+                  (focus)="activateSearchResult(index)"
                   (click)="openSearchResult(result)"
                 >
                   <span class="repository-search-file-mark">{{ result.nameMatch ? "FILE" : "TEXT" }}</span>
@@ -852,8 +852,8 @@
               @if (searchPreview(); as preview) {
                 <header><span><strong>{{ shortName(preview.path) }}</strong><small>{{ preview.path }}</small></span><em>{{ preview.matches.length ? "Content match" : "Name match" }}</em></header>
                 <div>
-                  @for (line of preview.preview.split("\n"); track $index) {
-                    <p [class.match]="preview.matches[0]?.line === preview.previewStartLine + $index"><span>{{ preview.previewStartLine + $index }}</span><code>{{ line || " " }}</code></p>
+                  @for (line of searchPreviewLines(); track line.line) {
+                    <p [class.match]="line.match"><span>{{ line.line }}</span>@if (line.highlighted) { <code [innerHTML]="line.highlighted"></code> } @else { <code>{{ line.content }}</code> }</p>
                   }
                 </div>
               } @else {
