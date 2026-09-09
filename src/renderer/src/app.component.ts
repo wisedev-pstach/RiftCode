@@ -174,7 +174,7 @@ interface FileToolsMenu extends ToolsMenu {
   path: string;
 }
 
-type ConversationStatus = "running" | "complete" | "error" | "cancelled";
+type ConversationStatus = "running" | "complete" | "error" | "cancelled" | "interrupted";
 
 interface Conversation {
   id: number;
@@ -305,7 +305,7 @@ function isAgentResult(value: unknown): value is AgentRunResult {
       if (!entry || typeof entry !== "object") return false;
       const tool = entry as Record<string, unknown>;
       return typeof tool.id === "string" && typeof tool.name === "string"
-        && (tool.status === "running" || tool.status === "completed" || tool.status === "failed")
+        && (tool.status === "running" || tool.status === "completed" || tool.status === "failed" || tool.status === "interrupted")
         && (tool.detail === undefined || typeof tool.detail === "string");
     });
 }
@@ -330,7 +330,7 @@ function isConversation(value: unknown): value is Conversation {
     && (conversation.model === null || (typeof conversation.model === "string" && conversation.model.length <= 200))
     && typeof conversation.question === "string" && conversation.question.length <= 20_000
     && (conversation.context === undefined || isConversationContext(conversation.context))
-    && (conversation.status === "running" || conversation.status === "complete" || conversation.status === "error" || conversation.status === "cancelled")
+    && (conversation.status === "running" || conversation.status === "complete" || conversation.status === "error" || conversation.status === "cancelled" || conversation.status === "interrupted")
     && (conversation.result === null || isAgentResult(conversation.result))
     && (conversation.error === null || (typeof conversation.error === "string" && conversation.error.length <= 20_000))
     && Array.isArray(conversation.history) && conversation.history.length <= 500
@@ -552,6 +552,7 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly reviewQuestion = signal("");
   readonly reviewResult = signal<AgentRunResult | null>(null);
   readonly reviewError = signal<string | null>(null);
+  readonly reviewInterrupted = signal(false);
   readonly reconsiderDraft = signal("");
   readonly contextDialogOpen = signal(false);
   readonly workspaceContext = signal<WorkspaceContext>({ details: "", links: [], resources: [] });
@@ -771,7 +772,20 @@ export class AppComponent implements OnInit, OnDestroy {
         setTimeout(() => this.loading.set(false), remaining);
       });
 
-    this.removeRepositoryListener = window.rift.onRepositoryChanged(() => void this.refreshRepository());
+    this.removeRepositoryListener = window.rift.onRepositoryChanged((changedPaths) => {
+      const reviewed = new Set(this.reviewedFiles());
+      const invalidated = changedPaths.filter((path) => reviewed.has(path));
+      if (invalidated.length > 0) {
+        const changed = new Set(invalidated);
+        this.reviewedFiles.update((paths) => paths.filter((entry) => !changed.has(entry)));
+        this.persistReviewSession();
+        this.reviewMessage.set(invalidated.length === 1
+          ? `${this.shortName(invalidated[0])} changed and was marked unreviewed`
+          : `${invalidated.length} changed files were marked unreviewed`);
+        if (this.hideReviewed()) this.reconcileFilteredSelection();
+      }
+      void this.refreshRepository();
+    });
     this.removeAgentListener = window.rift.onAgentEvent((event) => this.acceptAgentEvent(event));
     void window.rift.listAgents().then((agents) => {
       this.agents.set(agents);
@@ -1436,7 +1450,6 @@ export class AppComponent implements OnInit, OnDestroy {
       done: false
     };
     this.notes.update((notes) => [...notes, note]);
-    this.selectedNoteIds.update((ids) => [...ids, note.id]);
     this.persistReviewSession();
     this.toolsMenu.set(null);
     this.noteComposerOpen.set(false);
@@ -1554,6 +1567,7 @@ export class AppComponent implements OnInit, OnDestroy {
     this.reviewQuestion.set("");
     this.reviewResult.set(null);
     this.reviewError.set(null);
+    this.reviewInterrupted.set(false);
     this.reconsiderDraft.set("");
     this.agentModalOpen.set(false);
     this.conversationChoiceOpen.set(false);
@@ -1791,11 +1805,11 @@ export class AppComponent implements OnInit, OnDestroy {
 
   async reconsiderReview(): Promise<void> {
     const previous = this.reviewResult()?.explanation;
-    if (!previous || this.agentRunning()) return;
+    if ((!previous && !this.reviewInterrupted()) || this.agentRunning()) return;
     await this.refreshRepository();
     const request = this.reconsiderDraft().trim().slice(0, 20_000) || "Reconsider the review after the latest code changes.";
     this.reconsiderDraft.set("");
-    await this.runReview(this.buildReviewPrompt(request, previous), request);
+    await this.runReview(this.buildReviewPrompt(request, previous), request, this.reviewResult()?.sessionId);
   }
 
   resetReview(): void {
@@ -1803,6 +1817,7 @@ export class AppComponent implements OnInit, OnDestroy {
     this.reviewQuestion.set("");
     this.reviewResult.set(null);
     this.reviewError.set(null);
+    this.reviewInterrupted.set(false);
     this.reconsiderDraft.set("");
     this.persistReviewSession();
   }
@@ -1862,7 +1877,7 @@ export class AppComponent implements OnInit, OnDestroy {
     return prompt;
   }
 
-  private async runReview(prompt: string, question: string): Promise<void> {
+  private async runReview(prompt: string, question: string, providerSessionId?: string): Promise<void> {
     const agent = this.selectedAgent();
     if (!agent || this.agentRunning()) return;
     const request = ++this.agentRequest;
@@ -1871,13 +1886,14 @@ export class AppComponent implements OnInit, OnDestroy {
     this.reviewQuestion.set(question);
     this.reviewResult.set(null);
     this.reviewError.set(null);
+    this.reviewInterrupted.set(false);
     this.reviewPageOpen.set(true);
     this.chatPageOpen.set(false);
     this.agentRunning.set(true);
     this.reviewMessage.set(`Waiting for ${this.agentLabel(agent)}`);
     try {
       const resources = this.workspaceContext().resources.map((resource) => resource.path).slice(0, 28);
-      const result = await window.rift.runAgent(String(request), agent, this.selectedModel(), "review", this.withWorkspaceContext(prompt), resources);
+      const result = await window.rift.runAgent(String(request), agent, this.selectedModel(), "review", this.withWorkspaceContext(prompt), resources, providerSessionId);
       if (request === this.agentRequest) {
         this.reviewResult.set(this.mergeAgentResult(null, result));
         this.reviewMessage.set("Review ready");
@@ -1886,8 +1902,11 @@ export class AppComponent implements OnInit, OnDestroy {
       if (request === this.agentRequest) {
         const rawError = reason instanceof Error ? reason.message : String(reason);
         const authenticationStart = rawError.indexOf("Authentication required.");
-        this.reviewError.set(authenticationStart >= 0 ? rawError.slice(authenticationStart) : rawError);
-        this.reviewMessage.set(rawError.toLowerCase().includes("cancel") ? "Review cancelled" : "Review failed");
+        const interrupted = rawError.toLowerCase().includes("interrupt");
+        this.reviewInterrupted.set(interrupted);
+        if (interrupted) this.reviewResult.update((result) => this.markRunningToolsInterrupted(result));
+        this.reviewError.set(interrupted ? null : authenticationStart >= 0 ? rawError.slice(authenticationStart) : rawError);
+        this.reviewMessage.set(interrupted ? "Review interrupted; add guidance to continue" : rawError.toLowerCase().includes("cancel") ? "Review cancelled" : "Review failed");
       }
     } finally {
       if (request === this.agentRequest) {
@@ -2293,6 +2312,16 @@ export class AppComponent implements OnInit, OnDestroy {
     }
   }
 
+  async interruptAgent(): Promise<void> {
+    if (!this.agentRunning()) return;
+    this.reviewMessage.set("Interrupting the current turn");
+    try {
+      await window.rift.interruptAgent();
+    } catch (reason) {
+      this.reviewMessage.set(reason instanceof Error ? reason.message : String(reason));
+    }
+  }
+
   async jumpToConversationContext(context: ConversationContext): Promise<void> {
     const repository = this.repository();
     if (!repository?.files.some((file) => file.path === context.filePath)) {
@@ -2554,6 +2583,7 @@ export class AppComponent implements OnInit, OnDestroy {
       this.reviewQuestion.set("");
       this.reviewResult.set(null);
       this.reviewError.set(null);
+      this.reviewInterrupted.set(false);
       this.reconsiderDraft.set("");
       this.loadReviewSession();
     }
@@ -2732,7 +2762,7 @@ export class AppComponent implements OnInit, OnDestroy {
         if (!isReviewSessionData(stored)) throw new Error("Invalid review session");
         const notes = stored.notes.filter(isReviewNote).slice(0, 500).map((note) => ({ ...note, done: note.done ?? false }));
         this.notes.set(notes);
-        this.selectedNoteIds.set(notes.map((note) => note.id));
+        this.selectedNoteIds.set([]);
         this.reviewedFiles.set([...new Set(stored.reviewedFiles)].slice(0, 5_000));
         this.workspaceContext.set(stored.workspaceContext && isWorkspaceContext(stored.workspaceContext)
           ? stored.workspaceContext
@@ -2764,7 +2794,7 @@ export class AppComponent implements OnInit, OnDestroy {
       const legacy: unknown = JSON.parse(legacyKey ? localStorage.getItem(legacyKey) ?? "[]" : "[]");
       const notes = Array.isArray(legacy) ? legacy.filter(isReviewNote).slice(0, 500).map((note) => ({ ...note, done: note.done ?? false })) : [];
       this.notes.set(notes);
-      this.selectedNoteIds.set(notes.map((note) => note.id));
+      this.selectedNoteIds.set([]);
       this.reviewedFiles.set([]);
       this.workspaceContext.set({ details: "", links: [], resources: [] });
       const root = this.repository()!.root;
@@ -3241,6 +3271,13 @@ export class AppComponent implements OnInit, OnDestroy {
     };
   }
 
+  private markRunningToolsInterrupted(result: AgentRunResult | null): AgentRunResult | null {
+    return result ? {
+      ...result,
+      tools: result.tools.map((tool) => tool.status === "running" ? { ...tool, status: "interrupted" } : tool)
+    } : null;
+  }
+
   private mergeAgentText(current: string, update: string): string {
     if (!current) return update;
     if (!update) return current;
@@ -3335,19 +3372,21 @@ export class AppComponent implements OnInit, OnDestroy {
         const authenticationStart = rawError.indexOf("Authentication required.");
         const error = authenticationStart >= 0 ? rawError.slice(authenticationStart) : rawError;
         const authenticationError = this.isAgentAuthError(error);
+        const interrupted = error.toLowerCase().includes("interrupt");
         if (this.activeConversationId() === conversationId) {
-          this.agentError.set(error);
+          this.agentResult.update((result) => interrupted ? this.markRunningToolsInterrupted(result) : result);
+          this.agentError.set(interrupted ? null : error);
           if (authenticationError) this.agentResult.set(null);
         }
         this.conversations.update((conversations) => conversations.map((conversation) => (
           conversation.id === conversationId
-            ? { ...conversation, status: error.toLowerCase().includes("cancel") ? "cancelled" : "error", result: authenticationError ? null : conversation.result, error }
+            ? { ...conversation, status: interrupted ? "interrupted" : error.toLowerCase().includes("cancel") ? "cancelled" : "error", result: authenticationError ? null : interrupted ? this.markRunningToolsInterrupted(conversation.result) : conversation.result, error: interrupted ? null : error }
             : conversation
         )));
         this.scrollChatToBottom();
         this.reviewMessage.set(authenticationError
           ? `${this.agentLabel(agent)} sign-in required`
-          : error.toLowerCase().includes("cancel") ? "Agent request cancelled" : "Agent request failed");
+          : interrupted ? "Turn interrupted; send guidance to continue" : error.toLowerCase().includes("cancel") ? "Agent request cancelled" : "Agent request failed");
       }
     } finally {
       if (request === this.agentRequest) {

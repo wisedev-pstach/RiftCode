@@ -100,7 +100,7 @@ export interface AgentConversationHistory {
 export interface AgentToolEvent {
   id: string;
   name: string;
-  status: "running" | "completed" | "failed";
+  status: "running" | "completed" | "failed" | "interrupted";
   detail?: string;
 }
 
@@ -152,10 +152,11 @@ export interface RiftApi {
   listAgentSessions(id: AgentId): Promise<AgentSession[]>;
   getAgentSession(id: AgentId, sessionId: string): Promise<AgentConversationHistory>;
   runAgent(runId: string, id: AgentId, model: string | null, mode: AgentMode, prompt: string, resourcePaths: string[], sessionId?: string): Promise<AgentRunResult>;
+  interruptAgent(): Promise<void>;
   cancelAgent(): Promise<void>;
   copyText(text: string): Promise<void>;
   checkForUpdate(): Promise<UpdateStatus>;
   installUpdate(): Promise<boolean>;
-  onRepositoryChanged(listener: () => void): () => void;
+  onRepositoryChanged(listener: (paths: string[]) => void): () => void;
   onAgentEvent(listener: (event: AgentStreamEvent) => void): () => void;
 }

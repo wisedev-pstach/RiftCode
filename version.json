@@ -1,8 +1,10 @@
 {
-  "version": "0.6.4",
+  "version": "0.6.7",
   "releaseNotes": [
-    "Fixed Windows updates so PowerShell opens in an independent visible console and survives the Rift process closing.",
-    "Rift now remains open while the package downloads and closes only when the installer is ready to replace it.",
-    "The update button no longer remains stuck after handing installation to PowerShell."
+    "Review runs now show expandable live tool calls with names, status, and full input details.",
+    "Active agent turns can be interrupted without closing the conversation, then resumed with focused follow-up guidance.",
+    "Fixed file context delivery to OpenCode so attached files remain separate from the prompt and are accessible to the agent.",
+    "Reviewed files are automatically marked unreviewed when their contents change.",
+    "Review notes now start with no items selected, including newly added and restored notes."
   ]
 }

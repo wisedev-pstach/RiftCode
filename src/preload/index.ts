@@ -23,12 +23,13 @@ const api: RiftApi = {
   listAgentSessions: (id) => ipcRenderer.invoke("agent:sessions", id),
   getAgentSession: (id, sessionId) => ipcRenderer.invoke("agent:session", id, sessionId),
   runAgent: (runId, id, model, mode, prompt, resourcePaths, sessionId) => ipcRenderer.invoke("agent:run", runId, id, model, mode, prompt, resourcePaths, sessionId),
+  interruptAgent: () => ipcRenderer.invoke("agent:interrupt"),
   cancelAgent: () => ipcRenderer.invoke("agent:cancel"),
   copyText: (text) => ipcRenderer.invoke("clipboard:write", text),
   checkForUpdate: () => ipcRenderer.invoke("update:check"),
   installUpdate: () => ipcRenderer.invoke("update:install"),
   onRepositoryChanged: (listener) => {
-    const handler = (): void => listener();
+    const handler = (_event: Electron.IpcRendererEvent, paths: string[]): void => listener(paths);
     ipcRenderer.on("repository:changed", handler);
     return () => ipcRenderer.removeListener("repository:changed", handler);
   },

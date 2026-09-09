@@ -175,20 +175,32 @@
               <article class="review-result-card">
                 <header><span class="review-mark">R</span><span><strong>{{ agentLabel(selectedAgent()!) }}</strong><small>{{ selectedModel() || "Default model" }} · {{ reviewTone() }}</small></span>@if (agentRunning()) { <i class="loading-spinner" aria-label="Review in progress"></i> }</header>
                 @if (reviewResult(); as result) {
-                  @if (result.tools.length > 0 && agentRunning()) { <p class="review-activity">Inspecting repository · {{ result.tools.length }} tool {{ result.tools.length === 1 ? "call" : "calls" }}</p> }
+                  @if (result.tools.length > 0) {
+                    <section class="review-tool-activity">
+                      <header><strong>Tool activity</strong><small>{{ result.tools.length }} {{ result.tools.length === 1 ? "call" : "calls" }}</small></header>
+                      <div>
+                        @for (tool of result.tools; track tool.id) {
+                          <details class="review-tool-call" [class.failed]="tool.status === 'failed'" [class.running]="tool.status === 'running'" [class.interrupted]="tool.status === 'interrupted'">
+                            <summary><i>{{ tool.status === "failed" ? "!" : tool.status === "running" ? "…" : tool.status === "interrupted" ? "■" : "✓" }}</i><strong>{{ tool.name }}</strong><small>{{ tool.status }}</small><span aria-hidden="true">⌄</span></summary>
+                            <pre>{{ tool.detail || "No call details were provided." }}</pre>
+                          </details>
+                        }
+                      </div>
+                    </section>
+                  }
                   @if (result.explanation) { <div class="markdown-response review-markdown" (click)="openReviewFile($event)" [innerHTML]="renderReviewMarkdown(result.explanation)"></div> }
                 }
                 @if (agentRunning() && !reviewResult()?.explanation) { <div class="review-waiting"><span class="ai-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 1c0 6.1-4.9 11-11 11 6.1 0 11 4.9 11 11 0-6.1 4.9-11 11-11-6.1 0-11-4.9-11-11Z"/><circle cx="19" cy="5" r="2"/></svg></span><span><strong>Reviewing the comparison</strong><small>Findings will appear here as the agent works.</small></span></div> }
                 @if (reviewError()) { <p class="agent-error">{{ reviewError() }}</p> }
               </article>
-              @if (!agentRunning() && reviewResult()?.explanation) {
+              @if (!agentRunning() && (reviewResult()?.explanation || reviewInterrupted())) {
                 <section class="reconsider-panel">
-                  <div><strong>Changed the code?</strong><p>Ask for a fresh pass. Resolved findings will be dropped and new regressions called out.</p></div>
-                  <textarea rows="2" maxlength="20000" placeholder="Optional: describe what changed..." [value]="reconsiderDraft()" (input)="reconsiderDraft.set($any($event.target).value)"></textarea>
-                  <div class="review-result-actions"><button (click)="saveReviewMarkdown()">Save .md</button><button class="take-review-to-chat" (click)="takeReviewToChat()">Take to chat</button><button class="reconsider-button" (click)="reconsiderReview()">Reconsider</button></div>
+                  <div><strong>{{ reviewInterrupted() ? "Guide the next pass" : "Changed the code?" }}</strong><p>{{ reviewInterrupted() ? "The current turn stopped without cancelling this review. Add a shorter or more focused instruction." : "Ask for a fresh pass. Resolved findings will be dropped and new regressions called out." }}</p></div>
+                  <textarea rows="2" maxlength="20000" [placeholder]="reviewInterrupted() ? 'For example: focus on blockers and finish quickly' : 'Optional: describe what changed...'" [value]="reconsiderDraft()" (input)="reconsiderDraft.set($any($event.target).value)"></textarea>
+                  <div class="review-result-actions">@if (reviewResult()?.explanation) { <button (click)="saveReviewMarkdown()">Save .md</button><button class="take-review-to-chat" (click)="takeReviewToChat()">Take to chat</button> }<button class="reconsider-button" (click)="reconsiderReview()">{{ reviewInterrupted() ? "Continue review" : "Reconsider" }}</button></div>
                 </section>
               } @else if (agentRunning()) {
-                <div class="review-result-actions"><button (click)="cancelAgent()">Cancel review</button></div>
+                <div class="review-result-actions"><button (click)="interruptAgent()">Interrupt review</button></div>
               }
             } @else {
             <div class="review-page-lead">
@@ -293,8 +305,8 @@
                         <span>Live activity</span>
                       <div class="agent-tools-grid">
                         @for (tool of result.tools.slice(0, activityExpanded() ? result.tools.length : 6); track tool.id) {
-                          <button type="button" class="tool-tile" [class.failed]="tool.status === 'failed'" [class.running]="tool.status === 'running'" (click)="openToolCall(tool)" [title]="'View full ' + tool.name + ' call'">
-                            <i>{{ tool.status === "failed" ? "!" : tool.status === "running" ? "…" : "✓" }}</i>
+                          <button type="button" class="tool-tile" [class.failed]="tool.status === 'failed'" [class.running]="tool.status === 'running'" [class.interrupted]="tool.status === 'interrupted'" (click)="openToolCall(tool)" [title]="'View full ' + tool.name + ' call'">
+                            <i>{{ tool.status === "failed" ? "!" : tool.status === "running" ? "…" : tool.status === "interrupted" ? "■" : "✓" }}</i>
                             <span><strong>{{ tool.name }}</strong>@if (tool.detail) { <small>{{ tool.detail }}</small> }</span>
                           </button>
                         }
@@ -308,6 +320,8 @@
                   }
                   @if (conversation.status === "running") {
                     <div class="agent-pending"><span class="ai-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 1c0 6.1-4.9 11-11 11 6.1 0 11 4.9 11 11 0-6.1 4.9-11 11-11-6.1 0-11-4.9-11-11Z"/><circle cx="19" cy="5" r="2"/></svg></span><span><strong>Agent is working <i class="loading-spinner" aria-hidden="true"></i></strong><small>Tool calls and output appear here live</small></span></div>
+                  } @else if (conversation.status === "interrupted") {
+                    <p class="agent-interrupted">Turn interrupted. Send guidance below to continue this conversation.</p>
                   }
                   @if (conversation.error) {
                     @if (isAgentAuthError(conversation.error)) {
@@ -321,7 +335,7 @@
             </div>
             <footer class="chat-page-footer">
               @if (conversation.status === "running") {
-                <span>Provider request in progress</span><button (click)="cancelAgent()">Cancel</button>
+                <span>Provider request in progress</span><button (click)="interruptAgent()">Interrupt</button>
               } @else {
                 <div class="chat-composer" [class.has-model-picker]="!conversation.question">
                   @if (!conversation.question) {
@@ -698,10 +712,10 @@
               <button (click)="copyNotes()" [disabled]="notes().length === 0">Copy notes</button>
               <button
                 class="primary-agent-action"
-                (click)="agentRunning() ? cancelAgent() : sendNotesToAgent()"
+                (click)="agentRunning() ? interruptAgent() : sendNotesToAgent()"
                 [disabled]="selectedNotes().length === 0 || !selectedAgent()"
               >
-                <span class="ai-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 1c0 6.1-4.9 11-11 11 6.1 0 11 4.9 11 11 0-6.1 4.9-11 11-11-6.1 0-11-4.9-11-11Z"/><circle cx="19" cy="5" r="2"/></svg></span>{{ agentRunning() ? "Cancel" : "Send " + selectedNotes().length + " to agent" }}
+                <span class="ai-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 1c0 6.1-4.9 11-11 11 6.1 0 11 4.9 11 11 0-6.1 4.9-11 11-11-6.1 0-11-4.9-11-11Z"/><circle cx="19" cy="5" r="2"/></svg></span>{{ agentRunning() ? "Interrupt" : "Send " + selectedNotes().length + " to agent" }}
               </button>
             </div>
 

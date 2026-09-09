@@ -12,7 +12,7 @@ import type { AgentConversationHistory, AgentConversationMessage, AgentId, Agent
 import versionManifest from "../../version.json";
 
 const AGENTS: Readonly<Record<AgentId, { label: string; args: (prompt: string, model: string | null, mode: AgentMode, sessionId: string | undefined, resourcePaths: string[]) => string[]; promptViaStdin?: boolean }>> = {
-  opencode: { label: "OpenCode", args: (prompt, model, mode, sessionId, resourcePaths) => ["run", "--pure", "--agent", mode === "edit" ? "build" : "plan", "--format", "json", "--auto", ...(model ? ["--model", model] : []), ...(sessionId ? ["--session", sessionId] : []), ...resourcePaths.filter((path) => !statSync(path).isDirectory()).flatMap((path) => ["--file", path]), prompt] },
+  opencode: { label: "OpenCode", args: (prompt, model, mode, sessionId, resourcePaths) => ["run", "--pure", "--agent", mode === "edit" ? "build" : "plan", "--format", "json", "--auto", ...(model ? ["--model", model] : []), ...(sessionId ? ["--session", sessionId] : []), ...resourcePaths.filter((path) => !statSync(path).isDirectory()).flatMap((path) => ["--file", path]), "--", prompt] },
   claude: {
     label: "Claude Code",
     args: (_prompt, model, mode, sessionId, resourcePaths) => ["--print", "--verbose", "--output-format", "stream-json", "--include-partial-messages", "--permission-mode", mode === "edit" ? "auto" : "plan", "--tools", mode === "edit" ? "Read,Grep,Glob,Bash,Edit,Write" : "Read,Grep,Glob,Bash", ...[...new Set(resourcePaths.map((path) => statSync(path).isDirectory() ? path : dirname(path)))].flatMap((path) => ["--add-dir", path]), ...(model ? ["--model", model] : []), ...(sessionId ? ["--resume", sessionId] : [])],
@@ -25,13 +25,14 @@ let snapshot: RepositorySnapshot | null = null;
 let watcher: FSWatcher | null = null;
 let watchedRoot: string | null = null;
 let refreshTimer: NodeJS.Timeout | null = null;
+const changedRepositoryPaths = new Set<string>();
 let activeComparisonId = "auto";
 let activeTargetBranch = "auto";
 let repositoryLoadQueue = Promise.resolve();
 let repositoryGeneration = 0;
 let currentRepositoryPath: string | null = null;
 let activeAgentProcess: ChildProcess | null = null;
-let agentCancellationRequested = false;
+let agentStopReason: "cancelled" | "interrupted" | null = null;
 let activePatchController: AbortController | null = null;
 let attachmentDirectory: string | null = null;
 const AGENT_INACTIVITY_TIMEOUT_MS = 15 * 60 * 1000;
@@ -171,7 +172,7 @@ async function installUpdate(): Promise<boolean> {
 
 function executeAgent(command: string, args: string[], cwd: string, onOutput: (chunk: string) => void, input?: string): Promise<string> {
   if (activeAgentProcess) return Promise.reject(new Error("An agent request is already running."));
-  agentCancellationRequested = false;
+  agentStopReason = null;
   return new Promise((resolvePromise, reject) => {
     let stdout = "";
     let stderr = "";
@@ -213,8 +214,8 @@ function executeAgent(command: string, args: string[], cwd: string, onOutput: (c
     child.stdin?.end(input);
     child.once("error", (error) => finish(error));
     child.once("close", (code, signal) => {
-      if (agentCancellationRequested) {
-        finish(new Error("Agent request was cancelled."));
+      if (agentStopReason) {
+        finish(new Error(`Agent request was ${agentStopReason}.`));
       } else if (signal) {
         finish(new Error("Agent request timed out after 15 minutes without output."));
       } else if (code !== 0) {
@@ -504,6 +505,7 @@ async function runAgent(runId: string, id: AgentId, model: string | null, mode: 
     }, agent.promptViaStdin ? prompt : undefined);
   } catch (reason) {
     if (streamTimer) clearTimeout(streamTimer);
+    emit();
     throw normalizeAgentError(id, reason);
   }
   if (streamTimer) clearTimeout(streamTimer);
@@ -639,13 +641,19 @@ function assertTrustedSender(event: IpcMainInvokeEvent): void {
 function watchRepository(root: string): void {
   if (watcher && watchedRoot === root) return;
   watcher?.close();
+  changedRepositoryPaths.clear();
   watchedRoot = root;
 
   const onChange = (_event: string, filename: string | Buffer | null): void => {
-    const relative = filename?.toString() ?? "";
+    const relative = filename?.toString().replaceAll("\\", "/") ?? "";
     if (/(^|[\\/])(node_modules|out|app-out|dist|release|\.git[\\/]objects)([\\/]|$)/.test(relative)) return;
+    if (relative) changedRepositoryPaths.add(relative);
     if (refreshTimer) clearTimeout(refreshTimer);
-    refreshTimer = setTimeout(() => mainWindow?.webContents.send("repository:changed"), 180);
+    refreshTimer = setTimeout(() => {
+      const paths = [...changedRepositoryPaths];
+      changedRepositoryPaths.clear();
+      mainWindow?.webContents.send("repository:changed", paths);
+    }, 180);
   };
 
   try {
@@ -916,10 +924,22 @@ function registerIpc(): void {
     return runAgent(runId, id as AgentId, model as string | null, mode, prompt, availableResourcePaths, sessionId as string | undefined);
   });
 
+  ipcMain.handle("agent:interrupt", (event) => {
+    assertTrustedSender(event);
+    if (activeAgentProcess) {
+      const process = activeAgentProcess;
+      agentStopReason = "interrupted";
+      process.kill("SIGINT");
+      setTimeout(() => {
+        if (activeAgentProcess === process) process.kill("SIGKILL");
+      }, 1_500).unref();
+    }
+  });
+
   ipcMain.handle("agent:cancel", (event) => {
     assertTrustedSender(event);
     if (activeAgentProcess) {
-      agentCancellationRequested = true;
+      agentStopReason = "cancelled";
       activeAgentProcess.kill("SIGKILL");
     }
   });
