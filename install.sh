@@ -46,6 +46,11 @@ fi
 
 cd "$ROOT"
 npm ci
+# Build an unsigned, ad-hoc-signed local app. Without this, electron-builder
+# auto-discovers an "Apple Development" identity from the keychain and tries a
+# real code-sign, which triggers a keychain authorization dialog that blocks
+# codesign indefinitely (the installer appears to hang).
+export CSC_IDENTITY_AUTO_DISCOVERY=false
 npm run package:mac
 
 PACKAGED_APP=""
