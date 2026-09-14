@@ -5,7 +5,8 @@ import { existsSync, statSync, watch, type FSWatcher } from "node:fs";
 import { mkdir, open, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
-import { dirname, join, resolve, sep } from "node:path";
+import { promisify } from "node:util";
+import { delimiter, dirname, join, resolve, sep } from "node:path";
 import { loadFilePatch, loadRepository, readRepositoryViewFile, searchRepository } from "./git";
 import type { IpcMainInvokeEvent } from "electron";
 import type { AgentConversationHistory, AgentConversationMessage, AgentId, AgentMode, AgentOption, AgentRunResult, AgentSession, AgentStreamEvent, AgentToolEvent, RepositorySnapshot, UpdateStatus } from "../shared/contracts";
@@ -41,6 +42,32 @@ const MAC_INSTALL_URL = "https://raw.githubusercontent.com/wisedev-pstach/RiftCo
 const WINDOWS_INSTALL_URL = "https://raw.githubusercontent.com/wisedev-pstach/RiftCode/main/install.ps1";
 const initialRepository = repositoryArgument(process.argv);
 let updateCheck: Promise<UpdateStatus> | null = null;
+
+// Merge the mac user's login shell PATH into our process.env.PATH, plus some common fallback directories.
+const shellPathReady = process.platform === "win32" ? Promise.resolve() : await mergeShellPath();
+
+async function mergeShellPath(): Promise<void> {
+  const marker = `__RIFT_PATH_${randomUUID()}__`;
+  let shellPath = "";
+
+  try {
+    // -l sources the login profile, -i sources the interactive rc where nvm and similar tools export PATH.
+    const { stdout } = await promisify(execFile)(process.env.SHELL || "/bin/sh", ["-ilc", `printf '${marker}%s${marker}' "$PATH"`], { timeout: 5_000, 
+    killSignal: "SIGKILL", 
+    encoding: "utf8" 
+    });
+
+    shellPath = stdout.split(marker)[1] ?? "";
+
+  } catch {
+    // Keep the inherited PATH plus the fallbacks below.
+  }
+
+  const fallbacks = ["/opt/homebrew/bin", "/usr/local/bin", join(homedir(), ".local", "bin")];
+  const directories = [shellPath, process.env.PATH ?? "", ...fallbacks].join(delimiter).split(delimiter).filter(Boolean);
+  
+  process.env.PATH = [...new Set(directories)].join(delimiter);
+}
 
 function repositoryArgument(argv: string[]): string | undefined {
   const explicit = argv.find((argument) => argument.startsWith("--repository="));
@@ -238,6 +265,7 @@ function normalizeAgentError(id: AgentId, reason: unknown): Error {
 }
 
 async function resolveCommand(command: AgentId): Promise<string | null> {
+  await shellPathReady;
   try {
     const locator = process.platform === "win32" ? "where.exe" : "which";
     const result = await execute(locator, [command]);
