@@ -262,24 +262,15 @@ $hasSource = -not [string]::IsNullOrWhiteSpace($PSScriptRoot) -and
     (Test-Path -LiteralPath (Join-Path $scriptRoot "version.json"))
 
 if (-not $hasSource) {
-    $bootstrapRoot = Join-Path ([IO.Path]::GetTempPath()) "rift-update-$([guid]::NewGuid())"
+    $bootstrapRoot = Join-Path ([IO.Path]::GetTempPath()) "rift-source-$([guid]::NewGuid())"
     $archive = Join-Path $bootstrapRoot "rift.zip"
-    $packagedApp = Join-Path $bootstrapRoot "app"
-    New-Item -ItemType Directory -Path $packagedApp -Force | Out-Null
+    $sourceRoot = Join-Path $bootstrapRoot "RiftCode-main"
+    New-Item -ItemType Directory -Path $bootstrapRoot -Force | Out-Null
     try {
-        $manifest = Invoke-RestMethod "https://raw.githubusercontent.com/wisedev-pstach/RiftCode/main/version.json"
-        $version = [string] $manifest.version
-        if ($version -notmatch '^\d+\.\d+\.\d+$') {
-            throw "The Rift update manifest contains an invalid version."
-        }
-        $assetUrl = "https://github.com/wisedev-pstach/RiftCode/releases/download/v$version/Rift-$version-win-x64.zip"
-        Write-Host "Downloading Rift $version..."
-        Invoke-WebRequest $assetUrl -OutFile $archive
-        Expand-Archive -LiteralPath $archive -DestinationPath $packagedApp
-        if (-not (Test-Path -LiteralPath (Join-Path $packagedApp "Rift.exe"))) {
-            throw "The downloaded Rift package is invalid."
-        }
-        Install-PackagedRift -PackagedApp $packagedApp
+        Write-Host "Downloading Rift source..."
+        Invoke-WebRequest "https://github.com/wisedev-pstach/RiftCode/archive/refs/heads/main.zip" -OutFile $archive
+        Expand-Archive -LiteralPath $archive -DestinationPath $bootstrapRoot
+        & (Join-Path $sourceRoot "install.ps1")
         return
     }
     finally {

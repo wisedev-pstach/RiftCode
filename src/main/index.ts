@@ -164,10 +164,18 @@ function launchDetached(command: string, args: string[]): Promise<void> {
   });
 }
 
-function launchWindowsUpdate(): Promise<void> {
-  const installer = `$ErrorActionPreference = 'Stop'; try { Invoke-Expression (Invoke-RestMethod '${WINDOWS_INSTALL_URL}'); Read-Host 'Update complete. Press Enter to close' } catch { Write-Host $_ -ForegroundColor Red; Read-Host 'Update failed. Press Enter to close'; exit 1 }`;
+async function launchWindowsUpdate(): Promise<void> {
+  const installer = `$ErrorActionPreference = 'Stop'; try { Invoke-Expression (Invoke-RestMethod '${WINDOWS_INSTALL_URL}'); Write-Host 'Update complete. Press Enter to close' -ForegroundColor Green; Read-Host | Out-Null } catch { Write-Host $_ -ForegroundColor Red; Write-Host 'Update failed. Press Enter to close' -ForegroundColor Red; Read-Host | Out-Null; exit 1 }`;
   const encodedInstaller = Buffer.from(installer, "utf16le").toString("base64");
-  return launchDetached("conhost.exe", ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encodedInstaller]);
+  // Use cmd /c start to open an independent visible console that survives Rift closing.
+  // Direct 'powershell.exe' detached from a GUI parent can remain hidden; 'start' guarantees a new window.
+  // The empty quoted title ("") is required by 'start' syntax.
+  try {
+    await launchDetached("cmd.exe", ["/c", "start", '""', "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encodedInstaller]);
+  } catch {
+    // Fallback to direct PowerShell launch if cmd/start is unavailable
+    await launchDetached("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encodedInstaller]);
+  }
 }
 
 async function installUpdate(): Promise<boolean> {
@@ -183,7 +191,7 @@ async function installUpdate(): Promise<boolean> {
     title: `Update Rift to ${status.latestVersion}`,
     message: `Rift ${status.latestVersion} is available.`,
     detail: process.platform === "win32"
-      ? "The installer will open in a terminal and download the latest Windows package from GitHub. Rift will close while its files are replaced. Reopen Rift after the installer reports completion."
+      ? "The installer will open in a terminal and build the latest version from GitHub. Rift will close while its files are replaced. Reopen Rift after the installer reports completion. Node.js 24 or newer is required."
       : "The installer will open in Terminal and build the latest version from GitHub. Rift will close while its files are replaced. Reopen Rift after the installer reports completion. Node.js 24 or newer is required."
   });
   if (confirmation.response !== 0) return false;
@@ -194,6 +202,7 @@ async function installUpdate(): Promise<boolean> {
   } else {
     await launchWindowsUpdate();
   }
+  setTimeout(() => app.quit(), 300);
   return true;
 }
 
