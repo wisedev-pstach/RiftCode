@@ -129,6 +129,20 @@ export async function searchRepository(root: string, query: string): Promise<Rep
   return { results, limited: ordered.length > SEARCH_RESULT_LIMIT };
 }
 
+export async function listRepositoryFiles(root: string): Promise<string[]> {
+  const [files, staged, deleted] = await Promise.all([
+    git(root, ["ls-files", "--cached", "--others", "--exclude-standard", "-z"]),
+    git(root, ["ls-files", "--stage", "-z"]),
+    git(root, ["ls-files", "--deleted", "-z"])
+  ]);
+  const submodules = new Set(staged.stdout.split("\0").flatMap((entry) => {
+    const separator = entry.indexOf("\t");
+    return entry.startsWith("160000 ") && separator >= 0 ? [entry.slice(separator + 1)] : [];
+  }));
+  const missing = new Set(deleted.stdout.split("\0").filter(Boolean));
+  return files.stdout.split("\0").filter((path) => path && !submodules.has(path) && !missing.has(path)).sort((left, right) => left.localeCompare(right));
+}
+
 export async function readRepositoryViewFile(root: string, path: string): Promise<RepositoryFileView> {
   const listed = await git(root, ["ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", path]);
   if (!listed.stdout.split("\0").includes(path)) throw new Error("The file is not tracked or available in the repository.");

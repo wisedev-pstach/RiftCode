@@ -92,6 +92,10 @@ button { color: inherit; font: inherit; }
 .review-panel { overflow: hidden; border-left: 1px solid #252a31; }
 .panel-title { height: 44px; padding: 0 14px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #252a31; color: #aeb5c0; font-size: 11px; font-weight: 750; letter-spacing: .09em; text-transform: uppercase; }
 .changes-panel > .panel-title { padding-inline: 10px; }
+.sidebar-view-toggle { min-width: 0; display: flex; align-items: center; border: 1px solid #303842; border-radius: 5px; padding: 2px; background: #0d1115; }
+.sidebar-view-toggle button { min-width: 0; border: 0; border-radius: 3px; padding: 3px 5px; color: #68737f; background: transparent; font: 700 8px ui-monospace, monospace; letter-spacing: .04em; text-transform: uppercase; cursor: pointer; }
+.sidebar-view-toggle button:hover { color: #b5bec8; }
+.sidebar-view-toggle button.active { color: #d7e3c5; background: #283020; box-shadow: inset 0 0 0 1px #465735; }
 .changes-heading-title { min-width: 0; display: flex; align-items: center; gap: 4px; }
 .changes-title-button { border: 0; padding: 5px 0; color: inherit; background: transparent; font: inherit; letter-spacing: inherit; text-transform: inherit; cursor: pointer; }
 .changes-title-button:hover { color: #dce4ed; }
@@ -115,6 +119,9 @@ button { color: inherit; font: inherit; }
 .all-changes-button { border: 1px solid #343c46; border-radius: 4px; padding: 2px 5px; color: #77818e; background: transparent; font: 700 8px ui-monospace, monospace; letter-spacing: .05em; text-transform: uppercase; cursor: pointer; }
 .all-changes-button:hover { color: #bdc5cf; border-color: #4a5561; }
 .all-changes-button.active { color: #c8ff63; border-color: #607b3f; background: rgba(200, 255, 99, .07); }
+.explorer-scope-button { border: 1px solid #343c46; border-radius: 4px; padding: 2px 5px; color: #77818e; background: transparent; font: 700 8px ui-monospace, monospace; letter-spacing: .04em; text-transform: uppercase; cursor: pointer; }
+.explorer-scope-button:hover { color: #bdc5cf; border-color: #4a5561; }
+.explorer-scope-button.active { color: #c8ff63; border-color: #607b3f; background: rgba(200, 255, 99, .07); }
 .count { min-width: 20px; padding: 2px 6px; border-radius: 10px; color: #aab2bf; background: #252a31; text-align: center; }
 .file-filter { position: relative; flex: none; padding: 7px 8px 0; }
 .file-filter input { width: 100%; height: 27px; border: 1px solid #29313a; border-radius: 5px; outline: 0; padding: 5px 25px 5px 8px; color: #aeb7c2; background: #0d1115; font: 9px ui-monospace, monospace; }
@@ -145,6 +152,38 @@ button { color: inherit; font: inherit; }
 .file-stat em { width: 14px; height: 14px; display: grid; place-items: center; margin-right: 2px; border-radius: 50%; color: #162015; background: #87bd78; font-size: 8px; font-style: normal; font-weight: 900; }
 .file-stat i { color: #58c98e; font-style: normal; }
 .file-stat b { color: #df7777; font-weight: 400; }
+.explorer-tree { min-height: 0; flex: 1; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 7px 5px 16px; }
+.explorer-row { width: 100%; height: 27px; min-width: 0; display: flex; align-items: center; gap: 6px; border: 0; border-radius: 4px; padding-block: 3px; padding-right: 6px; color: #aeb7c1; background: transparent; text-align: left; cursor: pointer; }
+.explorer-row:hover { color: #d7dde4; background: #181d23; }
+.explorer-row:focus-visible { outline: 1px solid #71804f; outline-offset: -1px; }
+.explorer-file-row.selected { color: #e0e6ec; background: #222831; box-shadow: inset 2px 0 #c8ff63; }
+.explorer-file-row.reviewed { opacity: .65; }
+.explorer-chevron { width: 10px; flex: none; color: #727d88; font: 16px/1 ui-monospace, monospace; transform-origin: center; transition: transform 100ms ease; }
+.explorer-chevron.expanded { transform: rotate(90deg); }
+.explorer-folder-icon { width: 17px; height: 15px; flex: none; overflow: visible; fill: #b58a43; stroke: #d4ad67; stroke-linejoin: round; stroke-width: 1; }
+.explorer-folder-toggle { min-width: 0; flex: 1; display: flex; align-items: center; gap: 6px; border: 0; padding: 0; color: inherit; background: transparent; text-align: left; cursor: pointer; }
+.explorer-folder-toggle:focus-visible { outline: 1px solid #71804f; outline-offset: 1px; }
+.explorer-folder-review { width: 19px; height: 19px; flex: none; display: grid; place-items: center; border: 1px solid transparent; border-radius: 50%; padding: 0; color: #66727e; background: transparent; font: 750 9px ui-monospace, monospace; cursor: pointer; }
+.explorer-folder-review:hover { color: #c8ff63; border-color: #607b3f; background: rgba(200, 255, 99, .07); }
+.explorer-folder-review.partial { color: #d7af65; border-color: #665536; }
+.explorer-folder-review.reviewed { color: #182014; border-color: #78a466; background: #87bd78; }
+.explorer-entry-name { min-width: 0; overflow: hidden; font-size: 11px; font-weight: 540; text-overflow: ellipsis; white-space: nowrap; }
+.explorer-file-icon { position: relative; width: 15px; height: 18px; flex: none; display: grid; place-items: center; clip-path: polygon(0 0, 10px 0, 15px 5px, 15px 18px, 0 18px); color: #aeb7c1; background: #53606d; }
+.explorer-file-icon::after { position: absolute; top: 0; right: 0; width: 5px; height: 5px; background: rgba(255, 255, 255, .25); content: ""; }
+.explorer-file-icon small { position: relative; z-index: 1; font: 750 6px/1 ui-monospace, monospace; letter-spacing: -.04em; }
+.explorer-file-icon.project { color: #fff; background: #7b5bb1; }
+.explorer-file-icon.angular { color: #fff; background: #c74646; }
+.explorer-file-icon.dotnet { color: #fff; background: #7252a8; }
+.explorer-file-icon.typescript { color: #fff; background: #3976b8; }
+.explorer-file-icon.javascript { color: #26230e; background: #ddc84a; }
+.explorer-file-icon.markup { color: #fff; background: #d06c45; }
+.explorer-file-icon.style { color: #fff; background: #4d78bd; }
+.explorer-file-icon.json { color: #2b2b21; background: #c8b94f; }
+.explorer-file-icon.markdown { color: #fff; background: #4d657a; }
+.explorer-file-icon.image { color: #fff; background: #57a180; }
+.explorer-file-icon.config { color: #26303a; background: #98a5af; }
+.explorer-entry-name { flex: 1; }
+.explorer-status { width: 14px; flex: none; font: 750 10px ui-monospace, monospace; text-align: center; }
 
 .diff-panel { min-width: 0; min-height: 0; overflow: hidden; display: flex; flex-direction: column; background: #0d1014; }
 .diff-toolbar { height: 44px; flex: none; display: flex; align-items: center; justify-content: space-between; padding: 0 14px; border-bottom: 1px solid #252a31; }
@@ -823,6 +862,10 @@ button { color: inherit; font: inherit; }
 :root[data-theme="light"] .file-filter input::placeholder { color: #8b959e; }
 :root[data-theme="light"] .file-filter button { color: #75818c; }
 :root[data-theme="light"] .changes-panel, :root[data-theme="light"] .review-panel { background: #f7f8fa; }
+:root[data-theme="light"] .sidebar-view-toggle { border-color: #c9d0d6; background: #edf0f3; }
+:root[data-theme="light"] .sidebar-view-toggle button { color: #747f89; }
+:root[data-theme="light"] .sidebar-view-toggle button:hover { color: #35404a; }
+:root[data-theme="light"] .sidebar-view-toggle button.active { color: #3e5b1b; background: #fff; box-shadow: inset 0 0 0 1px #9caf82; }
 :root[data-theme="light"] .changes-panel, :root[data-theme="light"] .review-panel, :root[data-theme="light"] .panel-title, :root[data-theme="light"] .diff-toolbar, :root[data-theme="light"] .statusbar { border-color: #d5dae0; }
 :root[data-theme="light"] .panel-title, :root[data-theme="light"] .diff-toolbar strong { color: #3e4751; }
 :root[data-theme="light"] .count { color: #58636f; background: #e2e6ea; }
@@ -830,6 +873,11 @@ button { color: inherit; font: inherit; }
 :root[data-theme="light"] .file-row.selected { background: #dfe5ea; box-shadow: inset 2px 0 #719f2e; }
 :root[data-theme="light"] .file-name strong { color: #303740; }
 :root[data-theme="light"] .file-name small, :root[data-theme="light"] .diff-toolbar div span { color: #707b86; }
+:root[data-theme="light"] .explorer-row { color: #4e5964; }
+:root[data-theme="light"] .explorer-row:hover { color: #26313a; background: #e9edf1; }
+:root[data-theme="light"] .explorer-file-row.selected { color: #28323b; background: #dfe5ea; box-shadow: inset 2px 0 #719f2e; }
+:root[data-theme="light"] .explorer-folder-icon { fill: #d7a84f; stroke: #9f7129; }
+:root[data-theme="light"] .explorer-chevron { color: #75818b; }
 :root[data-theme="light"] .diff-toolbar .search-shortcut-hint { color: #687580; border-color: #d4dae0; }
 :root[data-theme="light"] .diff-toolbar .search-shortcut-hint:hover { color: #4d701d; }
 :root[data-theme="light"] .diff-toolbar .search-shortcut-hint kbd { color: #5d7440; border-color: #bdc8b0; background: #f5f8f2; box-shadow: inset 0 -1px rgba(45, 54, 63, .04); }
@@ -933,6 +981,13 @@ button { color: inherit; font: inherit; }
 :root[data-theme="light"] .all-changes-button { color: #65717c; border-color: #bdc6ce; }
 :root[data-theme="light"] .all-changes-button:hover { color: #303a44; border-color: #8e9aa5; background: #edf1f4; }
 :root[data-theme="light"] .all-changes-button.active { color: #496b18; border-color: #86a55c; background: #eef6e5; }
+:root[data-theme="light"] .explorer-scope-button { color: #65717c; border-color: #bdc6ce; }
+:root[data-theme="light"] .explorer-scope-button:hover { color: #303a44; border-color: #8e9aa5; background: #edf1f4; }
+:root[data-theme="light"] .explorer-scope-button.active { color: #496b18; border-color: #86a55c; background: #eef6e5; }
+:root[data-theme="light"] .explorer-folder-review { color: #77828c; }
+:root[data-theme="light"] .explorer-folder-review:hover { color: #496b18; border-color: #86a55c; background: #eef6e5; }
+:root[data-theme="light"] .explorer-folder-review.partial { color: #8a672c; border-color: #cfb67f; }
+:root[data-theme="light"] .explorer-folder-review.reviewed { color: #fff; border-color: #6f955e; background: #78a869; }
 :root[data-theme="light"] .review-file-button { color: #65717c; border-color: #c2cad1; }
 :root[data-theme="light"] .review-file-button:hover { color: #36414b; border-color: #929da7; background: #edf1f4; }
 :root[data-theme="light"] .review-file-button.reviewed { color: #4f7148; border-color: #9bb194; background: #edf5ea; }

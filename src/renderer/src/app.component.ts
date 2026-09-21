@@ -17,6 +17,25 @@ import versionManifest from "../../../version.json";
 type DiffKind = "header" | "hunk" | "context" | "addition" | "deletion" | "meta";
 type DiffMode = "unified" | "split";
 type ReviewTone = "professional" | "honest";
+type SidebarView = "changes" | "explorer";
+
+interface ExplorerEntry {
+  kind: "folder" | "file";
+  name: string;
+  path: string;
+  depth: number;
+  changedFile?: ChangedFile;
+}
+
+interface ExplorerFolder {
+  folders: Map<string, ExplorerFolder>;
+  files: Map<string, string>;
+}
+
+interface FolderReviewState {
+  total: number;
+  reviewed: number;
+}
 
 interface DetectedLanguage {
   id: string;
@@ -36,6 +55,9 @@ const FULL_FILE_SESSION_KEY = "rift:full-file";
 const FILE_FILTER_SESSION_KEY = "rift:file-filter";
 const CHANGES_WIDTH_SESSION_KEY = "rift:changes-width";
 const HIDE_REVIEWED_SESSION_KEY = "rift:hide-reviewed";
+const SIDEBAR_VIEW_SESSION_KEY = "rift:sidebar-view";
+const EXPLORER_SHOW_ALL_SESSION_KEY = "rift:explorer-show-all";
+const EXPLORER_EXPANDED_SESSION_PREFIX = "rift:explorer-expanded:";
 const LANGUAGES: Readonly<Record<string, DetectedLanguage>> = {
   bash: { id: "bash", label: "Shell" },
   c: { id: "c", label: "C" },
@@ -434,6 +456,41 @@ function pairSplitRows(rows: DiffRow[]): SplitDiffRow[] {
   return result;
 }
 
+function buildExplorerEntries(paths: readonly string[], changedFiles: readonly ChangedFile[], expanded: ReadonlySet<string>): ExplorerEntry[] {
+  const root: ExplorerFolder = { folders: new Map(), files: new Map() };
+  const changedByPath = new Map(changedFiles.map((file) => [file.path, file]));
+  for (const path of new Set([...paths, ...changedByPath.keys()])) {
+    const parts = path.split("/").filter(Boolean);
+    if (parts.length === 0) continue;
+    let folder = root;
+    let parentPath = "";
+    for (const part of parts.slice(0, -1)) {
+      parentPath = parentPath ? `${parentPath}/${part}` : part;
+      let child = folder.folders.get(part);
+      if (!child) {
+        child = { folders: new Map(), files: new Map() };
+        folder.folders.set(part, child);
+      }
+      folder = child;
+    }
+    folder.files.set(parts.at(-1)!, path);
+  }
+
+  const entries: ExplorerEntry[] = [];
+  const append = (folder: ExplorerFolder, parentPath: string, depth: number): void => {
+    const folders = [...folder.folders.entries()].sort(([left], [right]) => left.localeCompare(right, undefined, { numeric: true }));
+    const files = [...folder.files.entries()].sort(([left], [right]) => left.localeCompare(right, undefined, { numeric: true }));
+    for (const [name, child] of folders) {
+      const path = parentPath ? `${parentPath}/${name}` : name;
+      entries.push({ kind: "folder", name, path, depth });
+      if (expanded.has(path)) append(child, path, depth + 1);
+    }
+    for (const [name, path] of files) entries.push({ kind: "file", name, path, depth, changedFile: changedByPath.get(path) });
+  };
+  append(root, "", 0);
+  return entries;
+}
+
 @Component({
   selector: "rift-root",
   standalone: true,
@@ -478,6 +535,8 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly fullFile = signal(this.loadFullFile());
   readonly fileFilter = signal(this.loadFileFilter());
   readonly hideReviewed = signal(this.loadHideReviewed());
+  readonly sidebarView = signal<SidebarView>(this.loadSidebarView());
+  readonly explorerShowAll = signal(this.loadExplorerShowAll());
   readonly changesPanelWidth = signal(this.loadChangesPanelWidth());
   readonly changesPanelResizing = signal(false);
   readonly viewportWidth = signal(window.innerWidth);
@@ -572,6 +631,34 @@ export class AppComponent implements OnInit, OnDestroy {
       (!this.hideReviewed() || !reviewed.has(file.path))
       && !patterns.some((pattern) => pattern.test(file.path))
     ));
+  });
+  readonly repositoryPaths = signal<string[]>([]);
+  readonly repositoryPathsLoading = signal(false);
+  readonly repositoryPathsError = signal<string | null>(null);
+  readonly expandedExplorerFolders = signal<ReadonlySet<string>>(new Set());
+  readonly explorerEntries = computed(() => buildExplorerEntries(
+    this.explorerShowAll() ? this.repositoryPaths() : [],
+    this.repository()?.files ?? [],
+    this.expandedExplorerFolders()
+  ));
+  readonly explorerFileCount = computed(() => this.explorerShowAll()
+    ? new Set([...this.repositoryPaths(), ...(this.repository()?.files.map((file) => file.path) ?? [])]).size
+    : this.repository()?.files.length ?? 0);
+  readonly explorerFolderReviewStates = computed(() => {
+    const states = new Map<string, FolderReviewState>();
+    const reviewed = new Set(this.reviewedFiles());
+    for (const file of this.repository()?.files ?? []) {
+      const parts = file.path.split("/").slice(0, -1);
+      let folder = "";
+      for (const part of parts) {
+        folder = folder ? `${folder}/${part}` : part;
+        const state = states.get(folder) ?? { total: 0, reviewed: 0 };
+        state.total += 1;
+        if (reviewed.has(file.path)) state.reviewed += 1;
+        states.set(folder, state);
+      }
+    }
+    return states;
   });
   readonly effectiveChangesPanelWidth = computed(() => {
     const reviewWidth = this.reviewSidebarOpen() ? (this.viewportWidth() <= 1_050 ? 250 : 310) : (this.viewportWidth() <= 1_050 ? 88 : 44);
@@ -710,6 +797,8 @@ export class AppComponent implements OnInit, OnDestroy {
   private repositorySearchRequest = 0;
   private searchHighlightRequest = 0;
   private repositoryViewRequest = 0;
+  private repositoryPathsRequest = 0;
+  private repositoryToken = 0;
   private repositorySearchTimer: ReturnType<typeof setTimeout> | undefined;
   private highlightRequest = 0;
   private agentRequest = 0;
@@ -894,6 +983,40 @@ export class AppComponent implements OnInit, OnDestroy {
     this.hideReviewed.update((hidden) => !hidden);
     this.storeSessionSetting(HIDE_REVIEWED_SESSION_KEY, String(this.hideReviewed()));
     this.reconcileFilteredSelection();
+  }
+
+  selectSidebarView(view: SidebarView): void {
+    if (view === "changes") {
+      this.showDiff();
+      if (this.hideReviewed()) this.reconcileFilteredSelection();
+    }
+    if (view === this.sidebarView()) return;
+    this.sidebarView.set(view);
+    this.storeSessionSetting(SIDEBAR_VIEW_SESSION_KEY, view);
+    if (view !== "explorer") return;
+    const selectedPath = this.selectedPath();
+    if (selectedPath) this.expandExplorerParents(selectedPath);
+    if (this.explorerShowAll() && (this.repositoryPaths().length === 0 || this.repositoryPathsError())) void this.loadRepositoryPaths();
+  }
+
+  toggleExplorerShowAll(): void {
+    this.explorerShowAll.update((showAll) => !showAll);
+    this.storeSessionSetting(EXPLORER_SHOW_ALL_SESSION_KEY, String(this.explorerShowAll()));
+    if (this.explorerShowAll() && (this.repositoryPaths().length === 0 || this.repositoryPathsError())) void this.loadRepositoryPaths();
+  }
+
+  toggleExplorerFolder(path: string): void {
+    this.expandedExplorerFolders.update((current) => {
+      const next = new Set(current);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+    this.storeExpandedExplorerFolders();
+  }
+
+  openExplorerFile(path: string): void {
+    void this.openRepositoryPath(path);
   }
 
   beginChangesResize(event: PointerEvent): void {
@@ -1257,15 +1380,20 @@ export class AppComponent implements OnInit, OnDestroy {
 
   async openSearchResult(result: RepositorySearchResult): Promise<void> {
     this.closeRepositorySearch();
-    if (this.repository()?.files.some((file) => file.path === result.path)) {
-      this.selectFile(result.path);
+    await this.openRepositoryPath(result.path);
+  }
+
+  private async openRepositoryPath(path: string): Promise<void> {
+    if (this.sidebarView() === "explorer") this.expandExplorerParents(path);
+    if (this.repository()?.files.some((file) => file.path === path)) {
+      this.selectFile(path);
       return;
     }
     const request = ++this.repositoryViewRequest;
     this.chatPageOpen.set(false);
     this.reviewPageOpen.set(false);
     this.editMode.set(false);
-    this.selectedPath.set(result.path);
+    this.selectedPath.set(path);
     this.selectedRange.set(null);
     this.allChangesSelected.set(false);
     this.patchRequest += 1;
@@ -1276,8 +1404,8 @@ export class AppComponent implements OnInit, OnDestroy {
     this.repositoryFileLoading.set(true);
     this.resetHorizontalScroll();
     try {
-      const file = await window.rift.readRepositoryViewFile(result.path);
-      if (request === this.repositoryViewRequest && this.selectedPath() === result.path) this.repositoryFileView.set(file);
+      const file = await window.rift.readRepositoryViewFile(path);
+      if (request === this.repositoryViewRequest && this.selectedPath() === path) this.repositoryFileView.set(file);
     } catch (reason) {
       if (request === this.repositoryViewRequest) this.repositoryFileError.set(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -1329,6 +1457,8 @@ export class AppComponent implements OnInit, OnDestroy {
     }
   }
   async saveCurrentFile(): Promise<void> {
+    const root = this.repository()?.root;
+    const repositoryToken = this.repositoryToken;
     const path = this.selectedPath();
     const original = path ? this.fileContents().get(path) : undefined;
     const edits = path ? this.fileEdits().get(path) : undefined;
@@ -1341,7 +1471,8 @@ export class AppComponent implements OnInit, OnDestroy {
     const updated = lines.join(eol);
     this.fileSaving.set(true);
     try {
-      await window.rift.writeRepositoryFile(path, updated);
+      await window.rift.writeRepositoryFile(path, updated, root!);
+      if (this.repositoryToken !== repositoryToken) return;
       this.fileContents.update((contents) => new Map(contents).set(path, updated));
       this.fileEdits.update((current) => {
         const next = new Map(current);
@@ -1351,7 +1482,7 @@ export class AppComponent implements OnInit, OnDestroy {
       this.reviewMessage.set("File saved");
       await this.refreshRepository();
     } catch (reason) {
-      this.reviewMessage.set(reason instanceof Error ? reason.message : String(reason));
+      if (this.repositoryToken === repositoryToken) this.reviewMessage.set(reason instanceof Error ? reason.message : String(reason));
     } finally {
       this.fileSaving.set(false);
     }
@@ -1532,7 +1663,25 @@ export class AppComponent implements OnInit, OnDestroy {
     this.persistReviewSession();
     this.reviewMessage.set(reviewed ? "File marked unreviewed" : "File marked reviewed");
     this.fileToolsMenu.set(null);
-    if (this.hideReviewed()) this.reconcileFilteredSelection();
+    if (this.hideReviewed() && this.sidebarView() === "changes") this.reconcileFilteredSelection();
+  }
+
+  toggleFolderReviewed(path: string, event: MouseEvent): void {
+    event.preventDefault();
+    event.stopPropagation();
+    const prefix = `${path}/`;
+    const folderFiles = this.repository()?.files.filter((file) => file.path.startsWith(prefix)).map((file) => file.path) ?? [];
+    if (folderFiles.length === 0) return;
+    const reviewed = new Set(this.reviewedFiles());
+    const markReviewed = folderFiles.some((file) => !reviewed.has(file));
+    for (const file of folderFiles) {
+      if (markReviewed) reviewed.add(file);
+      else reviewed.delete(file);
+    }
+    this.reviewedFiles.set([...reviewed]);
+    this.persistReviewSession();
+    this.reviewMessage.set(`${folderFiles.length} ${folderFiles.length === 1 ? "file" : "files"} marked ${markReviewed ? "reviewed" : "unreviewed"}`);
+    if (this.hideReviewed() && this.sidebarView() === "changes") this.reconcileFilteredSelection();
   }
 
   openFileTools(path: string, event: MouseEvent): void {
@@ -2466,6 +2615,40 @@ export class AppComponent implements OnInit, OnDestroy {
     return { added: "A", modified: "M", deleted: "D", renamed: "R", untracked: "U" }[file.status];
   }
 
+  explorerFileIcon(path: string): string {
+    const name = this.shortName(path).toLowerCase();
+    if (name.endsWith(".csproj") || name.endsWith(".fsproj") || name.endsWith(".vbproj") || name.endsWith(".sln") || name.endsWith(".slnx")) return "project";
+    if (name.endsWith(".component.ts") || name.endsWith(".component.html")) return "angular";
+    const extension = name.includes(".") ? name.slice(name.lastIndexOf(".") + 1) : name;
+    if (["cs", "fs", "vb"].includes(extension)) return "dotnet";
+    if (["ts", "tsx"].includes(extension)) return "typescript";
+    if (["js", "jsx", "mjs", "cjs"].includes(extension)) return "javascript";
+    if (["html", "htm", "xml", "xaml", "cshtml"].includes(extension)) return "markup";
+    if (["css", "scss", "sass", "less"].includes(extension)) return "style";
+    if (["json", "jsonc"].includes(extension)) return "json";
+    if (["md", "mdx"].includes(extension)) return "markdown";
+    if (["png", "jpg", "jpeg", "gif", "svg", "webp", "ico"].includes(extension)) return "image";
+    if (["yml", "yaml", "toml", "ini", "editorconfig", "gitignore", "dockerignore"].includes(extension) || name === "dockerfile") return "config";
+    return "generic";
+  }
+
+  explorerFileIconLabel(path: string): string {
+    return {
+      project: "◇",
+      angular: "A",
+      dotnet: "C#",
+      typescript: "TS",
+      javascript: "JS",
+      markup: "<>" ,
+      style: "#",
+      json: "{}",
+      markdown: "M",
+      image: "●",
+      config: "⚙",
+      generic: ""
+    }[this.explorerFileIcon(path)] ?? "";
+  }
+
   shortName(path: string): string {
     return path.split("/").at(-1) || path;
   }
@@ -2554,8 +2737,20 @@ export class AppComponent implements OnInit, OnDestroy {
     const previousRoot = this.repository()?.root;
     const previousBranch = this.repository()?.branch;
     const previousTargetBranch = this.repository()?.targetBranch;
+    const comparisonChanged = previousRoot !== repository.root
+      || previousBranch !== repository.branch
+      || previousComparison !== repository.comparisonId
+      || previousTargetBranch !== repository.targetBranch;
     this.repository.set(repository);
     if (previousRoot !== repository.root) {
+      this.repositoryToken += 1;
+      this.expandedExplorerFolders.set(this.loadExpandedExplorerFolders(repository.root));
+      this.fileContents.set(new Map());
+      this.fileEdits.set(new Map());
+      this.repositoryPathsRequest += 1;
+      this.repositoryPaths.set([]);
+      this.repositoryPathsLoading.set(false);
+      this.repositoryPathsError.set(null);
       this.repositoryViewRequest += 1;
       this.repositoryFileView.set(null);
       this.repositoryFileLoading.set(false);
@@ -2574,12 +2769,21 @@ export class AppComponent implements OnInit, OnDestroy {
       this.providerSessionOpeningId.set(null);
       this.providerSessionsError.set(null);
     }
-    if (
-      previousRoot !== repository.root
-      || previousBranch !== repository.branch
-      || previousComparison !== repository.comparisonId
-      || previousTargetBranch !== repository.targetBranch
-    ) {
+    if (previousRoot === repository.root && comparisonChanged) {
+      this.repositoryViewRequest += 1;
+      this.repositoryFileView.set(null);
+      this.repositoryFileLoading.set(false);
+      this.repositoryFileError.set(null);
+    }
+    if (this.sidebarView() === "explorer" && this.explorerShowAll()) {
+      void this.loadRepositoryPaths();
+    } else {
+      this.repositoryPathsRequest += 1;
+      this.repositoryPaths.set([]);
+      this.repositoryPathsLoading.set(false);
+      this.repositoryPathsError.set(null);
+    }
+    if (comparisonChanged) {
       this.reviewQuestion.set("");
       this.reviewResult.set(null);
       this.reviewError.set(null);
@@ -2590,6 +2794,7 @@ export class AppComponent implements OnInit, OnDestroy {
     this.error.set(null);
     if (preserveSelection && previousRoot === repository.root && this.repositoryFileView()?.path === previousPath) {
       if (previousPath && repository.files.some((file) => file.path === previousPath)) this.selectFile(previousPath);
+      else if (previousPath) void this.openRepositoryPath(previousPath);
       return;
     }
     if (preserveSelection && previousRoot === repository.root && this.repositoryFileLoading() && this.selectedPath() === previousPath) return;
@@ -2633,6 +2838,22 @@ export class AppComponent implements OnInit, OnDestroy {
         this.refreshDirty = false;
         void this.refreshRepository();
       }
+    }
+  }
+
+  private async loadRepositoryPaths(): Promise<void> {
+    const root = this.repository()?.root;
+    if (!root) return;
+    const request = ++this.repositoryPathsRequest;
+    this.repositoryPathsLoading.set(true);
+    this.repositoryPathsError.set(null);
+    try {
+      const paths = await window.rift.listRepositoryFiles();
+      if (request === this.repositoryPathsRequest && this.repository()?.root === root) this.repositoryPaths.set(paths);
+    } catch (reason) {
+      if (request === this.repositoryPathsRequest) this.repositoryPathsError.set(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      if (request === this.repositoryPathsRequest) this.repositoryPathsLoading.set(false);
     }
   }
 
@@ -2864,11 +3085,13 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   private async loadEditableFile(path: string, reportError = false): Promise<void> {
+    const root = this.repository()?.root;
     try {
       const content = await window.rift.readRepositoryFile(path);
-      if (this.selectedPath() !== path || this.fileEdits().has(path)) return;
+      if (this.repository()?.root !== root || this.selectedPath() !== path || this.fileEdits().has(path)) return;
       this.fileContents.update((contents) => new Map(contents).set(path, content));
     } catch (reason) {
+      if (this.repository()?.root !== root) return;
       this.fileContents.update((contents) => {
         const next = new Map(contents);
         next.delete(path);
@@ -3089,6 +3312,53 @@ export class AppComponent implements OnInit, OnDestroy {
     } catch {
       return false;
     }
+  }
+
+  private loadSidebarView(): SidebarView {
+    try {
+      return sessionStorage.getItem(SIDEBAR_VIEW_SESSION_KEY) === "explorer" ? "explorer" : "changes";
+    } catch {
+      return "changes";
+    }
+  }
+
+  private loadExplorerShowAll(): boolean {
+    try {
+      return sessionStorage.getItem(EXPLORER_SHOW_ALL_SESSION_KEY) === "true";
+    } catch {
+      return false;
+    }
+  }
+
+  private loadExpandedExplorerFolders(root: string): ReadonlySet<string> {
+    try {
+      const value: unknown = JSON.parse(sessionStorage.getItem(`${EXPLORER_EXPANDED_SESSION_PREFIX}${root}`) ?? "[]");
+      if (!Array.isArray(value)) return new Set();
+      return new Set(value.filter((path): path is string => typeof path === "string" && path.length <= 10_000).slice(0, 10_000));
+    } catch {
+      return new Set();
+    }
+  }
+
+  private storeExpandedExplorerFolders(): void {
+    const root = this.repository()?.root;
+    if (!root) return;
+    this.storeSessionSetting(`${EXPLORER_EXPANDED_SESSION_PREFIX}${root}`, JSON.stringify([...this.expandedExplorerFolders()]));
+  }
+
+  private expandExplorerParents(path: string): void {
+    const parts = path.split("/").slice(0, -1);
+    if (parts.length === 0) return;
+    this.expandedExplorerFolders.update((current) => {
+      const next = new Set(current);
+      let parent = "";
+      for (const part of parts) {
+        parent = parent ? `${parent}/${part}` : part;
+        next.add(parent);
+      }
+      return next;
+    });
+    this.storeExpandedExplorerFolders();
   }
 
   private loadChangesPanelWidth(): number {

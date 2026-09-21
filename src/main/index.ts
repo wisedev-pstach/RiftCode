@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { promisify } from "node:util";
 import { delimiter, dirname, join, resolve, sep } from "node:path";
-import { loadFilePatch, loadRepository, readRepositoryViewFile, searchRepository } from "./git";
+import { listRepositoryFiles, loadFilePatch, loadRepository, readRepositoryViewFile, searchRepository } from "./git";
 import type { IpcMainInvokeEvent } from "electron";
 import type { AgentConversationHistory, AgentConversationMessage, AgentId, AgentMode, AgentOption, AgentRunResult, AgentSession, AgentStreamEvent, AgentToolEvent, RepositorySnapshot, UpdateStatus } from "../shared/contracts";
 import versionManifest from "../../version.json";
@@ -825,14 +825,21 @@ function registerIpc(): void {
     return searchRepository(snapshot.root, query.trim());
   });
 
+  ipcMain.handle("repository:list-files", (event) => {
+    assertTrustedSender(event);
+    if (!snapshot) throw new Error("No repository is open.");
+    return listRepositoryFiles(snapshot.root);
+  });
+
   ipcMain.handle("repository:read-view-file", (event, path: unknown) => {
     assertTrustedSender(event);
     if (!snapshot || typeof path !== "string" || path.length > 10_000) throw new Error("Invalid repository file.");
     return readRepositoryViewFile(snapshot.root, path);
   });
-  ipcMain.handle("repository:write-file", async (event, path: unknown, content: unknown) => {
+  ipcMain.handle("repository:write-file", async (event, path: unknown, content: unknown, repositoryRoot: unknown) => {
     assertTrustedSender(event);
     if (typeof content !== "string" || content.length > 20 * 1024 * 1024) throw new Error("The file content is too large.");
+    if (typeof repositoryRoot !== "string" || !snapshot || !samePath(repositoryRoot, snapshot.root)) throw new Error("The active repository changed before the file could be saved.");
     await writeFile(repositoryFilePath(path), content, "utf8");
   });
 

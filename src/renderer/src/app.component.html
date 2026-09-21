@@ -91,61 +91,127 @@
     <section class="workspace" [class.review-open]="reviewSidebarOpen()" [class.resizing-changes]="changesPanelResizing()" [style.--changes-width]="effectiveChangesPanelWidth() + 'px'">
       <aside class="changes-panel">
         <div class="panel-title">
-          <span class="changes-heading-title">
-            <button class="changes-title-button" (click)="showDiff()" title="Show changes and diff">Changes</button>
-            <button
-              class="hide-reviewed-button"
-              [class.active]="hideReviewed()"
-              [attr.aria-pressed]="hideReviewed()"
-              aria-label="Hide reviewed files"
-              [title]="hideReviewed() ? 'Show reviewed files' : 'Hide reviewed files'"
-              (click)="toggleHideReviewed()"
-            ><span aria-hidden="true">✓</span></button>
+          <span class="sidebar-view-toggle" aria-label="Sidebar view">
+            <button [class.active]="sidebarView() === 'changes'" [attr.aria-pressed]="sidebarView() === 'changes'" (click)="selectSidebarView('changes')">Changes</button>
+            <button [class.active]="sidebarView() === 'explorer'" [attr.aria-pressed]="sidebarView() === 'explorer'" (click)="selectSidebarView('explorer')">Explorer</button>
           </span>
           <span class="changes-heading-actions">
-            @if (reviewSessionStarted()) {
+            @if (sidebarView() === "changes") {
               <button
-                class="clear-session-action"
-                [class.armed]="clearSessionArmed()"
-                [disabled]="agentRunning()"
-                (click)="clearReviewSession()"
-                title="Clear context, notes, chats, reviewed files, and selections"
-              >{{ clearSessionArmed() ? "Confirm" : "Clear" }}</button>
+                class="hide-reviewed-button"
+                [class.active]="hideReviewed()"
+                [attr.aria-pressed]="hideReviewed()"
+                aria-label="Hide reviewed files"
+                [title]="hideReviewed() ? 'Show reviewed files' : 'Hide reviewed files'"
+                (click)="toggleHideReviewed()"
+              ><span aria-hidden="true">✓</span></button>
+              @if (reviewSessionStarted()) {
+                <button
+                  class="clear-session-action"
+                  [class.armed]="clearSessionArmed()"
+                  [disabled]="agentRunning()"
+                  (click)="clearReviewSession()"
+                  title="Clear context, notes, chats, reviewed files, and selections"
+                >{{ clearSessionArmed() ? "Confirm" : "Clear" }}</button>
+              }
+              <button
+                class="all-changes-button"
+                [class.active]="allChangesSelected()"
+                (click)="toggleAllChanges($event)"
+                title="Select the complete comparison"
+              >All</button>
+              <span class="count" [title]="reviewedFileCount() + ' files reviewed'">{{ reviewedFileCount() }}/{{ repository()!.files.length }}</span>
+            } @else {
+              <button
+                class="explorer-scope-button"
+                [class.active]="explorerShowAll()"
+                [attr.aria-pressed]="explorerShowAll()"
+                (click)="toggleExplorerShowAll()"
+                [title]="explorerShowAll() ? 'Show changed files only' : 'Show full solution'"
+              >Full</button>
+              <span class="count" [title]="explorerFileCount() + (explorerShowAll() ? ' solution files' : ' changed files')">{{ explorerFileCount() }}</span>
             }
-            <button
-              class="all-changes-button"
-              [class.active]="allChangesSelected()"
-              (click)="toggleAllChanges($event)"
-              title="Select the complete comparison"
-            >All</button>
-            <span class="count" [title]="reviewedFileCount() + ' files reviewed'">{{ reviewedFileCount() }}/{{ repository()!.files.length }}</span>
           </span>
         </div>
-        <div class="file-filter">
-          <input type="text" maxlength="1000" aria-label="Exclude files by wildcard" placeholder="Exclude: *Test*, *.snap" [value]="fileFilter()" (input)="updateFileFilter($event)">
-          @if (fileFilter()) { <button (click)="clearFileFilter()" title="Clear file filters" aria-label="Clear file filters">×</button> }
-        </div>
-        <div class="file-list">
-          @for (file of filteredFiles(); track file.path) {
-            <button
-              class="file-row"
-              [class.selected]="file.path === selectedPath()"
-              [class.reviewed]="isFileReviewed(file.path)"
-              (click)="selectFile(file.path)"
-              (contextmenu)="openFileTools(file.path, $event)"
-              [title]="file.path"
-            >
-              <span class="status status-{{ file.status }}">{{ statusLabel(file) }}</span>
-              <span class="file-name"><strong>{{ shortName(file.path) }}</strong><small>{{ directory(file.path) }}</small></span>
-              <span class="file-stat">
-                @if (isFileReviewed(file.path)) { <em title="Reviewed" aria-label="Reviewed">✓</em> }
-                <i>+{{ file.additions }}</i><b>-{{ file.deletions }}</b>
-              </span>
-            </button>
-          } @empty {
-            <p class="empty-copy">{{ hideReviewed() ? "No unreviewed files match the current filters." : fileFilter() ? "No files match the current filters." : "No changes in this comparison." }}</p>
-          }
-        </div>
+        @if (sidebarView() === "changes") {
+          <div class="file-filter">
+            <input type="text" maxlength="1000" aria-label="Exclude files by wildcard" placeholder="Exclude: *Test*, *.snap" [value]="fileFilter()" (input)="updateFileFilter($event)">
+            @if (fileFilter()) { <button (click)="clearFileFilter()" title="Clear file filters" aria-label="Clear file filters">×</button> }
+          </div>
+          <div class="file-list">
+            @for (file of filteredFiles(); track file.path) {
+              <button
+                class="file-row"
+                [class.selected]="file.path === selectedPath()"
+                [class.reviewed]="isFileReviewed(file.path)"
+                (click)="selectFile(file.path)"
+                (contextmenu)="openFileTools(file.path, $event)"
+                [title]="file.path"
+              >
+                <span class="status status-{{ file.status }}">{{ statusLabel(file) }}</span>
+                <span class="file-name"><strong>{{ shortName(file.path) }}</strong><small>{{ directory(file.path) }}</small></span>
+                <span class="file-stat">
+                  @if (isFileReviewed(file.path)) { <em title="Reviewed" aria-label="Reviewed">✓</em> }
+                  <i>+{{ file.additions }}</i><b>-{{ file.deletions }}</b>
+                </span>
+              </button>
+            } @empty {
+              <p class="empty-copy">{{ hideReviewed() ? "No unreviewed files match the current filters." : fileFilter() ? "No files match the current filters." : "No changes in this comparison." }}</p>
+            }
+          </div>
+        } @else {
+          <div class="explorer-tree" aria-label="Repository files">
+            @if (explorerShowAll() && repositoryPathsLoading() && repositoryPaths().length === 0) {
+              <p class="empty-copy">Loading repository files...</p>
+            } @else if (repositoryPathsError()) {
+              <p class="empty-copy">{{ repositoryPathsError() }}</p>
+            } @else {
+              @for (entry of explorerEntries(); track entry.kind + ':' + entry.path) {
+                @if (entry.kind === "folder") {
+                  <div
+                    class="explorer-row explorer-folder-row"
+                    [style.padding-left.px]="7 + entry.depth * 14"
+                    [title]="entry.path"
+                  >
+                    <button class="explorer-folder-toggle" [attr.aria-expanded]="expandedExplorerFolders().has(entry.path)" (click)="toggleExplorerFolder(entry.path)">
+                      <span class="explorer-chevron" [class.expanded]="expandedExplorerFolders().has(entry.path)">›</span>
+                      <svg class="explorer-folder-icon" viewBox="0 0 20 16" aria-hidden="true"><path d="M1.5 3.5h6l1.5 2h9.5v8.5h-17z"/><path d="M1.5 3.5v-2h5l1.5 2"/></svg>
+                      <span class="explorer-entry-name">{{ entry.name }}</span>
+                    </button>
+                    @if (explorerFolderReviewStates().get(entry.path); as reviewState) {
+                      <button
+                        class="explorer-folder-review"
+                        [class.reviewed]="reviewState.reviewed === reviewState.total"
+                        [class.partial]="reviewState.reviewed > 0 && reviewState.reviewed < reviewState.total"
+                        [attr.aria-label]="reviewState.reviewed === reviewState.total ? 'Mark folder unreviewed' : 'Mark folder reviewed'"
+                        [title]="reviewState.reviewed === reviewState.total ? 'Mark all changed files unreviewed' : 'Mark all changed files reviewed'"
+                        (click)="toggleFolderReviewed(entry.path, $event)"
+                      >{{ reviewState.reviewed === reviewState.total ? "✓" : reviewState.reviewed > 0 ? "−" : "○" }}</button>
+                    }
+                  </div>
+                } @else {
+                  <button
+                    class="explorer-row explorer-file-row"
+                    [class.selected]="entry.path === selectedPath()"
+                    [class.reviewed]="entry.changedFile && isFileReviewed(entry.path)"
+                    [style.padding-left.px]="25 + entry.depth * 14"
+                    [title]="entry.path"
+                    (click)="openExplorerFile(entry.path)"
+                    (contextmenu)="entry.changedFile && openFileTools(entry.path, $event)"
+                  >
+                    <span class="explorer-file-icon {{ explorerFileIcon(entry.path) }}" aria-hidden="true"><small>{{ explorerFileIconLabel(entry.path) }}</small></span>
+                    <span class="explorer-entry-name">{{ entry.name }}</span>
+                    @if (entry.changedFile; as changedFile) {
+                      <span class="explorer-status status-{{ changedFile.status }}">{{ statusLabel(changedFile) }}</span>
+                    }
+                  </button>
+                }
+              } @empty {
+                <p class="empty-copy">No repository files found.</p>
+              }
+            }
+          </div>
+        }
         <button
           class="changes-resizer"
           role="separator"

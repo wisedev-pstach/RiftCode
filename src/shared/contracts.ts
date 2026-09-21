@@ -137,10 +137,11 @@ export interface RiftApi {
   saveClipboardImage(): Promise<string | null>;
   saveMarkdown(name: string, content: string): Promise<boolean>;
   readRepositoryFile(path: string): Promise<string>;
-  writeRepositoryFile(path: string, content: string): Promise<void>;
+  writeRepositoryFile(path: string, content: string, repositoryRoot: string): Promise<void>;
   openRepository(path?: string): Promise<RepositorySnapshot>;
   refreshRepository(): Promise<RepositorySnapshot>;
   getFilePatch(path: string, fullFile: boolean): Promise<FilePatch>;
+  listRepositoryFiles(): Promise<string[]>;
   searchRepository(query: string): Promise<RepositorySearchResponse>;
   readRepositoryViewFile(path: string): Promise<RepositoryFileView>;
   chooseRepository(): Promise<RepositorySnapshot | null>;
