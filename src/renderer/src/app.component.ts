@@ -47,6 +47,7 @@ const AGENT_STORAGE_KEY = "rift:last-agent";
 const AGENT_MODEL_STORAGE_KEY = "rift:last-agent-model";
 const MODEL_STORAGE_PREFIX = "rift:last-model:";
 const CONVERSATION_STORAGE_PREFIX = "rift:last-conversation:";
+const REPOSITORY_CONVERSATIONS_STORAGE_PREFIX = "rift:repository-conversations:";
 const PREFERENCE_SCHEMA_KEY = "rift:preference-schema";
 const PREFERENCE_SCHEMA_VERSION = "3";
 const CHAT_FONT_SIZE_KEY = "rift:chat-font-size";
@@ -322,6 +323,7 @@ function isAgentResult(value: unknown): value is AgentRunResult {
   const result = value as Record<string, unknown>;
   return typeof result.explanation === "string" && result.explanation.length <= 1_000_000
     && (result.sessionId === undefined || (typeof result.sessionId === "string" && result.sessionId.length <= 100))
+    && (result.model === undefined || (typeof result.model === "string" && result.model.length <= 200))
     && Array.isArray(result.tools) && result.tools.length <= 2_000
     && result.tools.every((entry) => {
       if (!entry || typeof entry !== "object") return false;
@@ -582,8 +584,9 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly modelsLoading = signal(false);
   readonly filteredAgentModels = computed(() => {
     const query = this.modelSearch().trim().toLowerCase();
+    const agent = this.selectedAgent();
     return (query
-      ? this.agentModels().filter((model) => model.toLowerCase().includes(query))
+      ? this.agentModels().filter((model) => model.toLowerCase().includes(query) || (agent && this.modelLabel(agent, model).toLowerCase().includes(query)))
       : this.agentModels());
   });
   readonly agentRunning = signal(false);
@@ -749,8 +752,9 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly chatModelPickerOpen = signal(false);
   readonly filteredChatModels = computed(() => {
     const query = this.chatModelSearch().trim().toLowerCase();
+    const agent = this.activeConversation()?.agent ?? this.selectedAgent();
     return (query
-      ? this.agentModels().filter((model) => model.toLowerCase().includes(query))
+      ? this.agentModels().filter((model) => model.toLowerCase().includes(query) || (agent && this.modelLabel(agent, model).toLowerCase().includes(query)))
       : this.agentModels());
   });
   readonly chatFontSize = signal(this.loadChatFontSize());
@@ -1111,9 +1115,9 @@ export class AppComponent implements OnInit, OnDestroy {
 
   selectModel(model: string | null): void {
     this.selectedModel.set(model);
-    this.modelSearch.set(model ?? "");
-    this.modelPickerOpen.set(false);
     const agent = this.selectedAgent();
+    this.modelSearch.set(model && agent ? this.modelLabel(agent, model) : "");
+    this.modelPickerOpen.set(false);
     if (!agent) return;
     try {
       if (model) localStorage.setItem(`${MODEL_STORAGE_PREFIX}${agent}`, model);
@@ -1143,7 +1147,7 @@ export class AppComponent implements OnInit, OnDestroy {
     this.chatModelSearch.set("");
     if (this.selectedAgent() === conversation.agent) {
       this.selectedModel.set(model);
-      this.modelSearch.set(model ?? "");
+      this.modelSearch.set(model ? this.modelLabel(conversation.agent, model) : "");
     }
     try {
       if (model) localStorage.setItem(`${MODEL_STORAGE_PREFIX}${conversation.agent}`, model);
@@ -1161,7 +1165,9 @@ export class AppComponent implements OnInit, OnDestroy {
       return;
     }
     if (event.key !== "Enter") return;
-    const model = this.agentModels().find((entry) => entry === this.chatModelSearch()) ?? this.filteredChatModels()[0];
+    const agent = this.activeConversation()?.agent ?? this.selectedAgent();
+    const query = this.chatModelSearch();
+    const model = this.agentModels().find((entry) => entry === query || (agent && this.modelLabel(agent, entry) === query)) ?? this.filteredChatModels()[0];
     if (!model) return;
     event.preventDefault();
     event.stopPropagation();
@@ -1175,7 +1181,9 @@ export class AppComponent implements OnInit, OnDestroy {
       return;
     }
     if (event.key !== "Enter") return;
-    const model = this.agentModels().find((entry) => entry === this.modelSearch()) ?? this.filteredAgentModels()[0];
+    const agent = this.selectedAgent();
+    const query = this.modelSearch();
+    const model = this.agentModels().find((entry) => entry === query || (agent && this.modelLabel(agent, entry) === query)) ?? this.filteredAgentModels()[0];
     if (!model) return;
     event.preventDefault();
     event.stopPropagation();
@@ -1735,9 +1743,11 @@ export class AppComponent implements OnInit, OnDestroy {
     this.allChangesSelected.set(false);
     this.clearSessionArmed.set(false);
     const key = this.reviewSessionStorageKey();
+    const conversationsKey = this.repositoryConversationsStorageKey();
     const legacyKey = this.legacyNotesStorageKey();
     try {
       if (key) localStorage.removeItem(key);
+      if (conversationsKey) localStorage.removeItem(conversationsKey);
       if (legacyKey) localStorage.removeItem(legacyKey);
     } catch {
       this.reviewMessage.set("Session cleared, but persisted data could not be removed");
@@ -1808,13 +1818,13 @@ export class AppComponent implements OnInit, OnDestroy {
         ? savedModel
         : null;
       this.selectedModel.set(model);
-      this.modelSearch.set(model ?? "");
+      this.modelSearch.set(model ? this.modelLabel(agent, model) : "");
     }
     if (useLatestConversation) this.useExplainConversation(this.preferredConversation(agent), false);
     this.noteComposerOpen.set(false);
     this.questionDraft.set("");
     this.clearImageAttachments("question");
-    this.modelSearch.set(this.selectedModel() ?? "");
+    this.modelSearch.set(this.selectedModel() && agent ? this.modelLabel(agent, this.selectedModel()!) : "");
     this.modelPickerOpen.set(false);
     this.questionComposerOpen.set(true);
     if (agent) {
@@ -2139,15 +2149,17 @@ export class AppComponent implements OnInit, OnDestroy {
     const repository = this.repository();
     if (!agent || !repository || this.agentRunning() || this.providerSessionOpeningId()) return null;
     const imported = this.repositoryConversations().find((conversation) => conversation.agent === agent && conversation.providerSessionId === session.id);
-    if (imported) return imported;
     const request = ++this.providerSessionRequest;
     this.providerSessionOpeningId.set(session.id);
     this.providerSessionsError.set(null);
     try {
       const history = await window.rift.getAgentSession(agent, session.id);
       if (request !== this.providerSessionRequest || this.selectedAgent() !== agent || this.repository()?.root !== repository.root) return null;
-      const conversation = this.importProviderConversation(agent, history, repository.root, session.updatedAt);
-      this.conversations.update((conversations) => [...conversations, conversation]);
+      const refreshed = this.importProviderConversation(agent, history, repository.root, session.updatedAt, imported?.id);
+      const conversation = imported ? this.preserveConversationMetadata(imported, refreshed) : refreshed;
+      this.conversations.update((conversations) => imported
+        ? conversations.map((entry) => entry.id === imported.id ? conversation : entry)
+        : [...conversations, conversation]);
       this.persistReviewSession();
       return conversation;
     } catch (reason) {
@@ -2661,6 +2673,23 @@ export class AppComponent implements OnInit, OnDestroy {
     return this.agents().find((agent) => agent.id === id)?.label ?? id;
   }
 
+  modelLabel(agent: AgentId, model: string | null): string {
+    if (!model) return "Default model";
+    if (agent !== "claude") return model;
+    const aliases: Readonly<Record<string, string>> = {
+      opus: "Claude Opus 5.5",
+      sonnet: "Claude Sonnet 5.5",
+      haiku: "Claude Haiku 4.5",
+      fable: "Claude Fable 5.1"
+    };
+    if (aliases[model]) return `${aliases[model]} (${model})`;
+    const match = /^claude-(opus|sonnet|haiku|fable)-(\d+)(?:-(\d+))?(?:-(\d{8}))?$/.exec(model);
+    if (!match) return model;
+    const family = match[1][0].toUpperCase() + match[1].slice(1);
+    const version = match[3] ? `${match[2]}.${match[3]}` : match[2];
+    return `Claude ${family} ${version} · ${model}`;
+  }
+
   isAgentAuthError(error: string): boolean {
     return error.includes("Authentication required.");
   }
@@ -2891,7 +2920,6 @@ export class AppComponent implements OnInit, OnDestroy {
     this.highlightedRows.set(null);
     if (
       language.id === "plaintext"
-      || rows.length > 120
       || characterCount > 30_000
       || rows.some((row) => row.content.length > 10_000)
     ) return;
@@ -2965,6 +2993,11 @@ export class AppComponent implements OnInit, OnDestroy {
       : null;
   }
 
+  private repositoryConversationsStorageKey(): string | null {
+    const root = this.repository()?.root;
+    return root ? `${REPOSITORY_CONVERSATIONS_STORAGE_PREFIX}${root}` : null;
+  }
+
   private legacyNotesStorageKey(): string | null {
     const repository = this.repository();
     return repository ? `rift:notes:${repository.root}:${repository.comparisonId}` : null;
@@ -2994,17 +3027,7 @@ export class AppComponent implements OnInit, OnDestroy {
           this.reviewError.set(stored.review.error);
           this.reviewTone.set(stored.review.tone);
         }
-        const root = this.repository()!.root;
-        const restored = (stored.conversations ?? []).filter(isConversation).slice(-100).map((conversation) => (
-          conversation.status === "running"
-            ? { ...conversation, status: "cancelled" as const, error: "The request was interrupted when Rift closed." }
-            : conversation
-        ));
-        this.conversations.update((conversations) => [
-          ...conversations.filter((conversation) => conversation.repositoryRoot !== root),
-          ...restored
-        ]);
-        this.conversationRequest = Math.max(this.conversationRequest, ...restored.map((conversation) => conversation.id), 0);
+        this.restoreRepositoryConversations(stored.conversations ?? []);
         this.clearSessionArmed.set(false);
         if (previousRaw && previousKey) {
           if (this.persistReviewSession()) localStorage.removeItem(previousKey);
@@ -3018,8 +3041,7 @@ export class AppComponent implements OnInit, OnDestroy {
       this.selectedNoteIds.set([]);
       this.reviewedFiles.set([]);
       this.workspaceContext.set({ details: "", links: [], resources: [] });
-      const root = this.repository()!.root;
-      this.conversations.update((conversations) => conversations.filter((conversation) => conversation.repositoryRoot !== root));
+      this.restoreRepositoryConversations([]);
       this.clearSessionArmed.set(false);
       if (this.notes().length > 0) {
         this.persistReviewSession();
@@ -3030,9 +3052,46 @@ export class AppComponent implements OnInit, OnDestroy {
       this.selectedNoteIds.set([]);
       this.reviewedFiles.set([]);
       this.workspaceContext.set({ details: "", links: [], resources: [] });
-      const root = this.repository()?.root;
-      this.conversations.update((conversations) => conversations.filter((conversation) => conversation.repositoryRoot !== root));
+      this.restoreRepositoryConversations([]);
       this.clearSessionArmed.set(false);
+    }
+  }
+
+  private restoreRepositoryConversations(fallback: Conversation[]): void {
+    const root = this.repository()?.root;
+    const key = this.repositoryConversationsStorageKey();
+    if (!root || !key) return;
+    let restored = fallback.filter(isConversation);
+    try {
+      const raw = localStorage.getItem(key);
+      if (raw) {
+        const stored: unknown = JSON.parse(raw);
+        if (Array.isArray(stored)) restored = stored.filter(isConversation);
+      }
+    } catch {
+      // Fall back to conversations embedded in the older comparison-scoped review session.
+    }
+    restored = restored.filter((conversation) => conversation.repositoryRoot === root).slice(-100).map((conversation) => (
+      conversation.status === "running"
+        ? { ...conversation, status: "cancelled" as const, error: "The request was interrupted when Rift closed." }
+        : conversation
+    ));
+    this.conversations.update((conversations) => [
+      ...conversations.filter((conversation) => conversation.repositoryRoot !== root),
+      ...restored
+    ]);
+    this.conversationRequest = Math.max(this.conversationRequest, ...restored.map((conversation) => conversation.id), 0);
+    if (restored.length > 0) this.persistRepositoryConversations();
+  }
+
+  private persistRepositoryConversations(): boolean {
+    const key = this.repositoryConversationsStorageKey();
+    if (!key) return false;
+    try {
+      localStorage.setItem(key, JSON.stringify(this.repositoryConversations().slice(-100)));
+      return true;
+    } catch {
+      return false;
     }
   }
 
@@ -3040,11 +3099,12 @@ export class AppComponent implements OnInit, OnDestroy {
     const key = this.reviewSessionStorageKey();
     if (!key) return false;
     try {
+      if (!this.persistRepositoryConversations()) throw new Error("Could not persist repository conversations");
       const session: ReviewSessionData = {
         version: 4,
         reviewedFiles: this.reviewedFiles(),
         notes: this.notes(),
-        conversations: this.repositoryConversations().slice(-100),
+        conversations: [],
         workspaceContext: this.workspaceContext(),
         review: {
           question: this.reviewQuestion(),
@@ -3157,7 +3217,7 @@ export class AppComponent implements OnInit, OnDestroy {
         }
       }
       this.selectedModel.set(model);
-      this.modelSearch.set(this.selectedModel() ?? "");
+      this.modelSearch.set(model ? this.modelLabel(agent, model) : "");
       this.saveAgentModelSelection(agent, model);
     } catch (reason) {
       if (request === this.modelRequest && this.selectedAgent() === agent) {
@@ -3179,6 +3239,7 @@ export class AppComponent implements OnInit, OnDestroy {
       if (request === this.sessionListRequest && this.selectedAgent() === agent) {
         this.providerSessions.set(sessions);
         this.providerSessionsAgent.set(agent);
+        void this.refreshImportedProviderConversations(agent, sessions, request);
       }
     } catch (reason) {
       if (request === this.sessionListRequest && this.selectedAgent() === agent) {
@@ -3217,7 +3278,45 @@ export class AppComponent implements OnInit, OnDestroy {
     });
   }
 
-  private importProviderConversation(agent: AgentId, history: AgentConversationHistory, repositoryRoot: string, updatedAt: number): Conversation {
+  private async refreshImportedProviderConversations(agent: AgentId, sessions: AgentSession[], request: number): Promise<void> {
+    const repositoryRoot = this.repository()?.root;
+    if (!repositoryRoot) return;
+    const importedBySession = new Map(this.repositoryConversations()
+      .filter((conversation) => conversation.agent === agent && conversation.providerSessionId)
+      .map((conversation) => [conversation.providerSessionId!, conversation]));
+    const stale = sessions.filter((session) => {
+      const conversation = importedBySession.get(session.id);
+      return conversation && session.updatedAt > (conversation.updatedAt ?? 0) + 1_000;
+    });
+    if (stale.length === 0) return;
+    const updates = await Promise.all(stale.map(async (session): Promise<Conversation | null> => {
+      const existing = importedBySession.get(session.id)!;
+      try {
+        const history = await window.rift.getAgentSession(agent, session.id);
+        const refreshed = this.importProviderConversation(agent, history, repositoryRoot, session.updatedAt, existing.id);
+        return this.preserveConversationMetadata(existing, refreshed);
+      } catch {
+        return null;
+      }
+    }));
+    if (request !== this.sessionListRequest || this.repository()?.root !== repositoryRoot) return;
+    const byId = new Map(updates.filter((conversation): conversation is Conversation => conversation !== null).map((conversation) => [conversation.id, conversation]));
+    if (byId.size === 0) return;
+    this.conversations.update((conversations) => conversations.map((conversation) => byId.get(conversation.id) ?? conversation));
+    this.persistReviewSession();
+  }
+
+  private preserveConversationMetadata(existing: Conversation, refreshed: Conversation): Conversation {
+    return {
+      ...refreshed,
+      id: existing.id,
+      mode: existing.mode,
+      context: existing.context,
+      attachedReview: existing.attachedReview
+    };
+  }
+
+  private importProviderConversation(agent: AgentId, history: AgentConversationHistory, repositoryRoot: string, updatedAt: number, conversationId?: number): Conversation {
     const exchanges: Array<{ question: string; result: AgentRunResult | null }> = [];
     for (const message of history.messages) {
       if (message.role === "user") {
@@ -3234,7 +3333,7 @@ export class AppComponent implements OnInit, OnDestroy {
     const retainedExchanges = exchanges.slice(-500);
     const current = retainedExchanges.at(-1)!;
     return {
-      id: ++this.conversationRequest,
+      id: conversationId ?? ++this.conversationRequest,
       repositoryRoot,
       title: history.title.slice(0, 500),
       agent,
@@ -3268,7 +3367,8 @@ export class AppComponent implements OnInit, OnDestroy {
         ? {
             ...conversation,
             result: this.mergeAgentResult(conversation.result, event.result),
-            providerSessionId: conversation.providerSessionId ?? event.result.sessionId
+            providerSessionId: conversation.providerSessionId ?? event.result.sessionId,
+            model: event.result.model ?? conversation.model
           }
         : conversation
     )));
@@ -3413,7 +3513,8 @@ export class AppComponent implements OnInit, OnDestroy {
     if (selected) return selected;
     const query = this.modelSearch().trim();
     if (!query) return null;
-    const model = this.agentModels().find((entry) => entry === query) ?? null;
+    const agent = this.selectedAgent();
+    const model = this.agentModels().find((entry) => entry === query || (agent && this.modelLabel(agent, entry) === query)) ?? null;
     if (model) this.selectModel(model);
     return model;
   }
@@ -3519,8 +3620,8 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   private conversationStorageKey(agent: AgentId): string | null {
-    const sessionKey = this.reviewSessionStorageKey();
-    return sessionKey ? `${CONVERSATION_STORAGE_PREFIX}${agent}:${sessionKey}` : null;
+    const conversationsKey = this.repositoryConversationsStorageKey();
+    return conversationsKey ? `${CONVERSATION_STORAGE_PREFIX}${agent}:${conversationsKey}` : null;
   }
 
   private mergeAgentResult(current: AgentRunResult | null, update: AgentRunResult): AgentRunResult {
@@ -3537,7 +3638,8 @@ export class AppComponent implements OnInit, OnDestroy {
     return {
       tools: [...tools.values()].slice(0, 2_000),
       explanation: this.mergeAgentText(current?.explanation ?? "", update.explanation).slice(0, 1_000_000),
-      sessionId: update.sessionId ?? current?.sessionId
+      sessionId: update.sessionId ?? current?.sessionId,
+      model: update.model ?? current?.model
     };
   }
 
@@ -3619,6 +3721,7 @@ export class AppComponent implements OnInit, OnDestroy {
         this.conversations.update((conversations) => conversations.map((conversation) => (
           conversation.id === conversationId ? {
             ...conversation,
+            model: result.model ?? conversation.model,
             status: "complete",
             result,
             error: null,

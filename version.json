@@ -1,11 +1,10 @@
 {
-  "version": "0.7.0",
+  "version": "0.7.1",
   "releaseNotes": [
-    "Added an Explorer view that organizes changed files into a collapsible folder tree with language-aware file icons and Git status markers.",
-    "Added an optional Full view for browsing and opening every available file in the repository without leaving the review workspace.",
-    "Folders now show review progress and can mark all changed files beneath them reviewed or unreviewed in one action.",
-    "Explorer layout, expanded folders, and Full view preferences are retained for the current session.",
-    "Improved repository and comparison switching so file previews, editable content, and Explorer entries cannot leak stale state between workspaces.",
-    "Added a redesigned project README with installation instructions, product guidance, and an application preview."
+    "Fixed syntax highlighting for ordinary source files whose diffs exceed 120 rows.",
+    "Unified Rift chats with native Claude Code and OpenCode sessions, including repository-wide persistence and automatic refresh after external changes.",
+    "Expanded native provider session discovery to the 100 most recent repository conversations and improved Claude title detection.",
+    "Named new Claude Code sessions so they are easier to find and resume from Claude's native session picker.",
+    "Added complete Claude model names and exact resolved model identifiers throughout reviews, chats, history, and model selection."
   ]
 }

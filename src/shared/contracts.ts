@@ -108,6 +108,7 @@ export interface AgentRunResult {
   tools: AgentToolEvent[];
   explanation: string;
   sessionId?: string;
+  model?: string;
 }
 
 export interface ContextResourcePath {

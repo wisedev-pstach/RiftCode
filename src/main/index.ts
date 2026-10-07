@@ -12,11 +12,16 @@ import type { IpcMainInvokeEvent } from "electron";
 import type { AgentConversationHistory, AgentConversationMessage, AgentId, AgentMode, AgentOption, AgentRunResult, AgentSession, AgentStreamEvent, AgentToolEvent, RepositorySnapshot, UpdateStatus } from "../shared/contracts";
 import versionManifest from "../../version.json";
 
+function agentSessionTitle(prompt: string): string {
+  const line = prompt.split(/\r?\n/).map((part) => part.trim()).find((part) => part && !part.startsWith("#"));
+  return (line || "Rift conversation").replace(/\s+/g, " ").slice(0, 80);
+}
+
 const AGENTS: Readonly<Record<AgentId, { label: string; args: (prompt: string, model: string | null, mode: AgentMode, sessionId: string | undefined, resourcePaths: string[]) => string[]; promptViaStdin?: boolean }>> = {
   opencode: { label: "OpenCode", args: (prompt, model, mode, sessionId, resourcePaths) => ["run", "--pure", "--agent", mode === "edit" ? "build" : "plan", "--format", "json", "--auto", ...(model ? ["--model", model] : []), ...(sessionId ? ["--session", sessionId] : []), ...resourcePaths.filter((path) => !statSync(path).isDirectory()).flatMap((path) => ["--file", path]), "--", prompt] },
   claude: {
     label: "Claude Code",
-    args: (_prompt, model, mode, sessionId, resourcePaths) => ["--print", "--verbose", "--output-format", "stream-json", "--include-partial-messages", "--permission-mode", mode === "edit" ? "auto" : "plan", "--tools", mode === "edit" ? "Read,Grep,Glob,Bash,Edit,Write" : "Read,Grep,Glob,Bash", ...[...new Set(resourcePaths.map((path) => statSync(path).isDirectory() ? path : dirname(path)))].flatMap((path) => ["--add-dir", path]), ...(model ? ["--model", model] : []), ...(sessionId ? ["--resume", sessionId] : [])],
+    args: (prompt, model, mode, sessionId, resourcePaths) => ["--print", "--verbose", "--output-format", "stream-json", "--include-partial-messages", "--permission-mode", mode === "edit" ? "auto" : "plan", "--tools", mode === "edit" ? "Read,Grep,Glob,Bash,Edit,Write" : "Read,Grep,Glob,Bash", ...[...new Set(resourcePaths.map((path) => statSync(path).isDirectory() ? path : dirname(path)))].flatMap((path) => ["--add-dir", path]), ...(model ? ["--model", model] : []), ...(sessionId ? ["--resume", sessionId] : ["--name", agentSessionTitle(prompt)])],
     promptViaStdin: true
   }
 };
@@ -37,6 +42,7 @@ let agentStopReason: "cancelled" | "interrupted" | null = null;
 let activePatchController: AbortController | null = null;
 let attachmentDirectory: string | null = null;
 const AGENT_INACTIVITY_TIMEOUT_MS = 15 * 60 * 1000;
+const MAX_PROVIDER_SESSION_COUNT = 100;
 const UPDATE_MANIFEST_URL = "https://raw.githubusercontent.com/wisedev-pstach/RiftCode/main/version.json";
 const MAC_INSTALL_URL = "https://raw.githubusercontent.com/wisedev-pstach/RiftCode/main/install.sh";
 const WINDOWS_INSTALL_URL = "https://raw.githubusercontent.com/wisedev-pstach/RiftCode/main/install.ps1";
@@ -318,7 +324,7 @@ async function listAgentSessions(id: AgentId): Promise<AgentSession[]> {
   const command = await resolveAgentCommand(id);
   if (!command) return [];
   if (id === "opencode") {
-    const output = await execute(command, ["session", "list", "--format", "json", "--max-count", "30"], snapshot.root);
+    const output = await execute(command, ["session", "list", "--format", "json", "--max-count", String(MAX_PROVIDER_SESSION_COUNT)], snapshot.root);
     const sessions: unknown = JSON.parse(output || "[]");
     if (!Array.isArray(sessions)) return [];
     return sessions.flatMap((value): AgentSession[] => {
@@ -330,7 +336,7 @@ async function listAgentSessions(id: AgentId): Promise<AgentSession[]> {
         && samePath(session.directory, snapshot!.root)
         ? [{ id: session.id, title: session.title, updatedAt: session.updated }]
         : [];
-    }).slice(0, 20);
+    }).slice(0, MAX_PROVIDER_SESSION_COUNT);
   }
 
   const projectName = resolve(snapshot.root).replace(/[^a-zA-Z0-9]/g, "-");
@@ -345,7 +351,7 @@ async function listAgentSessions(id: AgentId): Promise<AgentSession[]> {
     .filter((entry) => entry.isFile() && entry.name.endsWith(".jsonl"))
     .map(async (entry) => ({ entry, details: await stat(join(directory, entry.name)) })));
   candidates.sort((left, right) => right.details.mtimeMs - left.details.mtimeMs);
-  const sessions = await Promise.all(candidates.slice(0, 20).map(async ({ entry, details }): Promise<AgentSession | null> => {
+  const sessions = await Promise.all(candidates.slice(0, MAX_PROVIDER_SESSION_COUNT * 2).map(async ({ entry, details }): Promise<AgentSession | null> => {
     const title = await readClaudeSessionTitle(join(directory, entry.name), snapshot!.root);
     return title ? {
       id: entry.name.slice(0, -".jsonl".length),
@@ -353,7 +359,7 @@ async function listAgentSessions(id: AgentId): Promise<AgentSession[]> {
       updatedAt: details.mtimeMs
     } : null;
   }));
-  return sessions.filter((session): session is AgentSession => session !== null);
+  return sessions.filter((session): session is AgentSession => session !== null).slice(0, MAX_PROVIDER_SESSION_COUNT);
 }
 
 function samePath(left: string, right: string): boolean {
@@ -374,6 +380,9 @@ async function readClaudeSessionTitle(path: string, repositoryRoot: string): Pro
       try { event = record(JSON.parse(line)); } catch { continue; }
       if (!event) continue;
       if (typeof event.cwd === "string" && samePath(event.cwd, repositoryRoot)) matchesRepository = true;
+      if (event.type === "ai-title" && typeof event.aiTitle === "string" && event.aiTitle.trim()) {
+        title ??= event.aiTitle.trim().slice(0, 120);
+      }
       if (event.type === "summary" && typeof event.summary === "string" && event.summary.trim()) {
         title ??= event.summary.trim().slice(0, 120);
       }
@@ -563,7 +572,8 @@ function mergeAgentResults(current: AgentRunResult, update: AgentRunResult): Age
   return {
     tools: [...tools.values()],
     explanation: mergeAgentText(current.explanation, update.explanation),
-    sessionId: update.sessionId ?? current.sessionId
+    sessionId: update.sessionId ?? current.sessionId,
+    model: update.model ?? current.model
   };
 }
 
@@ -605,6 +615,7 @@ function parseAgentOutput(id: AgentId, output: string, complete = true): AgentRu
   let streamedText = "";
   let explanation = "";
   let sessionId: string | undefined;
+  let model: string | undefined;
 
   for (const event of events) {
     const data = record(event.data);
@@ -636,6 +647,7 @@ function parseAgentOutput(id: AgentId, output: string, complete = true): AgentRu
       streamedText += delta.text;
     }
     const message = record(event.message);
+    if (typeof message?.model === "string" && message.model !== "<synthetic>") model = message.model;
     const content = Array.isArray(message?.content) ? message.content : [];
     for (const itemValue of content) {
       const item = record(itemValue);
@@ -667,7 +679,8 @@ function parseAgentOutput(id: AgentId, output: string, complete = true): AgentRu
   return {
     tools: [...tools.values()],
     explanation: explanation || (complete ? "The agent completed without a text explanation." : ""),
-    sessionId
+    sessionId,
+    model
   };
 }
 

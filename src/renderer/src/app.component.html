@@ -239,7 +239,7 @@
                 <button (click)="resetReview()" [disabled]="agentRunning()">New review</button>
               </div>
               <article class="review-result-card">
-                <header><span class="review-mark">R</span><span><strong>{{ agentLabel(selectedAgent()!) }}</strong><small>{{ selectedModel() || "Default model" }} · {{ reviewTone() }}</small></span>@if (agentRunning()) { <i class="loading-spinner" aria-label="Review in progress"></i> }</header>
+                <header><span class="review-mark">R</span><span><strong>{{ agentLabel(selectedAgent()!) }}</strong><small>{{ modelLabel(selectedAgent()!, reviewResult()?.model || selectedModel()) }} · {{ reviewTone() }}</small></span>@if (agentRunning()) { <i class="loading-spinner" aria-label="Review in progress"></i> }</header>
                 @if (reviewResult(); as result) {
                   @if (result.tools.length > 0) {
                     <section class="review-tool-activity">
@@ -276,7 +276,7 @@
             <div class="review-page-card">
               <div class="review-agent-grid">
                 <label><span>Provider</span>@if (agents().length > 0) { <select [value]="selectedAgent()" (change)="selectAgent($event)">@for (agent of agents(); track agent.id) { <option [value]="agent.id" [selected]="agent.id === selectedAgent()">{{ agent.label }}</option> }</select> } @else { <small>No supported agent detected</small> }</label>
-                <label><span>Model</span><select [value]="selectedModel() || ''" [disabled]="!selectedAgent() || modelsLoading()" (change)="selectReviewModel($event)"><option value="">{{ modelsLoading() ? "Loading models..." : "Default model" }}</option>@for (model of agentModels(); track model) { <option [value]="model">{{ model }}</option> }</select></label>
+                <label><span>Model</span><select [value]="selectedModel() || ''" [disabled]="!selectedAgent() || modelsLoading()" (change)="selectReviewModel($event)"><option value="">{{ modelsLoading() ? "Loading models..." : "Default model" }}</option>@for (model of agentModels(); track model) { <option [value]="model">{{ modelLabel(selectedAgent()!, model) }}</option> }</select></label>
               </div>
               <fieldset class="tone-switch review-page-tones">
                 <legend>Review voice</legend>
@@ -342,7 +342,7 @@
                   }
                 </div>
                 <div class="chat-message assistant-message historical-message">
-                  <span>{{ agentLabel(conversation.agent) }} · {{ conversation.model || "default model" }}</span>
+                  <span>{{ agentLabel(conversation.agent) }} · {{ modelLabel(conversation.agent, conversation.model) }}</span>
                   @if (turn.result?.explanation) { <div class="markdown-response" [innerHTML]="renderMarkdown(turn.result!.explanation)"></div> }
                   @if (turn.error) {
                     @if (isAgentAuthError(turn.error)) {
@@ -364,7 +364,7 @@
                 </div>
 
                 <div class="chat-message assistant-message">
-                  <span>{{ agentLabel(conversation.agent) }} · {{ conversation.model || "default model" }}</span>
+                  <span>{{ agentLabel(conversation.agent) }} · {{ modelLabel(conversation.agent, conversation.model) }}</span>
                   @if (conversation.result; as result) {
                     @if (result.tools.length > 0) {
                       <div class="agent-tools">
@@ -408,7 +408,7 @@
                     <div class="chat-model-picker">
                       <button type="button" class="chat-model-trigger" (click)="toggleChatModelPicker()" [disabled]="modelsLoading()" [attr.aria-expanded]="chatModelPickerOpen()" title="Choose model">
                         <span class="model-mark">M</span>
-                        <span><small>Model</small><strong>{{ modelsLoading() ? "Loading..." : conversation.model || "Default" }}</strong></span>
+                        <span><small>Model</small><strong>{{ modelsLoading() ? "Loading..." : modelLabel(conversation.agent, conversation.model) }}</strong></span>
                         <i aria-hidden="true">⌃</i>
                       </button>
                       @if (chatModelPickerOpen() && !modelsLoading()) {
@@ -429,7 +429,7 @@
                               <button type="button" [class.selected]="conversation.model === null" (click)="selectChatModel(null)"><strong>Default model</strong><small>Use the provider default</small></button>
                             }
                             @for (model of filteredChatModels(); track model) {
-                              <button type="button" [class.selected]="conversation.model === model" (click)="selectChatModel(model)" [title]="model">{{ model }}</button>
+                              <button type="button" [class.selected]="conversation.model === model" (click)="selectChatModel(model)" [title]="model">{{ modelLabel(conversation.agent, model) }}</button>
                             } @empty {
                               @if (chatModelSearch()) { <small>No matching models</small> }
                             }
@@ -471,7 +471,7 @@
                 @for (conversation of repositoryConversations(); track conversation.id) {
                   <button (click)="openConversation(conversation.id)">
                     <span class="conversation-status status-{{ conversation.status }}"></span>
-                    <span><strong>{{ conversation.title || conversation.question || "New chat" }}</strong><small>{{ agentLabel(conversation.agent) }} · {{ conversation.model || "default model" }} · {{ conversationUpdatedLabel(conversation) }}@if (conversation.context; as context) { · {{ shortName(context.filePath) }}:{{ context.startLine }}{{ context.endLine !== context.startLine ? "-" + context.endLine : "" }}}</small></span>
+                    <span><strong>{{ conversation.title || conversation.question || "New chat" }}</strong><small>{{ agentLabel(conversation.agent) }} · {{ modelLabel(conversation.agent, conversation.model) }} · {{ conversationUpdatedLabel(conversation) }}@if (conversation.context; as context) { · {{ shortName(context.filePath) }}:{{ context.startLine }}{{ context.endLine !== context.startLine ? "-" + context.endLine : "" }}}</small></span>
                     <span class="history-arrow">→</span>
                   </button>
                 }
@@ -850,7 +850,7 @@
                   <div class="model-search-results">
                     <button type="button" [class.selected]="selectedModel() === null && !modelSearch()" (click)="selectModel(null)">Default model</button>
                     @for (model of filteredAgentModels(); track model) {
-                      <button type="button" [class.selected]="model === selectedModel()" (click)="selectModel(model)" [title]="model">{{ model }}</button>
+                      <button type="button" [class.selected]="model === selectedModel()" (click)="selectModel(model)" [title]="model">{{ modelLabel(selectedAgent()!, model) }}</button>
                     } @empty {
                       <small>No matching models</small>
                     }
