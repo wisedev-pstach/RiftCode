@@ -1008,6 +1008,43 @@
       </div>
     }
 
+    @if (githubIssueOpen()) {
+      <div class="github-issue-backdrop" role="presentation" (click)="closeGitHubIssueReporter()">
+        <section class="github-issue-dialog" role="dialog" aria-modal="true" aria-labelledby="github-issue-title" (click)="$event.stopPropagation()">
+          <header>
+            <span class="github-issue-mark"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8.5 9.5 6 7m9.5 2.5L18 7M7 14H4m13 0h3M8 18l-2 2m10-2 2 2M9 7.5V6a3 3 0 0 1 6 0v1.5M7.5 12a4.5 4.5 0 0 1 9 0v3.5a4.5 4.5 0 0 1-9 0Z"/></svg></span>
+            <span><strong id="github-issue-title">Report a Rift bug</strong><small>Creates an issue in wisedev-pstach/RiftCode</small></span>
+            <button (click)="closeGitHubIssueReporter()" [disabled]="githubIssueLoading() || githubIssueSubmitting()" title="Close" aria-label="Close issue reporter">&times;</button>
+          </header>
+
+          @if (githubIssueLoading()) {
+            <div class="github-auth-state"><i class="rail-spinner" aria-hidden="true"></i><strong>{{ githubAuth()?.authenticated ? "Connecting to GitHub…" : "Waiting for GitHub sign-in…" }}</strong><p>Your browser may open to complete authentication.</p></div>
+          } @else if (githubIssueCreatedUrl(); as issueUrl) {
+            <div class="github-issue-success"><span>✓</span><strong>Issue created</strong><p>Thanks for helping improve Rift.</p><code>{{ issueUrl }}</code></div>
+            <footer><small>The issue was submitted using your GitHub CLI credentials.</small><button class="github-primary" (click)="closeGitHubIssueReporter()">Done</button></footer>
+          } @else if (!githubAuth()?.authenticated) {
+            <div class="github-auth-state">
+              <strong>{{ githubAuth()?.available ? "Connect your GitHub account" : "GitHub CLI was not found" }}</strong>
+              <p>{{ githubAuth()?.available ? "Authentication is handled by GitHub CLI. Rift never receives or stores your password or token." : "You can still report the issue in your browser, where GitHub will handle sign-in." }}</p>
+              @if (githubIssueError()) { <small class="github-issue-error">{{ githubIssueError() }}</small> }
+            </div>
+            <footer>
+              <button (click)="continueGitHubIssueInBrowser()">Continue in browser</button>
+              @if (githubAuth()?.available) { <button class="github-primary" (click)="loginToGitHub()">Sign in with GitHub</button> }
+            </footer>
+          } @else {
+            <div class="github-issue-form">
+              <div class="github-account"><span>GitHub account</span><strong>@{{ githubAuth()!.login }}</strong></div>
+              <label><span>Title</span><input maxlength="256" autofocus placeholder="A short description of the problem" [value]="githubIssueTitle()" (input)="githubIssueTitle.set($any($event.target).value)"></label>
+              <label><span>Description</span><textarea rows="11" maxlength="20000" [value]="githubIssueBody()" (input)="githubIssueBody.set($any($event.target).value)"></textarea></label>
+              @if (githubIssueError()) { <small class="github-issue-error">{{ githubIssueError() }}</small> }
+            </div>
+            <footer><button (click)="continueGitHubIssueInBrowser()">Use browser instead</button><button class="github-primary" [disabled]="githubIssueSubmitting() || !githubIssueTitle().trim()" (click)="submitGitHubIssue()">{{ githubIssueSubmitting() ? "Creating issue…" : "Create issue" }}</button></footer>
+          }
+        </section>
+      </div>
+    }
+
     @if (selectedToolCall(); as tool) {
       <div class="tool-call-backdrop" role="presentation" (click)="closeToolCall()">
         <section class="tool-call-dialog" role="dialog" aria-modal="true" aria-labelledby="tool-call-title" (click)="$event.stopPropagation()">
@@ -1019,6 +1056,9 @@
 
     <footer class="statusbar">
       <span>{{ repository()!.files.length }} files changed</span>
+      <button class="report-bug-button" (click)="openGitHubIssueReporter()" title="Report a bug" aria-label="Report a bug">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8.5 9.5 6 7m9.5 2.5L18 7M7 14H4m13 0h3M8 18l-2 2m10-2 2 2M9 7.5V6a3 3 0 0 1 6 0v1.5M7.5 12a4.5 4.5 0 0 1 9 0v3.5a4.5 4.5 0 0 1-9 0Z"/></svg>
+      </button>
       <span class="positive">+{{ repository()!.additions }}</span>
       <span class="negative">-{{ repository()!.deletions }}</span>
       @if (notes().length > 0) { <span>{{ notes().length }} review notes</span> }

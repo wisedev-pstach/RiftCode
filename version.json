@@ -1,10 +1,8 @@
 {
-  "version": "0.7.1",
+  "version": "0.7.2",
   "releaseNotes": [
-    "Fixed syntax highlighting for ordinary source files whose diffs exceed 120 rows.",
-    "Unified Rift chats with native Claude Code and OpenCode sessions, including repository-wide persistence and automatic refresh after external changes.",
-    "Expanded native provider session discovery to the 100 most recent repository conversations and improved Claude title detection.",
-    "Named new Claude Code sessions so they are easier to find and resume from Claude's native session picker.",
-    "Added complete Claude model names and exact resolved model identifiers throughout reviews, chats, history, and model selection."
+    "Added a compact bug-report button to the repository status bar.",
+    "Added an in-app GitHub issue composer that reuses GitHub CLI authentication without storing credentials in Rift.",
+    "Added a browser-based issue reporting fallback when GitHub CLI is unavailable or the user prefers GitHub's web interface."
   ]
 }

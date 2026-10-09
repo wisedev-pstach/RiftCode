@@ -29,6 +29,10 @@ const api: RiftApi = {
   copyText: (text) => ipcRenderer.invoke("clipboard:write", text),
   checkForUpdate: () => ipcRenderer.invoke("update:check"),
   installUpdate: () => ipcRenderer.invoke("update:install"),
+  getGitHubAuthStatus: () => ipcRenderer.invoke("github:auth-status"),
+  loginGitHub: () => ipcRenderer.invoke("github:login"),
+  createGitHubIssue: (title, body) => ipcRenderer.invoke("github:create-issue", title, body),
+  openGitHubIssueInBrowser: (title, body) => ipcRenderer.invoke("github:open-issue", title, body),
   onRepositoryChanged: (listener) => {
     const handler = (_event: Electron.IpcRendererEvent, paths: string[]): void => listener(paths);
     ipcRenderer.on("repository:changed", handler);

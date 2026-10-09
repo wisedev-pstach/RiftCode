@@ -131,6 +131,16 @@ export interface UpdateStatus {
   error: string | null;
 }
 
+export interface GitHubAuthStatus {
+  available: boolean;
+  authenticated: boolean;
+  login: string | null;
+}
+
+export interface GitHubIssueResult {
+  url: string;
+}
+
 export interface RiftApi {
   platform: "darwin" | "linux" | "win32";
   setTheme(theme: "dark" | "light"): Promise<void>;
@@ -159,6 +169,10 @@ export interface RiftApi {
   copyText(text: string): Promise<void>;
   checkForUpdate(): Promise<UpdateStatus>;
   installUpdate(): Promise<boolean>;
+  getGitHubAuthStatus(): Promise<GitHubAuthStatus>;
+  loginGitHub(): Promise<GitHubAuthStatus>;
+  createGitHubIssue(title: string, body: string): Promise<GitHubIssueResult>;
+  openGitHubIssueInBrowser(title: string, body: string): Promise<void>;
   onRepositoryChanged(listener: (paths: string[]) => void): () => void;
   onAgentEvent(listener: (event: AgentStreamEvent) => void): () => void;
 }

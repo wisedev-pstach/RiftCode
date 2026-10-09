@@ -825,10 +825,43 @@ button { color: inherit; font: inherit; }
 .note-composer-actions button:disabled { opacity: .4; cursor: not-allowed; }
 
 .statusbar { display: flex; align-items: center; gap: 11px; padding: 0 12px; border-top: 1px solid #252a31; color: #6e7783; background: #101318; font-size: 10px; }
+.report-bug-button { width: 20px; height: 20px; display: grid; place-items: center; margin-left: -4px; border: 1px solid transparent; border-radius: 5px; padding: 0; color: #697480; background: transparent; cursor: pointer; }
+.report-bug-button:hover { color: #c8ff63; border-color: #42522f; background: #192016; }
+.report-bug-button svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .status-spacer { flex: 1; }
 .positive { color: #58c98e; }
 .negative { color: #df7777; }
 .status-error { max-width: min(520px, 45vw); overflow: hidden; color: #f09a91; text-overflow: ellipsis; white-space: nowrap; }
+.github-issue-backdrop { position: fixed; z-index: 95; inset: 0; display: grid; place-items: center; padding: 24px; background: rgba(4, 7, 10, .7); backdrop-filter: blur(11px); }
+.github-issue-dialog { width: min(620px, calc(100vw - 48px)); max-height: min(760px, calc(100vh - 48px)); overflow: hidden; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; border: 1px solid #3b4651; border-radius: 14px; color: #d3dae2; background: #14191f; box-shadow: 0 28px 90px rgba(0, 0, 0, .62); }
+.github-issue-dialog > header { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; border-bottom: 1px solid #2c343d; padding: 14px 16px; }
+.github-issue-dialog > header > span:nth-child(2) { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.github-issue-dialog > header strong { font: 750 12px ui-monospace, monospace; }
+.github-issue-dialog > header small { overflow: hidden; color: #77828e; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.github-issue-dialog > header > button { width: 28px; height: 28px; border: 0; border-radius: 6px; color: #75808c; background: transparent; font-size: 19px; cursor: pointer; }
+.github-issue-dialog > header > button:hover:not(:disabled) { color: #e1e6eb; background: #222a32; }
+.github-issue-dialog > header > button:disabled { opacity: .4; }
+.github-issue-mark { width: 28px; height: 28px; display: grid; place-items: center; border: 1px solid #4d6137; border-radius: 7px; color: #b7e762; background: #1b2517; }
+.github-issue-mark svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.github-auth-state, .github-issue-success { min-height: 230px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 9px; padding: 36px; text-align: center; }
+.github-auth-state strong, .github-issue-success strong { font-size: 14px; }
+.github-auth-state p, .github-issue-success p { max-width: 430px; margin: 0; color: #7d8995; font-size: 10px; line-height: 1.55; }
+.github-issue-success > span { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 50%; color: #17210e; background: #b7e762; font-size: 18px; font-weight: 800; }
+.github-issue-success code { max-width: 100%; overflow: hidden; margin-top: 7px; border: 1px solid #303a44; border-radius: 6px; padding: 7px 9px; color: #8e9aa6; background: #0e1318; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.github-issue-form { min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 14px; padding: 17px 18px 19px; }
+.github-account { display: flex; align-items: center; justify-content: space-between; border: 1px solid #303942; border-radius: 7px; padding: 8px 10px; color: #737f8b; background: #10151a; font-size: 9px; }
+.github-account strong { color: #aeb9c4; font: 700 10px ui-monospace, monospace; }
+.github-issue-form label { display: flex; flex-direction: column; gap: 6px; color: #9ba6b1; font-size: 9px; }
+.github-issue-form input, .github-issue-form textarea { width: 100%; border: 1px solid #35404b; border-radius: 7px; padding: 9px 10px; color: #d4dbe3; background: #0e1318; outline: none; font: 11px/1.5 ui-monospace, monospace; resize: vertical; }
+.github-issue-form input:focus, .github-issue-form textarea:focus { border-color: #78994b; box-shadow: 0 0 0 2px rgba(183, 231, 98, .08); }
+.github-issue-error { max-width: 500px; color: #ef938b; font-size: 9px; line-height: 1.45; }
+.github-issue-dialog > footer { display: flex; align-items: center; justify-content: flex-end; gap: 8px; border-top: 1px solid #2c343d; padding: 11px 16px; }
+.github-issue-dialog > footer small { margin-right: auto; color: #697581; font-size: 8px; }
+.github-issue-dialog > footer button { border: 1px solid #3a4550; border-radius: 6px; padding: 7px 10px; color: #aab4bf; background: #192027; font-size: 9px; cursor: pointer; }
+.github-issue-dialog > footer button:hover:not(:disabled) { color: #dce2e8; border-color: #56636f; }
+.github-issue-dialog > footer button:disabled { cursor: not-allowed; opacity: .45; }
+.github-issue-dialog > footer .github-primary { color: #18210e; border-color: #78994b; background: #b7e762; font-weight: 750; }
+.github-issue-dialog > footer .github-primary:hover:not(:disabled) { color: #18210e; background: #c8ff63; }
 .empty-copy { margin: 30px auto; max-width: 280px; padding: 0 20px; color: #69727f; font-size: 12px; line-height: 1.5; text-align: center; }
 .center-state { height: 100vh; display: grid; place-content: center; justify-items: center; padding: 30px; background: radial-gradient(circle at 50% 38%, #171d21 0, #0b0d10 42%); text-align: center; }
 .center-state h1 { margin: 0 0 7px; font-size: 22px; }
@@ -976,6 +1009,18 @@ button { color: inherit; font: inherit; }
 :root[data-theme="light"] .activity-toggle { color: #56636f; background: #e7ecf0; }
 :root[data-theme="light"] .activity-toggle:hover { color: #29343d; background: #dbe2e7; }
 :root[data-theme="light"] .statusbar { color: #66717c; background: #f1f4f6; }
+:root[data-theme="light"] .report-bug-button { color: #6a7680; }
+:root[data-theme="light"] .report-bug-button:hover { color: #4e7419; border-color: #9bad83; background: #edf5e5; }
+:root[data-theme="light"] .github-issue-backdrop { background: rgba(222, 228, 233, .72); }
+:root[data-theme="light"] .github-issue-dialog { color: #303943; border-color: #bcc6ce; background: #fff; box-shadow: 0 28px 90px rgba(45, 54, 63, .24); }
+:root[data-theme="light"] .github-issue-dialog > header, :root[data-theme="light"] .github-issue-dialog > footer { border-color: #d5dce1; }
+:root[data-theme="light"] .github-issue-dialog > header > button:hover:not(:disabled) { color: #29343d; background: #edf1f4; }
+:root[data-theme="light"] .github-issue-mark { color: #55751f; border-color: #a6bb8b; background: #eef5e7; }
+:root[data-theme="light"] .github-account, :root[data-theme="light"] .github-issue-success code { color: #68757f; border-color: #d0d7dd; background: #f5f7f9; }
+:root[data-theme="light"] .github-account strong { color: #3b4650; }
+:root[data-theme="light"] .github-issue-form input, :root[data-theme="light"] .github-issue-form textarea { color: #303943; border-color: #bdc6ce; background: #fff; }
+:root[data-theme="light"] .github-issue-dialog > footer button { color: #53606b; border-color: #bdc6ce; background: #f7f9fa; }
+:root[data-theme="light"] .github-issue-dialog > footer .github-primary { color: #29380f; border-color: #8eaa67; background: #dbeebf; }
 :root[data-theme="light"] .center-state { color: #303841; background: radial-gradient(circle at 50% 38%, #fff 0, #e9edf1 48%); }
 :root[data-theme="light"] .changes-title-button:hover, :root[data-theme="light"] .review-header button:hover { color: #202830; }
 :root[data-theme="light"] .all-changes-button { color: #65717c; border-color: #bdc6ce; }

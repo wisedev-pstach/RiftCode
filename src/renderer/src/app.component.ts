@@ -11,7 +11,7 @@ import {
   viewChild
 } from "@angular/core";
 import { marked } from "marked";
-import type { AgentConversationHistory, AgentId, AgentMode, AgentOption, AgentRunResult, AgentSession, AgentStreamEvent, AgentToolEvent, ChangedFile, ContextResourcePath, FilePatch, RepositoryFileView, RepositorySearchResult, RepositorySnapshot, UpdateStatus } from "../../shared/contracts";
+import type { AgentConversationHistory, AgentId, AgentMode, AgentOption, AgentRunResult, AgentSession, AgentStreamEvent, AgentToolEvent, ChangedFile, ContextResourcePath, FilePatch, GitHubAuthStatus, RepositoryFileView, RepositorySearchResult, RepositorySnapshot, UpdateStatus } from "../../shared/contracts";
 import versionManifest from "../../../version.json";
 
 type DiffKind = "header" | "hunk" | "context" | "addition" | "deletion" | "meta";
@@ -505,6 +505,14 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly updateStatus = signal<UpdateStatus | null>(null);
   readonly updateInstalling = signal(false);
   readonly releaseNotesOpen = signal(false);
+  readonly githubIssueOpen = signal(false);
+  readonly githubAuth = signal<GitHubAuthStatus | null>(null);
+  readonly githubIssueLoading = signal(false);
+  readonly githubIssueSubmitting = signal(false);
+  readonly githubIssueError = signal<string | null>(null);
+  readonly githubIssueCreatedUrl = signal<string | null>(null);
+  readonly githubIssueTitle = signal("");
+  readonly githubIssueBody = signal("");
   readonly darkTheme = signal(this.loadDarkTheme());
   readonly repository = signal<RepositorySnapshot | null>(null);
   readonly selectedPath = signal<string | null>(null);
@@ -901,6 +909,66 @@ export class AppComponent implements OnInit, OnDestroy {
       this.updateStatus.update((status) => status ? { ...status, error: reason instanceof Error ? reason.message : String(reason) } : status);
     } finally {
       this.updateInstalling.set(false);
+    }
+  }
+
+  async openGitHubIssueReporter(): Promise<void> {
+    this.githubIssueOpen.set(true);
+    this.githubIssueLoading.set(true);
+    this.githubIssueError.set(null);
+    this.githubIssueCreatedUrl.set(null);
+    this.githubIssueTitle.set("");
+    this.githubIssueBody.set(`## What happened?\n\n\n## How can we reproduce it?\n\n\n## What did you expect?\n\n\n---\nRift v${this.appVersion} · ${this.platform}`);
+    try {
+      this.githubAuth.set(await window.rift.getGitHubAuthStatus());
+    } catch (reason) {
+      this.githubIssueError.set(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      this.githubIssueLoading.set(false);
+    }
+  }
+
+  closeGitHubIssueReporter(): void {
+    if (this.githubIssueLoading() || this.githubIssueSubmitting()) return;
+    this.githubIssueOpen.set(false);
+  }
+
+  async loginToGitHub(): Promise<void> {
+    if (this.githubIssueLoading()) return;
+    this.githubIssueLoading.set(true);
+    this.githubIssueError.set(null);
+    try {
+      const status = await window.rift.loginGitHub();
+      this.githubAuth.set(status);
+      if (!status.authenticated) this.githubIssueError.set("GitHub sign-in did not complete. Try again or continue in your browser.");
+    } catch (reason) {
+      this.githubIssueError.set(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      this.githubIssueLoading.set(false);
+    }
+  }
+
+  async submitGitHubIssue(): Promise<void> {
+    if (this.githubIssueSubmitting() || !this.githubIssueTitle().trim()) return;
+    this.githubIssueSubmitting.set(true);
+    this.githubIssueError.set(null);
+    try {
+      const result = await window.rift.createGitHubIssue(this.githubIssueTitle(), this.githubIssueBody());
+      this.githubIssueCreatedUrl.set(result.url);
+    } catch (reason) {
+      this.githubIssueError.set(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      this.githubIssueSubmitting.set(false);
+    }
+  }
+
+  async continueGitHubIssueInBrowser(): Promise<void> {
+    this.githubIssueError.set(null);
+    try {
+      await window.rift.openGitHubIssueInBrowser(this.githubIssueTitle().trim() || "Bug report", this.githubIssueBody());
+      this.githubIssueOpen.set(false);
+    } catch (reason) {
+      this.githubIssueError.set(reason instanceof Error ? reason.message : String(reason));
     }
   }
 
@@ -2541,6 +2609,7 @@ export class AppComponent implements OnInit, OnDestroy {
   @HostListener("document:keydown.escape")
   closeTools(): void {
     if (this.repositorySearchOpen()) this.closeRepositorySearch();
+    else if (this.githubIssueOpen()) this.closeGitHubIssueReporter();
     else if (this.releaseNotesOpen()) this.releaseNotesOpen.set(false);
     else if (this.selectedToolCall()) this.closeToolCall();
     else if (this.agentModalOpen()) this.closeAgentModal();

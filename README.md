@@ -2,7 +2,7 @@
 
 > A visual, AI-native workspace for understanding, reviewing, and refining code changes.
 
-[![Version](https://img.shields.io/badge/version-0.7.1-c8ff63?style=flat-square&labelColor=171b21)](./version.json)
+[![Version](https://img.shields.io/badge/version-0.7.2-c8ff63?style=flat-square&labelColor=171b21)](./version.json)
 [![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-8ea0b2?style=flat-square&labelColor=171b21)](#getting-started)
 [![License](https://img.shields.io/badge/license-MIT-8ea0b2?style=flat-square&labelColor=171b21)](./LICENSE)
 

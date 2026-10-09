@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, net } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, net, shell } from "electron";
 import { execFile, spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { existsSync, statSync, watch, type FSWatcher } from "node:fs";
@@ -9,7 +9,7 @@ import { promisify } from "node:util";
 import { delimiter, dirname, join, resolve, sep } from "node:path";
 import { listRepositoryFiles, loadFilePatch, loadRepository, readRepositoryViewFile, searchRepository } from "./git";
 import type { IpcMainInvokeEvent } from "electron";
-import type { AgentConversationHistory, AgentConversationMessage, AgentId, AgentMode, AgentOption, AgentRunResult, AgentSession, AgentStreamEvent, AgentToolEvent, RepositorySnapshot, UpdateStatus } from "../shared/contracts";
+import type { AgentConversationHistory, AgentConversationMessage, AgentId, AgentMode, AgentOption, AgentRunResult, AgentSession, AgentStreamEvent, AgentToolEvent, GitHubAuthStatus, GitHubIssueResult, RepositorySnapshot, UpdateStatus } from "../shared/contracts";
 import versionManifest from "../../version.json";
 
 function agentSessionTitle(prompt: string): string {
@@ -46,6 +46,8 @@ const MAX_PROVIDER_SESSION_COUNT = 100;
 const UPDATE_MANIFEST_URL = "https://raw.githubusercontent.com/wisedev-pstach/RiftCode/main/version.json";
 const MAC_INSTALL_URL = "https://raw.githubusercontent.com/wisedev-pstach/RiftCode/main/install.sh";
 const WINDOWS_INSTALL_URL = "https://raw.githubusercontent.com/wisedev-pstach/RiftCode/main/install.ps1";
+const GITHUB_REPOSITORY = "wisedev-pstach/RiftCode";
+const GITHUB_NEW_ISSUE_URL = `https://github.com/${GITHUB_REPOSITORY}/issues/new`;
 const initialRepository = repositoryArgument(process.argv);
 let updateCheck: Promise<UpdateStatus> | null = null;
 
@@ -81,12 +83,12 @@ function repositoryArgument(argv: string[]): string | undefined {
   return undefined;
 }
 
-function execute(command: string, args: string[], cwd = process.cwd(), maxBuffer = 10 * 1024 * 1024): Promise<string> {
+function execute(command: string, args: string[], cwd = process.cwd(), maxBuffer = 10 * 1024 * 1024, timeout = 180_000): Promise<string> {
   return new Promise((resolvePromise, reject) => {
     execFile(
       command,
       args,
-      { cwd, maxBuffer, timeout: 180_000, killSignal: "SIGKILL", windowsHide: true },
+      { cwd, maxBuffer, timeout, killSignal: "SIGKILL", windowsHide: true },
       (error, stdout, stderr) => {
         if (error) {
           reject(new Error(stderr.trim() || stdout.trim() || error.message));
@@ -279,7 +281,7 @@ function normalizeAgentError(id: AgentId, reason: unknown): Error {
   return reason instanceof Error ? reason : new Error(message);
 }
 
-async function resolveCommand(command: AgentId): Promise<string | null> {
+async function resolveCommand(command: string): Promise<string | null> {
   await shellPathReady;
   try {
     const locator = process.platform === "win32" ? "where.exe" : "which";
@@ -291,6 +293,60 @@ async function resolveCommand(command: AgentId): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+async function githubAuthStatus(): Promise<GitHubAuthStatus> {
+  const command = await resolveCommand("gh");
+  if (!command) return { available: false, authenticated: false, login: null };
+  try {
+    const login = (await execute(command, ["api", "user", "--jq", ".login"], snapshot?.root ?? process.cwd())).trim();
+    const validLogin = /^[a-zA-Z0-9-]{1,39}$/.test(login);
+    return { available: true, authenticated: validLogin, login: validLogin ? login : null };
+  } catch {
+    return { available: true, authenticated: false, login: null };
+  }
+}
+
+async function loginGitHub(): Promise<GitHubAuthStatus> {
+  const command = await resolveCommand("gh");
+  if (!command) return { available: false, authenticated: false, login: null };
+  try {
+    await execute(command, ["auth", "login", "--hostname", "github.com", "--git-protocol", "https", "--web", "--clipboard"], snapshot?.root ?? process.cwd(), 1024 * 1024, 10 * 60 * 1000);
+  } catch (reason) {
+    const message = reason instanceof Error ? reason.message : String(reason);
+    if (/unknown flag.*clipboard/i.test(message)) {
+      await execute(command, ["auth", "login", "--hostname", "github.com", "--git-protocol", "https", "--web"], snapshot?.root ?? process.cwd(), 1024 * 1024, 10 * 60 * 1000);
+    } else {
+      throw reason;
+    }
+  }
+  return githubAuthStatus();
+}
+
+function validateIssueInput(title: unknown, body: unknown): { title: string; body: string } {
+  if (typeof title !== "string" || !title.trim() || title.trim().length > 256) {
+    throw new Error("Issue title must be between 1 and 256 characters.");
+  }
+  if (typeof body !== "string" || body.length > 20_000) throw new Error("Issue description is too large.");
+  return { title: title.trim(), body: body.trim() };
+}
+
+async function createGitHubIssue(title: unknown, body: unknown): Promise<GitHubIssueResult> {
+  const input = validateIssueInput(title, body);
+  const command = await resolveCommand("gh");
+  if (!command) throw new Error("GitHub CLI is not installed. Continue in your browser instead.");
+  const output = await execute(command, ["issue", "create", "--repo", GITHUB_REPOSITORY, "--title", input.title, "--body", input.body], snapshot?.root ?? process.cwd());
+  const url = output.match(/https:\/\/github\.com\/[^\s]+\/issues\/\d+/)?.[0];
+  if (!url) throw new Error(output || "GitHub did not return the created issue URL.");
+  return { url };
+}
+
+async function openGitHubIssueInBrowser(title: unknown, body: unknown): Promise<void> {
+  const input = validateIssueInput(title, body);
+  const url = new URL(GITHUB_NEW_ISSUE_URL);
+  url.searchParams.set("title", input.title);
+  if (input.body) url.searchParams.set("body", input.body.slice(0, 8_000));
+  await shell.openExternal(url.toString());
 }
 
 async function listAgents(): Promise<AgentOption[]> {
@@ -1015,6 +1071,26 @@ function registerIpc(): void {
   ipcMain.handle("update:install", (event) => {
     assertTrustedSender(event);
     return installUpdate();
+  });
+
+  ipcMain.handle("github:auth-status", (event) => {
+    assertTrustedSender(event);
+    return githubAuthStatus();
+  });
+
+  ipcMain.handle("github:login", (event) => {
+    assertTrustedSender(event);
+    return loginGitHub();
+  });
+
+  ipcMain.handle("github:create-issue", (event, title: unknown, body: unknown) => {
+    assertTrustedSender(event);
+    return createGitHubIssue(title, body);
+  });
+
+  ipcMain.handle("github:open-issue", (event, title: unknown, body: unknown) => {
+    assertTrustedSender(event);
+    return openGitHubIssueInBrowser(title, body);
   });
 
 }
