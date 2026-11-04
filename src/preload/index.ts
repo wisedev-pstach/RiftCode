@@ -27,6 +27,7 @@ const api: RiftApi = {
   interruptAgent: () => ipcRenderer.invoke("agent:interrupt"),
   cancelAgent: () => ipcRenderer.invoke("agent:cancel"),
   copyText: (text) => ipcRenderer.invoke("clipboard:write", text),
+  revealRepositoryPath: (path) => ipcRenderer.invoke("repository:reveal", path),
   checkForUpdate: () => ipcRenderer.invoke("update:check"),
   installUpdate: () => ipcRenderer.invoke("update:install"),
   getGitHubAuthStatus: () => ipcRenderer.invoke("github:auth-status"),

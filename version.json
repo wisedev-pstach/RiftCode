@@ -1,8 +1,11 @@
 {
-  "version": "0.7.2",
+  "version": "0.7.3",
   "releaseNotes": [
-    "Added a compact bug-report button to the repository status bar.",
-    "Added an in-app GitHub issue composer that reuses GitHub CLI authentication without storing credentials in Rift.",
-    "Added a browser-based issue reporting fallback when GitHub CLI is unavailable or the user prefers GitHub's web interface."
+    "Added wildcard filtering to the explorer with auto-expanded parents and a match-count badge.",
+    "Added collapse-all and expand-all toggling plus arrow, Home, End, and Escape keyboard navigation in the explorer tree.",
+    "Added file and folder context menus in the explorer: mark reviewed, copy relative or full path, and reveal in the system file manager.",
+    "Added per-folder changed-file counts with review summaries in the explorer.",
+    "Added Cmd/Ctrl+N to start a review note and Cmd/Ctrl+K to ask the agent about the selected lines, with shortcut badges in the selection tools.",
+    "Fixed keyboard focus transfer into the explorer tree and repository search under the renderer build."
   ]
 }

@@ -8,7 +8,7 @@ import {
   OnDestroy,
   OnInit,
   signal,
-  viewChild
+  ViewChild
 } from "@angular/core";
 import { marked } from "marked";
 import type { AgentConversationHistory, AgentId, AgentMode, AgentOption, AgentRunResult, AgentSession, AgentStreamEvent, AgentToolEvent, ChangedFile, ContextResourcePath, FilePatch, GitHubAuthStatus, RepositoryFileView, RepositorySearchResult, RepositorySnapshot, UpdateStatus } from "../../shared/contracts";
@@ -59,6 +59,7 @@ const HIDE_REVIEWED_SESSION_KEY = "rift:hide-reviewed";
 const SIDEBAR_VIEW_SESSION_KEY = "rift:sidebar-view";
 const EXPLORER_SHOW_ALL_SESSION_KEY = "rift:explorer-show-all";
 const EXPLORER_EXPANDED_SESSION_PREFIX = "rift:explorer-expanded:";
+const EXPLORER_FILTER_SESSION_KEY = "rift:explorer-filter";
 const LANGUAGES: Readonly<Record<string, DetectedLanguage>> = {
   bash: { id: "bash", label: "Shell" },
   c: { id: "c", label: "C" },
@@ -195,6 +196,7 @@ interface ToolsMenu {
 
 interface FileToolsMenu extends ToolsMenu {
   path: string;
+  kind: "file" | "folder";
 }
 
 type ConversationStatus = "running" | "complete" | "error" | "cancelled" | "interrupted";
@@ -422,6 +424,18 @@ function wildcardExpression(pattern: string): RegExp {
   return new RegExp(`^${expression}$`, "i");
 }
 
+function explorerFilterExpression(pattern: string): RegExp {
+  const expression = pattern.replace(/\*+/g, "*")
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replaceAll("*", ".*")
+    .replaceAll("?", ".");
+  return new RegExp(expression, "i");
+}
+
+function explorerFilterPatterns(filter: string): RegExp[] {
+  return filter.split(",").map((pattern) => pattern.trim()).filter(Boolean).map(explorerFilterExpression);
+}
+
 function pairSplitRows(rows: DiffRow[]): SplitDiffRow[] {
   const result: SplitDiffRow[] = [];
   let index = 0;
@@ -458,12 +472,32 @@ function pairSplitRows(rows: DiffRow[]): SplitDiffRow[] {
   return result;
 }
 
-function buildExplorerEntries(paths: readonly string[], changedFiles: readonly ChangedFile[], expanded: ReadonlySet<string>): ExplorerEntry[] {
+function explorerFolderPaths(paths: readonly string[], changedFiles: readonly ChangedFile[]): string[] {
+  const folders = new Set<string>();
+  for (const path of new Set([...paths, ...changedFiles.map((file) => file.path)])) {
+    const parts = path.split("/").filter(Boolean);
+    let parent = "";
+    for (const part of parts.slice(0, -1)) {
+      parent = parent ? `${parent}/${part}` : part;
+      folders.add(parent);
+    }
+  }
+  return [...folders];
+}
+
+function buildExplorerEntries(
+  paths: readonly string[],
+  changedFiles: readonly ChangedFile[],
+  expanded: ReadonlySet<string>,
+  filters: readonly RegExp[]
+): ExplorerEntry[] {
   const root: ExplorerFolder = { folders: new Map(), files: new Map() };
   const changedByPath = new Map(changedFiles.map((file) => [file.path, file]));
+  const filtering = filters.length > 0;
   for (const path of new Set([...paths, ...changedByPath.keys()])) {
     const parts = path.split("/").filter(Boolean);
     if (parts.length === 0) continue;
+    if (filtering && !filters.some((filter) => filter.test(path))) continue;
     let folder = root;
     let parentPath = "";
     for (const part of parts.slice(0, -1)) {
@@ -485,7 +519,7 @@ function buildExplorerEntries(paths: readonly string[], changedFiles: readonly C
     for (const [name, child] of folders) {
       const path = parentPath ? `${parentPath}/${name}` : name;
       entries.push({ kind: "folder", name, path, depth });
-      if (expanded.has(path)) append(child, path, depth + 1);
+      if (filtering || expanded.has(path)) append(child, path, depth + 1);
     }
     for (const [name, path] of files) entries.push({ kind: "file", name, path, depth, changedFile: changedByPath.get(path) });
   };
@@ -547,6 +581,8 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly hideReviewed = signal(this.loadHideReviewed());
   readonly sidebarView = signal<SidebarView>(this.loadSidebarView());
   readonly explorerShowAll = signal(this.loadExplorerShowAll());
+  readonly explorerFilter = signal(this.loadExplorerFilter());
+  readonly explorerFilterPatterns = computed(() => explorerFilterPatterns(this.explorerFilter()));
   readonly changesPanelWidth = signal(this.loadChangesPanelWidth());
   readonly changesPanelResizing = signal(false);
   readonly viewportWidth = signal(window.innerWidth);
@@ -650,11 +686,21 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly explorerEntries = computed(() => buildExplorerEntries(
     this.explorerShowAll() ? this.repositoryPaths() : [],
     this.repository()?.files ?? [],
-    this.expandedExplorerFolders()
+    this.expandedExplorerFolders(),
+    this.explorerFilterPatterns()
   ));
+  readonly explorerFolderPaths = computed(() => explorerFolderPaths(
+    this.explorerShowAll() ? this.repositoryPaths() : [],
+    this.repository()?.files ?? []
+  ));
+  readonly explorerAllCollapsed = computed(() => {
+    const expanded = this.expandedExplorerFolders();
+    return !this.explorerFolderPaths().some((path) => expanded.has(path));
+  });
   readonly explorerFileCount = computed(() => this.explorerShowAll()
     ? new Set([...this.repositoryPaths(), ...(this.repository()?.files.map((file) => file.path) ?? [])]).size
     : this.repository()?.files.length ?? 0);
+  readonly explorerVisibleFileCount = computed(() => this.explorerEntries().reduce((count, entry) => count + (entry.kind === "file" ? 1 : 0), 0));
   readonly explorerFolderReviewStates = computed(() => {
     const states = new Map<string, FolderReviewState>();
     const reviewed = new Set(this.reviewedFiles());
@@ -724,11 +770,12 @@ export class AppComponent implements OnInit, OnDestroy {
     }
     return markers;
   });
-  readonly diffScroll = viewChild<ElementRef<HTMLDivElement>>("diffScroll");
-  readonly repositorySearchInput = viewChild<ElementRef<HTMLInputElement>>("repositorySearchInput");
-  readonly chatThread = viewChild<ElementRef<HTMLDivElement>>("chatThread");
-  readonly chatContent = viewChild<ElementRef<HTMLDivElement>>("chatContent");
-  readonly chatBottom = viewChild<ElementRef<HTMLDivElement>>("chatBottom");
+  @ViewChild("diffScroll") diffScroll?: ElementRef<HTMLDivElement>;
+  @ViewChild("repositorySearchInput") repositorySearchInput?: ElementRef<HTMLInputElement>;
+  @ViewChild("explorerTree") explorerTree?: ElementRef<HTMLDivElement>;
+  @ViewChild("chatThread") chatThread?: ElementRef<HTMLDivElement>;
+  @ViewChild("chatContent") chatContent?: ElementRef<HTMLDivElement>;
+  @ViewChild("chatBottom") chatBottom?: ElementRef<HTMLDivElement>;
   readonly selectedLineCount = computed(() => {
     const range = this.selectedRange();
     if (!range) return 0;
@@ -833,7 +880,7 @@ export class AppComponent implements OnInit, OnDestroy {
   private readonly keepChatAtBottom = afterRenderEffect(() => {
     const chatOpen = this.chatPageOpen();
     const conversation = this.activeConversation();
-    const content = chatOpen && conversation ? this.chatContent()?.nativeElement ?? null : null;
+    const content = chatOpen && conversation ? this.chatContent?.nativeElement ?? null : null;
     if (content !== this.observedChatContent) {
       this.chatResizeObserver.disconnect();
       this.observedChatContent = content;
@@ -1023,7 +1070,7 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   scrollToDiffRegion(position: number): void {
-    const scroller = this.diffScroll()?.nativeElement;
+    const scroller = this.diffScroll?.nativeElement;
     if (!scroller) return;
     const maxScroll = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
     scroller.scrollTop = Math.round(maxScroll * Math.max(0, Math.min(100, position)) / 100);
@@ -1067,7 +1114,7 @@ export class AppComponent implements OnInit, OnDestroy {
     this.storeSessionSetting(SIDEBAR_VIEW_SESSION_KEY, view);
     if (view !== "explorer") return;
     const selectedPath = this.selectedPath();
-    if (selectedPath) this.expandExplorerParents(selectedPath);
+    if (selectedPath) this.revealExplorerPath(selectedPath);
     if (this.explorerShowAll() && (this.repositoryPaths().length === 0 || this.repositoryPathsError())) void this.loadRepositoryPaths();
   }
 
@@ -1078,6 +1125,7 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   toggleExplorerFolder(path: string): void {
+    if (this.explorerFilterPatterns().length > 0) return;
     this.expandedExplorerFolders.update((current) => {
       const next = new Set(current);
       if (next.has(path)) next.delete(path);
@@ -1089,6 +1137,161 @@ export class AppComponent implements OnInit, OnDestroy {
 
   openExplorerFile(path: string): void {
     void this.openRepositoryPath(path);
+  }
+
+  isExplorerFolderExpanded(path: string): boolean {
+    return this.explorerFilterPatterns().length > 0 || this.expandedExplorerFolders().has(path);
+  }
+
+  toggleExplorerExpandAll(): void {
+    this.expandedExplorerFolders.set(this.explorerAllCollapsed() ? new Set(this.explorerFolderPaths()) : new Set());
+    this.storeExpandedExplorerFolders();
+  }
+
+  isExplorerSubtreeExpanded(path: string): boolean {
+    const expanded = this.expandedExplorerFolders();
+    const prefix = `${path}/`;
+    return this.explorerFolderPaths().every((folder) => (folder !== path && !folder.startsWith(prefix)) || expanded.has(folder));
+  }
+
+  toggleExplorerSubtree(path: string): void {
+    const expand = !this.isExplorerSubtreeExpanded(path);
+    const prefix = `${path}/`;
+    this.expandedExplorerFolders.update((current) => {
+      const next = new Set(current);
+      for (const folder of this.explorerFolderPaths()) {
+        if (folder !== path && !folder.startsWith(prefix)) continue;
+        if (expand) next.add(folder);
+        else next.delete(folder);
+      }
+      return next;
+    });
+    this.storeExpandedExplorerFolders();
+    this.fileToolsMenu.set(null);
+  }
+
+  revealSelectedInExplorer(): void {
+    const path = this.selectedPath();
+    if (!path) return;
+    this.revealExplorerPath(path, "center", true);
+  }
+
+  updateExplorerFilter(event: Event): void {
+    if (!(event.target instanceof HTMLInputElement)) return;
+    this.explorerFilter.set(event.target.value.slice(0, 1_000));
+    this.storeSessionSetting(EXPLORER_FILTER_SESSION_KEY, this.explorerFilter());
+  }
+
+  clearExplorerFilter(): void {
+    this.explorerFilter.set("");
+    this.storeSessionSetting(EXPLORER_FILTER_SESSION_KEY, "");
+  }
+
+  handleExplorerFilterKeydown(event: KeyboardEvent): void {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      if (this.explorerFilter()) this.clearExplorerFilter();
+      else if (event.target instanceof HTMLElement) event.target.blur();
+      return;
+    }
+    if (event.key === "ArrowDown") {
+      const first = this.explorerTree?.nativeElement.querySelector<HTMLElement>("[data-explorer-path]");
+      if (!first) return;
+      event.preventDefault();
+      first.focus();
+    }
+  }
+
+  handleExplorerTreeKeydown(event: KeyboardEvent): void {
+    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    if (!["ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    const tree = event.currentTarget;
+    if (!(tree instanceof HTMLElement)) return;
+    const rows = [...tree.querySelectorAll<HTMLElement>("[data-explorer-path]")];
+    if (rows.length === 0) return;
+    const active = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const index = active ? rows.indexOf(active) : -1;
+    const current = index >= 0 ? rows[index] : undefined;
+    const path = current?.dataset["explorerPath"] ?? "";
+    const isFolder = current?.dataset["explorerKind"] === "folder";
+    const focus = (row: HTMLElement | undefined): void => {
+      if (!row) return;
+      row.focus();
+      row.scrollIntoView({ block: "nearest" });
+    };
+    event.preventDefault();
+    switch (event.key) {
+      case "ArrowDown":
+        focus(rows[Math.min(index + 1, rows.length - 1)]);
+        return;
+      case "ArrowUp":
+        focus(rows[Math.max(index - 1, 0)]);
+        return;
+      case "Home":
+        focus(rows[0]);
+        return;
+      case "End":
+        focus(rows.at(-1));
+        return;
+      case "ArrowRight":
+        if (!current) return focus(rows[0]);
+        if (!isFolder) return;
+        if (this.isExplorerFolderExpanded(path)) focus(rows[index + 1]);
+        else this.toggleExplorerFolder(path);
+        return;
+      case "ArrowLeft": {
+        if (!current) return focus(rows[0]);
+        if (isFolder && this.isExplorerFolderExpanded(path) && this.explorerFilterPatterns().length === 0) {
+          this.toggleExplorerFolder(path);
+          return;
+        }
+        const parent = path.slice(0, path.lastIndexOf("/"));
+        if (!parent) return;
+        focus(rows.find((row) => row.dataset["explorerKind"] === "folder" && row.dataset["explorerPath"] === parent));
+      }
+    }
+  }
+
+  openExplorerEntryTools(entry: ExplorerEntry, event: MouseEvent): void {
+    event.preventDefault();
+    event.stopPropagation();
+    this.toolsMenu.set(null);
+    const items = entry.kind === "folder"
+      ? 4 + (this.explorerFolderReviewStates().has(entry.path) ? 1 : 0)
+      : 3 + (entry.changedFile ? 1 : 0);
+    this.fileToolsMenu.set({
+      path: entry.path,
+      kind: entry.kind,
+      x: Math.max(6, Math.min(event.clientX, window.innerWidth - 210)),
+      y: Math.max(6, Math.min(event.clientY, window.innerHeight - (14 + items * 40)))
+    });
+  }
+
+  revealLabel(): string {
+    return this.platform === "darwin" ? "Reveal in Finder" : this.platform === "win32" ? "Reveal in Explorer" : "Reveal in file manager";
+  }
+
+  async copyMenuPath(path: string, full: boolean): Promise<void> {
+    this.fileToolsMenu.set(null);
+    const root = this.repository()?.root;
+    const text = full && root
+      ? (this.platform === "win32" ? `${root.replace(/[\\/]+$/, "")}\\${path.replaceAll("/", "\\")}` : `${root.replace(/\/+$/, "")}/${path}`)
+      : path;
+    try {
+      await window.rift.copyText(text);
+      this.reviewMessage.set(full ? "Full path copied" : "Relative path copied");
+    } catch (reason) {
+      this.reviewMessage.set(reason instanceof Error ? reason.message : String(reason));
+    }
+  }
+
+  async revealMenuPath(path: string): Promise<void> {
+    this.fileToolsMenu.set(null);
+    try {
+      await window.rift.revealRepositoryPath(path);
+    } catch (reason) {
+      this.reviewMessage.set(reason instanceof Error ? reason.message : String(reason));
+    }
   }
 
   beginChangesResize(event: PointerEvent): void {
@@ -1388,14 +1591,59 @@ export class AppComponent implements OnInit, OnDestroy {
     if (event.key.toLowerCase() === "s" && this.selectedFileHasEdits()) {
       event.preventDefault();
       void this.saveCurrentFile();
+      return;
     }
+    if (event.key.toLowerCase() === "n" && !event.shiftKey && !event.altKey) {
+      if (this.isTextEntryTarget(event.target) && !this.noteComposerOpen()) return;
+      if (this.startSelectionToolFromKeyboard("note")) event.preventDefault();
+      return;
+    }
+    if (event.key.toLowerCase() === "k" && !event.shiftKey && !event.altKey) {
+      if (this.isTextEntryTarget(event.target) && !this.questionComposerOpen()) return;
+      if (this.startSelectionToolFromKeyboard("question")) event.preventDefault();
+    }
+  }
+
+  private isTextEntryTarget(target: EventTarget | null): boolean {
+    return target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement || (target instanceof HTMLElement && target.isContentEditable);
+  }
+
+  private startSelectionToolFromKeyboard(tool: "note" | "question"): boolean {
+    if (this.chatPageOpen() || this.reviewPageOpen() || this.editMode()) return false;
+    const composerOpen = tool === "note" ? this.noteComposerOpen() : this.questionComposerOpen();
+    if (composerOpen) {
+      document.getElementById(tool === "note" ? "review-note" : "explain-question")?.focus();
+      return true;
+    }
+    if (tool === "question" && (!this.selectedAgent() || this.agentRunning())) return false;
+    const rows = this.rows();
+    const range = this.selectedRange();
+    let index = range?.focus ?? -1;
+    if (index < 0) {
+      const focused = document.activeElement?.closest("[data-diff-index]");
+      index = focused instanceof HTMLElement ? Number(focused.dataset["diffIndex"]) : -1;
+    }
+    const row = rows[index];
+    if (!row || !this.isSelectable(row)) return false;
+    const element = document.querySelector(`[data-diff-index="${index}"]`);
+    const bounds = element?.getBoundingClientRect();
+    const x = bounds ? bounds.left + 24 : window.innerWidth / 2;
+    const y = bounds ? bounds.top + 18 : window.innerHeight / 2;
+    this.showTools(index, row, x, y);
+    if (tool === "note") {
+      this.startNote();
+    } else {
+      this.startExplain();
+      requestAnimationFrame(() => document.getElementById("explain-question")?.focus());
+    }
+    return true;
   }
 
   openRepositorySearch(): void {
     this.repositorySearchOpen.set(true);
     this.repositorySearchError.set(null);
     requestAnimationFrame(() => {
-      const input = this.repositorySearchInput()?.nativeElement;
+      const input = this.repositorySearchInput?.nativeElement;
       input?.focus();
       input?.select();
     });
@@ -1460,7 +1708,7 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   private async openRepositoryPath(path: string): Promise<void> {
-    if (this.sidebarView() === "explorer") this.expandExplorerParents(path);
+    if (this.sidebarView() === "explorer") this.revealExplorerPath(path);
     if (this.repository()?.files.some((file) => file.path === path)) {
       this.selectFile(path);
       return;
@@ -1757,6 +2005,7 @@ export class AppComponent implements OnInit, OnDestroy {
     this.reviewedFiles.set([...reviewed]);
     this.persistReviewSession();
     this.reviewMessage.set(`${folderFiles.length} ${folderFiles.length === 1 ? "file" : "files"} marked ${markReviewed ? "reviewed" : "unreviewed"}`);
+    this.fileToolsMenu.set(null);
     if (this.hideReviewed() && this.sidebarView() === "changes") this.reconcileFilteredSelection();
   }
 
@@ -1766,8 +2015,9 @@ export class AppComponent implements OnInit, OnDestroy {
     this.toolsMenu.set(null);
     this.fileToolsMenu.set({
       path,
+      kind: "file",
       x: Math.max(6, Math.min(event.clientX, window.innerWidth - 210)),
-      y: Math.max(6, Math.min(event.clientY, window.innerHeight - 90))
+      y: Math.max(6, Math.min(event.clientY, window.innerHeight - 174))
     });
   }
 
@@ -1862,7 +2112,7 @@ export class AppComponent implements OnInit, OnDestroy {
     this.selectedRange.set({ anchor: start, focus: end });
     this.activeLinkedNoteId.set(note.id);
     requestAnimationFrame(() => {
-      this.diffScroll()?.nativeElement.querySelector(".line-selected")?.scrollIntoView({ block: "center" });
+      this.diffScroll?.nativeElement.querySelector(".line-selected")?.scrollIntoView({ block: "center" });
     });
   }
 
@@ -2285,7 +2535,7 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   handleChatScroll(): void {
-    const element = this.chatThread()?.nativeElement;
+    const element = this.chatThread?.nativeElement;
     if (!element) return;
     if (element.scrollHeight - element.clientHeight - element.scrollTop <= 48) {
       this.chatAutoFollow = true;
@@ -2581,7 +2831,7 @@ export class AppComponent implements OnInit, OnDestroy {
       ));
     this.selectedRange.set({ anchor: start, focus: end >= start ? end : start });
     requestAnimationFrame(() => {
-      this.diffScroll()?.nativeElement.querySelector(".line-selected")?.scrollIntoView({ block: "center" });
+      this.diffScroll?.nativeElement.querySelector(".line-selected")?.scrollIntoView({ block: "center" });
     });
     this.agentModalOpen.set(false);
     this.chatPageOpen.set(false);
@@ -3017,7 +3267,7 @@ export class AppComponent implements OnInit, OnDestroy {
 
   private resetHorizontalScroll(): void {
     requestAnimationFrame(() => {
-      const element = this.diffScroll()?.nativeElement;
+      const element = this.diffScroll?.nativeElement;
       if (element) element.scrollLeft = 0;
     });
   }
@@ -3499,6 +3749,25 @@ export class AppComponent implements OnInit, OnDestroy {
     }
   }
 
+  private loadExplorerFilter(): string {
+    try {
+      return (sessionStorage.getItem(EXPLORER_FILTER_SESSION_KEY) ?? "").slice(0, 1_000);
+    } catch {
+      return "";
+    }
+  }
+
+  private revealExplorerPath(path: string, block: ScrollLogicalPosition = "nearest", focus = false): void {
+    if (this.explorerFilterPatterns().length > 0 && !this.explorerFilterPatterns().some((filter) => filter.test(path))) this.clearExplorerFilter();
+    this.expandExplorerParents(path);
+    requestAnimationFrame(() => {
+      const row = this.explorerTree?.nativeElement.querySelector<HTMLElement>(`[data-explorer-path="${CSS.escape(path)}"]`);
+      if (!row) return;
+      row.scrollIntoView({ block });
+      if (focus) row.focus();
+    });
+  }
+
   private loadExpandedExplorerFolders(root: string): ReadonlySet<string> {
     try {
       const value: unknown = JSON.parse(sessionStorage.getItem(`${EXPLORER_EXPANDED_SESSION_PREFIX}${root}`) ?? "[]");
@@ -3571,10 +3840,10 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   private pinChatToBottom(): void {
-    const element = this.chatThread()?.nativeElement;
+    const element = this.chatThread?.nativeElement;
     if (!element) return;
     element.scrollTop = element.scrollHeight;
-    this.chatBottom()?.nativeElement.scrollIntoView({ block: "end", inline: "nearest" });
+    this.chatBottom?.nativeElement.scrollIntoView({ block: "end", inline: "nearest" });
   }
 
   private resolveModelSearch(): string | null {

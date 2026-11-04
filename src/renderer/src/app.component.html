@@ -129,7 +129,7 @@
                 (click)="toggleExplorerShowAll()"
                 [title]="explorerShowAll() ? 'Show changed files only' : 'Show full solution'"
               >Full</button>
-              <span class="count" [title]="explorerFileCount() + (explorerShowAll() ? ' solution files' : ' changed files')">{{ explorerFileCount() }}</span>
+              <span class="count" [title]="explorerFilter() ? explorerVisibleFileCount() + ' of ' + explorerFileCount() + ' files match the filter' : explorerFileCount() + (explorerShowAll() ? ' solution files' : ' changed files')">{{ explorerFilter() ? explorerVisibleFileCount() + "/" + explorerFileCount() : explorerFileCount() }}</span>
             }
           </span>
         </div>
@@ -160,7 +160,27 @@
             }
           </div>
         } @else {
-          <div class="explorer-tree" aria-label="Repository files">
+          <div class="explorer-toolbar">
+            <div class="file-filter explorer-filter">
+              <input type="text" maxlength="1000" aria-label="Filter files by name" placeholder="Filter: *.spec.ts" [value]="explorerFilter()" (input)="updateExplorerFilter($event)" (keydown)="handleExplorerFilterKeydown($event)">
+              @if (explorerFilter()) { <button (click)="clearExplorerFilter()" title="Clear filter" aria-label="Clear filter">×</button> }
+            </div>
+            <button
+              class="explorer-tool-button"
+              [disabled]="explorerFilter() || explorerFolderPaths().length === 0"
+              [attr.aria-label]="explorerAllCollapsed() ? 'Expand all folders' : 'Collapse all folders'"
+              [title]="explorerFilter() ? 'Folders stay expanded while filtering' : explorerAllCollapsed() ? 'Expand all folders' : 'Collapse all folders'"
+              (click)="toggleExplorerExpandAll()"
+            ><span aria-hidden="true">{{ explorerAllCollapsed() ? "⊞" : "⊟" }}</span></button>
+            <button
+              class="explorer-tool-button"
+              [disabled]="!selectedPath()"
+              aria-label="Reveal current file in tree"
+              [title]="selectedPath() ? 'Reveal ' + shortName(selectedPath()!) + ' in tree' : 'No file selected'"
+              (click)="revealSelectedInExplorer()"
+            ><span aria-hidden="true">⌖</span></button>
+          </div>
+          <div class="explorer-tree" #explorerTree aria-label="Repository files" (keydown)="handleExplorerTreeKeydown($event)">
             @if (explorerShowAll() && repositoryPathsLoading() && repositoryPaths().length === 0) {
               <p class="empty-copy">Loading repository files...</p>
             } @else if (repositoryPathsError()) {
@@ -172,13 +192,21 @@
                     class="explorer-row explorer-folder-row"
                     [style.padding-left.px]="7 + entry.depth * 14"
                     [title]="entry.path"
+                    (contextmenu)="openExplorerEntryTools(entry, $event)"
                   >
-                    <button class="explorer-folder-toggle" [attr.aria-expanded]="expandedExplorerFolders().has(entry.path)" (click)="toggleExplorerFolder(entry.path)">
-                      <span class="explorer-chevron" [class.expanded]="expandedExplorerFolders().has(entry.path)">›</span>
+                    <button
+                      class="explorer-folder-toggle"
+                      [attr.data-explorer-path]="entry.path"
+                      data-explorer-kind="folder"
+                      [attr.aria-expanded]="isExplorerFolderExpanded(entry.path)"
+                      (click)="toggleExplorerFolder(entry.path)"
+                    >
+                      <span class="explorer-chevron" [class.expanded]="isExplorerFolderExpanded(entry.path)">›</span>
                       <svg class="explorer-folder-icon" viewBox="0 0 20 16" aria-hidden="true"><path d="M1.5 3.5h6l1.5 2h9.5v8.5h-17z"/><path d="M1.5 3.5v-2h5l1.5 2"/></svg>
                       <span class="explorer-entry-name">{{ entry.name }}</span>
                     </button>
                     @if (explorerFolderReviewStates().get(entry.path); as reviewState) {
+                      <span class="explorer-folder-count" [title]="reviewState.total + (reviewState.total === 1 ? ' changed file' : ' changed files') + ', ' + reviewState.reviewed + ' reviewed'">{{ reviewState.total }}</span>
                       <button
                         class="explorer-folder-review"
                         [class.reviewed]="reviewState.reviewed === reviewState.total"
@@ -196,8 +224,10 @@
                     [class.reviewed]="entry.changedFile && isFileReviewed(entry.path)"
                     [style.padding-left.px]="25 + entry.depth * 14"
                     [title]="entry.path"
+                    [attr.data-explorer-path]="entry.path"
+                    data-explorer-kind="file"
                     (click)="openExplorerFile(entry.path)"
-                    (contextmenu)="entry.changedFile && openFileTools(entry.path, $event)"
+                    (contextmenu)="openExplorerEntryTools(entry, $event)"
                   >
                     <span class="explorer-file-icon {{ explorerFileIcon(entry.path) }}" aria-hidden="true"><small>{{ explorerFileIconLabel(entry.path) }}</small></span>
                     <span class="explorer-entry-name">{{ entry.name }}</span>
@@ -207,7 +237,7 @@
                   </button>
                 }
               } @empty {
-                <p class="empty-copy">No repository files found.</p>
+                <p class="empty-copy">{{ explorerFilter() ? "No files match the filter." : "No repository files found." }}</p>
               }
             }
           </div>
@@ -791,10 +821,35 @@
     </section>
 
     @if (fileToolsMenu(); as menu) {
-      <section class="file-tools" [style.left.px]="menu.x" [style.top.px]="menu.y" role="menu" aria-label="File actions">
-        <button role="menuitem" (click)="toggleFileReviewed(menu.path)">
-          <span>{{ isFileReviewed(menu.path) ? "↶" : "✓" }}</span>
-          <span><strong>{{ isFileReviewed(menu.path) ? "Mark unreviewed" : "Mark reviewed" }}</strong><small>{{ shortName(menu.path) }}</small></span>
+      <section class="file-tools" [style.left.px]="menu.x" [style.top.px]="menu.y" role="menu" [attr.aria-label]="menu.kind === 'folder' ? 'Folder actions' : 'File actions'">
+        @if (menu.kind === "folder") {
+          <button role="menuitem" (click)="toggleExplorerSubtree(menu.path)">
+            <span>{{ isExplorerSubtreeExpanded(menu.path) ? "⊟" : "⊞" }}</span>
+            <span><strong>{{ isExplorerSubtreeExpanded(menu.path) ? "Collapse subtree" : "Expand subtree" }}</strong><small>{{ shortName(menu.path) }}</small></span>
+          </button>
+          @if (explorerFolderReviewStates().get(menu.path); as reviewState) {
+            <button role="menuitem" (click)="toggleFolderReviewed(menu.path, $event)">
+              <span>{{ reviewState.reviewed === reviewState.total ? "↶" : "✓" }}</span>
+              <span><strong>{{ reviewState.reviewed === reviewState.total ? "Mark folder unreviewed" : "Mark folder reviewed" }}</strong><small>{{ reviewState.reviewed }}/{{ reviewState.total }} changed files reviewed</small></span>
+            </button>
+          }
+        } @else if (isChangedFile(menu.path)) {
+          <button role="menuitem" (click)="toggleFileReviewed(menu.path)">
+            <span>{{ isFileReviewed(menu.path) ? "↶" : "✓" }}</span>
+            <span><strong>{{ isFileReviewed(menu.path) ? "Mark unreviewed" : "Mark reviewed" }}</strong><small>{{ shortName(menu.path) }}</small></span>
+          </button>
+        }
+        <button role="menuitem" (click)="copyMenuPath(menu.path, false)">
+          <span>⎘</span>
+          <span><strong>Copy relative path</strong><small>{{ menu.path }}</small></span>
+        </button>
+        <button role="menuitem" (click)="copyMenuPath(menu.path, true)">
+          <span>⎘</span>
+          <span><strong>Copy full path</strong><small>{{ repository()?.root }}</small></span>
+        </button>
+        <button role="menuitem" (click)="revealMenuPath(menu.path)">
+          <span>↗</span>
+          <span><strong>{{ revealLabel() }}</strong><small>{{ shortName(menu.path) }}</small></span>
         </button>
       </section>
     }
@@ -883,10 +938,10 @@
           </div>
         } @else {
           @if (!allChangesSelected()) {
-            <button role="menuitem" (click)="startNote()"><span class="tool-mark">+</span><span><strong>Add note</strong><small>Attach review feedback</small></span></button>
+            <button role="menuitem" (click)="startNote()"><span class="tool-mark">+</span><span><strong>Add note</strong><small>Attach review feedback</small></span><kbd class="tool-shortcut">{{ platform === "darwin" ? "Cmd+N" : "Ctrl+N" }}</kbd></button>
           }
           <button role="menuitem" (click)="startExplain()" [disabled]="!selectedAgent() || agentRunning()">
-            <span class="ai-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 1c0 6.1-4.9 11-11 11 6.1 0 11 4.9 11 11 0-6.1 4.9-11 11-11-6.1 0-11-4.9-11-11Z"/><circle cx="19" cy="5" r="2"/></svg></span><span><strong>Ask agent</strong><small>Explain, fix, or refactor</small></span>
+            <span class="ai-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 1c0 6.1-4.9 11-11 11 6.1 0 11 4.9 11 11 0-6.1 4.9-11 11-11-6.1 0-11-4.9-11-11Z"/><circle cx="19" cy="5" r="2"/></svg></span><span><strong>Ask agent</strong><small>Explain, fix, or refactor</small></span><kbd class="tool-shortcut">{{ platform === "darwin" ? "Cmd+K" : "Ctrl+K" }}</kbd>
           </button>
         }
       </section>

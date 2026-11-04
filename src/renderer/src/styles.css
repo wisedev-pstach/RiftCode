@@ -152,6 +152,12 @@ button { color: inherit; font: inherit; }
 .file-stat em { width: 14px; height: 14px; display: grid; place-items: center; margin-right: 2px; border-radius: 50%; color: #162015; background: #87bd78; font-size: 8px; font-style: normal; font-weight: 900; }
 .file-stat i { color: #58c98e; font-style: normal; }
 .file-stat b { color: #df7777; font-weight: 400; }
+.explorer-toolbar { flex: none; display: flex; align-items: center; gap: 5px; padding: 7px 8px 0; }
+.explorer-toolbar .explorer-filter { min-width: 0; flex: 1; padding: 0; }
+.explorer-toolbar .explorer-filter button { top: 3px; right: 3px; }
+.explorer-tool-button { width: 27px; height: 27px; flex: none; display: grid; place-items: center; border: 1px solid #343d46; border-radius: 4px; padding: 0; color: #71808c; background: transparent; font: 600 14px/1 ui-monospace, monospace; cursor: pointer; }
+.explorer-tool-button:hover:not(:disabled) { color: #b8c4ce; border-color: #52606d; }
+.explorer-tool-button:disabled { cursor: not-allowed; opacity: .4; }
 .explorer-tree { min-height: 0; flex: 1; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 7px 5px 16px; }
 .explorer-row { width: 100%; height: 27px; min-width: 0; display: flex; align-items: center; gap: 6px; border: 0; border-radius: 4px; padding-block: 3px; padding-right: 6px; color: #aeb7c1; background: transparent; text-align: left; cursor: pointer; }
 .explorer-row:hover { color: #d7dde4; background: #181d23; }
@@ -163,6 +169,7 @@ button { color: inherit; font: inherit; }
 .explorer-folder-icon { width: 17px; height: 15px; flex: none; overflow: visible; fill: #b58a43; stroke: #d4ad67; stroke-linejoin: round; stroke-width: 1; }
 .explorer-folder-toggle { min-width: 0; flex: 1; display: flex; align-items: center; gap: 6px; border: 0; padding: 0; color: inherit; background: transparent; text-align: left; cursor: pointer; }
 .explorer-folder-toggle:focus-visible { outline: 1px solid #71804f; outline-offset: 1px; }
+.explorer-folder-count { flex: none; min-width: 16px; padding: 1px 4px; border-radius: 8px; color: #8d98a4; background: #1f252c; font: 650 8px/1.4 ui-monospace, monospace; text-align: center; }
 .explorer-folder-review { width: 19px; height: 19px; flex: none; display: grid; place-items: center; border: 1px solid transparent; border-radius: 50%; padding: 0; color: #66727e; background: transparent; font: 750 9px ui-monospace, monospace; cursor: pointer; }
 .explorer-folder-review:hover { color: #c8ff63; border-color: #607b3f; background: rgba(200, 255, 99, .07); }
 .explorer-folder-review.partial { color: #d7af65; border-color: #665536; }
@@ -603,7 +610,9 @@ button { color: inherit; font: inherit; }
 .selection-tools > button { width: 100%; display: grid; grid-template-columns: 29px minmax(0, 1fr); align-items: center; border: 0; border-radius: 5px; padding: 7px; color: #b5bdc7; background: transparent; text-align: left; cursor: pointer; }
 .selection-tools > button:hover { background: #20262e; }
 .selection-tools > button:disabled { cursor: not-allowed; opacity: .38; }
-.selection-tools > button span:last-child { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.selection-tools > button > span:nth-of-type(2) { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.selection-tools > button:has(.tool-shortcut) { grid-template-columns: 29px minmax(0, 1fr) auto; }
+.tool-shortcut { border: 1px solid #3b4650; border-radius: 4px; padding: 2px 4px; color: #8b987c; background: #151a20; font: 650 7px ui-monospace, monospace; box-shadow: inset 0 -1px rgba(255, 255, 255, .025); }
 .selection-tools > button strong { font-size: 11px; }
 .selection-tools > button small { color: #697582; font-size: 9px; }
 .selection-tools .ai-mark { margin: 0; }
@@ -913,7 +922,7 @@ button { color: inherit; font: inherit; }
 :root[data-theme="light"] .explorer-chevron { color: #75818b; }
 :root[data-theme="light"] .diff-toolbar .search-shortcut-hint { color: #687580; border-color: #d4dae0; }
 :root[data-theme="light"] .diff-toolbar .search-shortcut-hint:hover { color: #4d701d; }
-:root[data-theme="light"] .diff-toolbar .search-shortcut-hint kbd { color: #5d7440; border-color: #bdc8b0; background: #f5f8f2; box-shadow: inset 0 -1px rgba(45, 54, 63, .04); }
+:root[data-theme="light"] .diff-toolbar .search-shortcut-hint kbd, :root[data-theme="light"] .tool-shortcut { color: #5d7440; border-color: #bdc8b0; background: #f5f8f2; box-shadow: inset 0 -1px rgba(45, 54, 63, .04); }
 :root[data-theme="light"] .diff-panel, :root[data-theme="light"] .split-head { background: #fff; }
 :root[data-theme="light"] .repository-file-row:hover { background: #f0f3f6; }
 :root[data-theme="light"] .repository-file-row > span { border-color: #d9dee3; color: #939ca5; }
@@ -1029,6 +1038,9 @@ button { color: inherit; font: inherit; }
 :root[data-theme="light"] .explorer-scope-button { color: #65717c; border-color: #bdc6ce; }
 :root[data-theme="light"] .explorer-scope-button:hover { color: #303a44; border-color: #8e9aa5; background: #edf1f4; }
 :root[data-theme="light"] .explorer-scope-button.active { color: #496b18; border-color: #86a55c; background: #eef6e5; }
+:root[data-theme="light"] .explorer-tool-button { color: #65717c; border-color: #bdc6ce; }
+:root[data-theme="light"] .explorer-tool-button:hover:not(:disabled) { color: #303a44; border-color: #8e9aa5; background: #edf1f4; }
+:root[data-theme="light"] .explorer-folder-count { color: #66727e; background: #e2e6ea; }
 :root[data-theme="light"] .explorer-folder-review { color: #77828c; }
 :root[data-theme="light"] .explorer-folder-review:hover { color: #496b18; border-color: #86a55c; background: #eef6e5; }
 :root[data-theme="light"] .explorer-folder-review.partial { color: #8a672c; border-color: #cfb67f; }

@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { promisify } from "node:util";
 import { delimiter, dirname, join, resolve, sep } from "node:path";
-import { listRepositoryFiles, loadFilePatch, loadRepository, readRepositoryViewFile, searchRepository } from "./git";
+import { listRepositoryFiles, loadFilePatch, loadRepository, readRepositoryViewFile, safeRepositoryFile, searchRepository } from "./git";
 import type { IpcMainInvokeEvent } from "electron";
 import type { AgentConversationHistory, AgentConversationMessage, AgentId, AgentMode, AgentOption, AgentRunResult, AgentSession, AgentStreamEvent, AgentToolEvent, GitHubAuthStatus, GitHubIssueResult, RepositorySnapshot, UpdateStatus } from "../shared/contracts";
 import versionManifest from "../../version.json";
@@ -1061,6 +1061,12 @@ function registerIpc(): void {
     assertTrustedSender(event);
     if (typeof text !== "string" || text.length > 1_000_000) throw new Error("Clipboard content is too large.");
     clipboard.writeText(text);
+  });
+
+  ipcMain.handle("repository:reveal", async (event, path: unknown) => {
+    assertTrustedSender(event);
+    if (!snapshot || typeof path !== "string" || path.length > 10_000) throw new Error("Invalid repository path.");
+    shell.showItemInFolder(await safeRepositoryFile(snapshot.root, path));
   });
 
   ipcMain.handle("update:check", (event) => {

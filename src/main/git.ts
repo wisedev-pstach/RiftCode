@@ -55,7 +55,7 @@ function git(cwd: string, args: string[], acceptedCodes = [0], signal?: AbortSig
   return run("git", ["-c", "core.quotepath=false", ...args], cwd, acceptedCodes, signal);
 }
 
-async function safeRepositoryFile(root: string, path: string): Promise<string> {
+export async function safeRepositoryFile(root: string, path: string): Promise<string> {
   if (!path || path.includes("\0") || isAbsolute(path)) throw new Error("Invalid repository file path.");
   const canonicalRoot = await realpath(root);
   const candidate = resolve(canonicalRoot, path);

@@ -167,6 +167,7 @@ export interface RiftApi {
   interruptAgent(): Promise<void>;
   cancelAgent(): Promise<void>;
   copyText(text: string): Promise<void>;
+  revealRepositoryPath(path: string): Promise<void>;
   checkForUpdate(): Promise<UpdateStatus>;
   installUpdate(): Promise<boolean>;
   getGitHubAuthStatus(): Promise<GitHubAuthStatus>;
