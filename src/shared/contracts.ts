@@ -142,6 +142,11 @@ export interface GitHubIssueResult {
 }
 
 export interface RiftApi {
+  terminalStart(provider: import('./terminal').TerminalProvider, mode: import('./terminal').TerminalMode, cols: number, rows: number): Promise<import('./terminal').TerminalState>;
+  terminalRead(id: string | null, cursor: number): Promise<import('./terminal').TerminalRead>;
+  terminalInput(id: string, data: string, paste: boolean): Promise<void>;
+  terminalResize(id: string, cols: number, rows: number): Promise<void>;
+  terminalStop(): Promise<void>;
   platform: "darwin" | "linux" | "win32";
   setTheme(theme: "dark" | "light"): Promise<void>;
   saveImageAttachment(name: string, type: string, data: Uint8Array): Promise<string>;

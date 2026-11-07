@@ -1,11 +1,10 @@
 {
-  "version": "0.7.3",
+  "version": "0.8.0",
   "releaseNotes": [
-    "Added wildcard filtering to the explorer with auto-expanded parents and a match-count badge.",
-    "Added collapse-all and expand-all toggling plus arrow, Home, End, and Escape keyboard navigation in the explorer tree.",
-    "Added file and folder context menus in the explorer: mark reviewed, copy relative or full path, and reveal in the system file manager.",
-    "Added per-folder changed-file counts with review summaries in the explorer.",
-    "Added Cmd/Ctrl+N to start a review note and Cmd/Ctrl+K to ask the agent about the selected lines, with shortcut badges in the selection tools.",
-    "Fixed keyboard focus transfer into the explorer tree and repository search under the renderer build."
+    "Added a terminal-first AI workspace with retained native PTY sessions for Claude Code, OpenCode and Codex.",
+    "Copy review notes or insert selected notes and code context without submitting the CLI prompt.",
+    "Ctrl/Cmd-click repository file:line references in terminal reviews to jump to highlighted source, including unchanged files.",
+    "Search current comparisons and target branches without changing the selected comparison until an explicit choice.",
+    "Added isolated preview data for owner testing; existing chats and notes remain available."
   ]
 }
