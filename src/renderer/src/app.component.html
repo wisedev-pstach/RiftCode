@@ -49,6 +49,7 @@
         </button>
          <span class="comparison-arrow">/</span>
          @if (repository()!.targetBranches.length > 0) {
+           <div class="searchable-branch-picker"><div class="branch-query"><input type="text" maxlength="200" aria-label="Search target branches" placeholder="Search target…" [value]="targetBranchSearch()" (input)="targetBranchSearch.set($any($event.target).value)" (keydown.escape)="targetBranchSearch.set('')">@if (targetBranchSearch()) { <button aria-label="Clear target branch search" (click)="targetBranchSearch.set('')">×</button> }</div>
            <label class="target-branch-picker">
              <span class="visually-hidden">Select target comparison branch</span>
              <span class="target-branch-prefix">vs</span>
@@ -58,15 +59,16 @@
                (change)="selectTargetBranch($event)"
                title="Choose the target comparison branch"
              >
-               <option value="" disabled>Select target</option>
-               @for (branch of repository()!.targetBranches; track branch.ref) {
+               @if (!repository()!.targetBranch) { <option value="" disabled>Select target</option> }
+               @for (branch of visibleTargetBranches(); track branch.ref) {
                  <option [value]="branch.ref" [selected]="branch.ref === repository()!.targetBranch">{{ branch.label }}</option>
                }
              </select>
            </label>
+           @if (targetBranchSearch() && matchingTargetBranches().length === 0) { <small class="branch-no-results" role="status">No matching target branches</small> }</div>
            <span class="comparison-arrow">/</span>
          }
-         <label>
+         <div class="searchable-branch-picker"><div class="branch-query"><input type="text" maxlength="200" aria-label="Search comparisons" placeholder="Search current / comparison…" [value]="comparisonSearch()" (input)="comparisonSearch.set($any($event.target).value)" (keydown.escape)="comparisonSearch.set('')">@if (comparisonSearch()) { <button aria-label="Clear comparison search" (click)="comparisonSearch.set('')">×</button> }</div><label>
           <span class="visually-hidden">Select comparison</span>
           <select
             [value]="repository()!.comparisonId"
@@ -74,13 +76,13 @@
             (change)="selectComparison($event)"
             title="Choose what to review"
           >
-            @for (option of repository()!.comparisons; track option.id) {
+            @for (option of visibleComparisons(); track option.id) {
               <option [value]="option.id" [selected]="option.id === repository()!.comparisonId">
                 {{ option.label }} - {{ option.detail }}
               </option>
             }
            </select>
-         </label>
+         </label>@if (comparisonSearch() && matchingComparisons().length === 0) { <small class="branch-no-results" role="status">No matching comparisons</small> }</div>
          <button class="context-action" [class.active]="contextItemCount() > 0" (click)="openContextDialog()" title="Add project details, links, files, images, or directories">
            <span class="context-action-mark">C</span>
            <span><strong>Context</strong><small>{{ contextItemCount() > 0 ? contextItemCount() + " items shared" : "Add project knowledge" }}</small></span>
@@ -255,7 +257,9 @@
         ></button>
       </aside>
 
-      @if (reviewPageOpen()) {
+      <rift-ai-terminal [hidden]="!terminalOpen()" [root]="repository()!.root" [paths]="repositoryPaths()" [dark]="darkTheme()" [noteCount]="notes().length" [selectedNoteCount]="selectedNotes().length" [hasSelection]="selectedLineCount() > 0" (back)="showDiff()" (legacy)="openChats()" (copyNotes)="copyNotes()" (insertNotes)="insertTerminalNotes()" (insertSelection)="insertTerminalSelection()" (navigate)="navigateTerminalSource($event)" (readyChange)="terminalReady.set($event)" />
+      @if (terminalOpen()) {
+      } @else if (reviewPageOpen()) {
         <section class="review-page" aria-label="Code review">
           <header class="review-page-header">
             <button class="back-to-diff" (click)="showDiff()">← Back to diff</button>
@@ -570,9 +574,10 @@
             <p class="empty-copy">Binary file cannot be displayed.</p>
           } @else if (repositoryFileView(); as repositoryFile) {
             @if (repositoryFile.truncated) { <p class="repository-file-notice">Large file preview truncated</p> }
+            @if (sourceTarget(); as target) { <p class="source-location">{{ target.path }}:{{ target.line }}:{{ target.column }} · column {{ target.column }}</p> }
             <div class="repository-file-lines">
               @for (line of repositoryFileLines(); track $index) {
-                <div class="repository-file-row"><span>{{ $index + 1 }}</span><code>{{ line || " " }}</code></div>
+                <div class="repository-file-row" [class.source-target]="sourceTarget() && $index + 1 >= sourceTarget()!.line && $index + 1 <= (sourceTarget()!.endLine || sourceTarget()!.line)"><span>{{ $index + 1 }}</span><code>{{ line || " " }}</code></div>
               }
             </div>
           } @else if (patch()?.binary) {
@@ -738,7 +743,8 @@
               <small>Notes</small>
               @if (notes().length > 0) { <b>{{ notes().length }}</b> }
             </button>
-            <button class="review-rail conversation-rail" [class.active]="chatPageOpen()" (click)="openChats()" [disabled]="!selectedAgent()" title="Open chats" aria-label="Open chats">
+            <button class="review-rail" (click)="openTerminal()" aria-label="AI terminal" title="AI terminal">&gt;_</button>
+             <button class="review-rail conversation-rail" [class.active]="chatPageOpen()" (click)="openChats()" [disabled]="!selectedAgent()" title="Open chats" aria-label="Open chats">
               <span class="ai-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 1c0 6.1-4.9 11-11 11 6.1 0 11 4.9 11 11 0-6.1 4.9-11 11-11-6.1 0-11-11-11-11Z"/><circle cx="19" cy="5" r="2"/></svg></span>
               <small>Chats</small>
               @if (repositoryConversations().some((conversation) => conversation.status === "running")) { <i class="rail-spinner" aria-label="Explanation is running"></i> }
@@ -751,11 +757,12 @@
         } @else {
           <div class="panel-title review-header">
             <span>Review notes</span>
+            <button (click)="openTerminal()" aria-label="AI terminal" title="AI terminal">&gt;_</button>
             <button (click)="reviewSidebarOpen.set(false)" title="Collapse sidebar" aria-label="Collapse sidebar">×</button>
           </div>
           <div class="review-content">
             <div class="agent-control">
-              <label for="review-agent">Code agent</label>
+              <label for="review-agent">Legacy chat agent</label>
               @if (agents().length > 0) {
                 <select id="review-agent" [value]="selectedAgent()" (change)="selectAgent($event)">
                   @for (agent of agents(); track agent.id) {
@@ -763,7 +770,7 @@
                   }
                 </select>
               } @else {
-                <span>No supported agent detected</span>
+                <span>Use AI terminal for Claude, OpenCode or Codex</span>
               }
             </div>
 
@@ -808,10 +815,10 @@
               <button (click)="copyNotes()" [disabled]="notes().length === 0">Copy notes</button>
               <button
                 class="primary-agent-action"
-                (click)="agentRunning() ? interruptAgent() : sendNotesToAgent()"
-                [disabled]="selectedNotes().length === 0 || !selectedAgent()"
+                (click)="sendNotesToAgent()"
+                [disabled]="selectedNotes().length === 0"
               >
-                <span class="ai-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 1c0 6.1-4.9 11-11 11 6.1 0 11 4.9 11 11 0-6.1 4.9-11 11-11-6.1 0-11-4.9-11-11Z"/><circle cx="19" cy="5" r="2"/></svg></span>{{ agentRunning() ? "Interrupt" : "Send " + selectedNotes().length + " to agent" }}
+                <span class="ai-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 1c0 6.1-4.9 11-11 11 6.1 0 11 4.9 11 11 0-6.1 4.9-11 11-11-6.1 0-11-4.9-11-11Z"/><circle cx="19" cy="5" r="2"/></svg></span>{{ "Insert " + selectedNotes().length + " in terminal" }}
               </button>
             </div>
 
@@ -940,6 +947,7 @@
           @if (!allChangesSelected()) {
             <button role="menuitem" (click)="startNote()"><span class="tool-mark">+</span><span><strong>Add note</strong><small>Attach review feedback</small></span><kbd class="tool-shortcut">{{ platform === "darwin" ? "Cmd+N" : "Ctrl+N" }}</kbd></button>
           }
+          <button role="menuitem" (click)="insertTerminalSelection()"><strong>Insert selection in AI terminal</strong><small>Context only — no Enter</small></button>
           <button role="menuitem" (click)="startExplain()" [disabled]="!selectedAgent() || agentRunning()">
             <span class="ai-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 1c0 6.1-4.9 11-11 11 6.1 0 11 4.9 11 11 0-6.1 4.9-11 11-11-6.1 0-11-4.9-11-11Z"/><circle cx="19" cy="5" r="2"/></svg></span><span><strong>Ask agent</strong><small>Explain, fix, or refactor</small></span><kbd class="tool-shortcut">{{ platform === "darwin" ? "Cmd+K" : "Ctrl+K" }}</kbd>
           </button>

@@ -11,6 +11,8 @@ import {
   ViewChild
 } from "@angular/core";
 import { marked } from "marked";
+import { AiTerminalComponent } from './ai-terminal.component';
+import type { SourceLocation } from '../../shared/terminal';
 import type { AgentConversationHistory, AgentId, AgentMode, AgentOption, AgentRunResult, AgentSession, AgentStreamEvent, AgentToolEvent, ChangedFile, ContextResourcePath, FilePatch, GitHubAuthStatus, RepositoryFileView, RepositorySearchResult, RepositorySnapshot, UpdateStatus } from "../../shared/contracts";
 import versionManifest from "../../../version.json";
 
@@ -530,6 +532,7 @@ function buildExplorerEntries(
 @Component({
   selector: "rift-root",
   standalone: true,
+  imports: [AiTerminalComponent],
   templateUrl: "./app.component.html",
   changeDetection: ChangeDetectionStrategy.OnPush
 })
@@ -640,6 +643,39 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly agentError = signal<string | null>(null);
   readonly agentModalOpen = signal(false);
   readonly chatPageOpen = signal(false);
+  readonly targetBranchSearch = signal('');
+  readonly comparisonSearch = signal('');
+  readonly matchingTargetBranches = computed(() => this.repository()?.targetBranches.filter(branch => branch.label.toLowerCase().includes(this.targetBranchSearch().trim().toLowerCase())) ?? []);
+  readonly visibleTargetBranches = computed(() => this.repository()?.targetBranches.filter(branch => branch.ref === this.repository()?.targetBranch || this.matchingTargetBranches().some(match => match.ref === branch.ref)) ?? []);
+  readonly matchingComparisons = computed(() => this.repository()?.comparisons.filter(option => `${option.label} ${option.detail}`.toLowerCase().includes(this.comparisonSearch().trim().toLowerCase())) ?? []);
+  readonly visibleComparisons = computed(() => this.repository()?.comparisons.filter(option => option.id === 'working-tree' || option.id === 'current-branch' || option.id === this.repository()?.comparisonId || this.matchingComparisons().some(match => match.id === option.id)) ?? []);
+  readonly terminalOpen = signal(true);
+  readonly terminalReady = signal(false);
+  readonly sourceTarget = signal<SourceLocation | null>(null);
+  @ViewChild(AiTerminalComponent) aiTerminal?: AiTerminalComponent;
+  openTerminal(): void { this.terminalOpen.set(true); this.chatPageOpen.set(false); this.reviewPageOpen.set(false); void this.loadRepositoryPaths(); }
+  insertTerminalNotes(): void { const notes=this.selectedNotes(); if(notes.length) { this.openTerminal(); void this.aiTerminal?.insert(this.formatNotes(notes)); } }
+  insertTerminalSelection(): void {
+    const context=this.selectedContext();
+    if(!context)return;
+    this.openTerminal();
+    void this.aiTerminal?.insert(`Location: ${this.selectedPath()}:${context.startLine}-${context.endLine}\nSelected diff:\n\x60\x60\x60diff\n${context.diff}\n\x60\x60\x60`);
+    this.toolsMenu.set(null);
+  }
+  async navigateTerminalSource(location: SourceLocation): Promise<void> {
+    const root=this.repository()?.root;
+    const request=++this.repositoryViewRequest;
+    try {
+      // Main's known-file + realpath guard remains authoritative, including symlink rejection.
+      const file=await window.rift.readRepositoryViewFile(location.path);
+      if(this.repository()?.root!==root || request!==this.repositoryViewRequest)return;
+      this.showDiff(); this.editMode.set(false); this.patchRequest++;
+      this.selectedPath.set(location.path); this.patch.set(null); this.highlightedRows.set(null);
+      this.repositoryFileError.set(null); this.repositoryFileLoading.set(false); this.repositoryFileView.set(file);
+      this.selectedRange.set(null); this.sourceTarget.set(location);
+      requestAnimationFrame(()=>this.diffScroll?.nativeElement.querySelector('.source-target')?.scrollIntoView({block:'center'}));
+    } catch(e) { this.reviewMessage.set(e instanceof Error?e.message:String(e)); }
+  }
   readonly activeQuestion = signal("");
   readonly conversations = signal<Conversation[]>([]);
   readonly repositoryConversations = computed(() => {
@@ -1468,6 +1504,7 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   selectFile(path: string): void {
+    this.terminalOpen.set(false); this.sourceTarget.set(null);
     this.fileToolsMenu.set(null);
     this.chatPageOpen.set(false);
     this.reviewPageOpen.set(false);
@@ -1573,6 +1610,7 @@ export class AppComponent implements OnInit, OnDestroy {
 
   @HostListener("document:keydown", ["$event"])
   handleKeyboardShortcut(event: KeyboardEvent): void {
+    if (event.target instanceof Element && event.target.closest("rift-ai-terminal")) return;
     if (!(event.ctrlKey || event.metaKey)) return;
     if (event.key.toLowerCase() === "f") {
       event.preventDefault();
@@ -1708,6 +1746,7 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   private async openRepositoryPath(path: string): Promise<void> {
+    this.terminalOpen.set(false); this.sourceTarget.set(null);
     if (this.sidebarView() === "explorer") this.revealExplorerPath(path);
     if (this.repository()?.files.some((file) => file.path === path)) {
       this.selectFile(path);
@@ -2165,6 +2204,7 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   openChats(): void {
+    this.terminalOpen.set(false);
     this.reviewPageOpen.set(false);
     this.chatPageOpen.set(true);
     this.activeConversationId.set(null);
@@ -2173,6 +2213,7 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   openReviewPage(): void {
+    this.terminalOpen.set(false);
     this.reviewSidebarOpen.set(false);
     this.chatPageOpen.set(false);
     this.reviewPageOpen.set(true);
@@ -2395,6 +2436,7 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   showDiff(): void {
+    this.terminalOpen.set(false);
     this.chatPageOpen.set(false);
     this.reviewPageOpen.set(false);
     this.activeConversationId.set(null);
@@ -2728,6 +2770,10 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   sendNotesToAgent(): void {
+    this.insertTerminalNotes();
+  }
+
+  sendNotesToLegacyAgent(): void {
     const agent = this.selectedAgent();
     const notes = this.selectedNotes();
     if (!agent || notes.length === 0 || this.agentRunning()) return;
@@ -2749,6 +2795,7 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   openConversation(id?: number): void {
+    this.terminalOpen.set(false);
     const conversation = this.conversations().find((entry) => entry.id === (id ?? this.activeConversationId()));
     if (!conversation) return;
     this.activeConversationId.set(conversation.id);
@@ -3123,7 +3170,7 @@ export class AppComponent implements OnInit, OnDestroy {
       this.repositoryFileLoading.set(false);
       this.repositoryFileError.set(null);
     }
-    if (this.sidebarView() === "explorer" && this.explorerShowAll()) {
+    if (this.repository()) {
       void this.loadRepositoryPaths();
     } else {
       this.repositoryPathsRequest += 1;

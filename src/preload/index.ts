@@ -3,6 +3,11 @@ import type { RiftApi } from "../shared/contracts";
 
 const api: RiftApi = {
   platform: process.platform as RiftApi["platform"],
+  terminalStart: (provider, mode, cols, rows) => ipcRenderer.invoke('terminal:start', provider, mode, cols, rows),
+  terminalRead: (id, cursor) => ipcRenderer.invoke('terminal:read', id, cursor),
+  terminalInput: (id, data, paste) => ipcRenderer.invoke('terminal:input', id, data, paste),
+  terminalResize: (id, cols, rows) => ipcRenderer.invoke('terminal:resize', id, cols, rows),
+  terminalStop: () => ipcRenderer.invoke('terminal:stop'),
   setTheme: (theme) => ipcRenderer.invoke("window:set-theme", theme),
   saveImageAttachment: (name, type, data) => ipcRenderer.invoke("attachment:save-image", name, type, data),
   saveClipboardImage: () => ipcRenderer.invoke("context:paste-image"),

@@ -2,7 +2,7 @@
 
 > A visual, AI-native workspace for understanding, reviewing, and refining code changes.
 
-[![Version](https://img.shields.io/badge/version-0.7.3-c8ff63?style=flat-square&labelColor=171b21)](./version.json)
+[![Version](https://img.shields.io/badge/version-0.8.0-c8ff63?style=flat-square&labelColor=171b21)](./version.json)
 [![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-8ea0b2?style=flat-square&labelColor=171b21)](#getting-started)
 [![License](https://img.shields.io/badge/license-MIT-8ea0b2?style=flat-square&labelColor=171b21)](./LICENSE)
 
@@ -54,6 +54,9 @@ Rift discovers supported coding agents installed on your machine. Install and au
 
 - [OpenCode](https://opencode.ai/)
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview)
+- [Codex CLI](https://developers.openai.com/codex/cli/) (interactive terminal)
+
+Use **AI terminal** to choose a provider and Review/plan or Edit intent, then **Start session**. Copy notes or insert selected notes/code without submitting; press Enter yourself inside the CLI. Ctrl/Cmd-click `file:line` output to open source. Sessions survive view switches, not repository changes or app shutdown. Legacy Claude/OpenCode chat history remains separate. See [terminal setup, safety and verification](docs/TERMINAL-AI.md).
 
 Repository browsing, diffs, notes, review tracking, and editing work without an AI agent.
 
