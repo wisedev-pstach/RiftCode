@@ -1,0 +1,36 @@
+<header class="terminal-toolbar">
+  <div class="terminal-identity"><span class="session-indicator" [class.live]="state()?.status === 'running'"></span><div><strong [title]="activeTitle()">{{ state() || starting() ? activeTitle() || (mode()==='review' ? 'Review session' : 'Edit session') : 'AI workspace' }}</strong><small>@if (state() || starting()) { {{ providerLabel() }} · {{ mode()==='review' ? 'Review' : 'Edit' }} · }<span class="terminal-status" role="status">{{ disconnected() ? 'Connection unavailable' : state()?.status || (starting() ? 'Starting' : 'No active session') }}{{ state()?.exitCode != null ? ' · exit ' + state()!.exitCode : '' }}</span></small></div></div>
+  <div class="terminal-cwd" [title]="root()">{{ state()?.cwd || root() }}</div>
+  <div class="terminal-actions">
+    <button (click)="notes.emit()" aria-label="Open review notes">Notes <span class="action-count">{{ noteCount() }}</span></button>
+    <details #contextMenu class="terminal-context-menu" (toggle)="menuOpen.set(contextMenu.open)"><summary [attr.aria-expanded]="menuOpen()" aria-controls="terminal-context-actions">Context</summary><div id="terminal-context-actions" class="terminal-context-actions"><button (click)="review.emit()">Review changes</button><button (click)="copyNotes.emit()" [disabled]="!noteCount()">Copy notes</button><button (click)="insertNotes.emit()" [disabled]="!selectedNoteCount()">Insert selected notes ({{ selectedNoteCount() }})</button><button (click)="insertSelection.emit()" [disabled]="!hasSelection()">Insert selection</button><p>Insert only · press Enter in the CLI to submit. Unsent context is retained.</p><p>{{ mode() === 'review' ? 'Review uses provider plan/read-only settings, not an OS sandbox.' : 'Edit keeps provider confirmations; configured permissions still apply.' }} CLIs run as your OS user. Authenticate separately; Rift never auto-approves prompts.</p></div></details>
+    @if (state() || starting()) { <button class="stop-session" (click)="stop()" aria-label="Stop session">Stop</button> }
+  </div>
+</header>
+@if (!state() && !starting()) {
+  <div class="launcher-space"><section class="session-launcher" aria-label="Launch AI session">
+    <header><span class="eyebrow">LOCAL CLI WORKSPACE</span><h1>Start an AI session</h1><p>Your CLI. This repository. Everything stays in reach.</p></header>
+    <div class="launch-fields"><label>Provider<select aria-label="Terminal provider" [value]="provider()" (change)="provider.set($any($event.target).value)"><option value="claude">Claude Code</option><option value="opencode">OpenCode</option><option value="codex">Codex</option></select></label><label>Purpose<select aria-label="Session intent" [value]="mode()" (change)="mode.set($any($event.target).value)"><option value="review">Review / plan</option><option value="edit">Edit · confirmations kept</option></select></label></div>
+    <div class="launch-choice" role="group" aria-label="Session choice"><button [attr.aria-pressed]="choice()==='new'" (click)="choice.set('new')">New session</button><button [attr.aria-pressed]="choice()==='resume'" (click)="choice.set('resume')">Resume existing</button></div>
+    @if (choice()==='resume') {
+      <div class="terminal-resume">
+        <div class="resume-heading"><span>Conversations in this repository</span><button (click)="loadSessions()" [disabled]="loadingSessions()" aria-label="Refresh sessions">Refresh</button></div>
+        <div class="session-list" role="listbox" aria-label="Provider session" [attr.aria-busy]="loadingSessions()" (keydown)="sessionKey($event)">
+          @if (loadingSessions()) { <div class="session-loading" role="status" aria-label="Loading provider sessions"><span class="visually-hidden">Finding conversations in this repository…</span>@for (row of [1,2,3]; track row) { <div class="session-skeleton" aria-hidden="true"><i></i><i></i></div> }</div> }
+          @for (session of loadingSessions() ? [] : sessions(); track session.id) { <button class="session-row" role="option" [attr.aria-selected]="resumeId()===session.id" [title]="session.id" (click)="resumeId.set(session.id)"><span><strong>{{ session.title }}</strong><small>{{ providerLabel() }}</small></span><time [attr.datetime]="sessionIso(session.updatedAt)">{{ sessionDate(session.updatedAt) }}</time><span class="session-check" aria-hidden="true">{{ resumeId()===session.id ? '✓' : '›' }}</span></button> }
+          @if (!loadingSessions() && !sessions().length && !sessionError()) { <p class="session-empty">No sessions found in this repository.</p> }
+        </div>
+        @if (sessionError()) { <p class="terminal-error" role="alert">{{ sessionError() }}</p> }
+      </div>
+    }
+    <footer><button class="review-prepare" (click)="review.emit()" title="Prepare comparison context without submitting">Review changes</button><button class="primary-button" (click)="start()" [disabled]="!available || (choice()==='resume' && (!resumeId() || loadingSessions()))">{{ choice()==='resume' ? 'Resume session' : 'Start session' }} <span aria-hidden="true">↗</span></button></footer>
+    <p class="launch-consent">{{ mode() === 'review' ? 'Review / plan settings' : 'Provider confirmations kept' }} · Your CLI permissions apply.</p>
+  </section></div>
+}
+@if (!available) { <p class="terminal-error">Native terminal unavailable. Open Rift desktop to start a CLI.</p> }
+@if (error()) { <section class="terminal-error"><p role="alert">{{ error() }}</p><div>@if (!state() && !starting()) { <button (click)="start()" [disabled]="!available || (choice()==='resume' && (!resumeId() || loadingSessions()))">Retry session</button> }<button (click)="error.set('')" aria-label="Dismiss terminal error">Dismiss</button></div></section> }
+@if (pending()) { <section class="terminal-pending"><header><strong>Context ready to insert</strong><span>Not submitted</span></header><textarea aria-label="Pending terminal context" [value]="pending()" (input)="pending.set($any($event.target).value)"></textarea><div><button [disabled]="!ready()" (click)="insert(pending())">Insert pending context</button><button (click)="copyPending()">Copy context</button><button (click)="pending.set('')">Discard</button></div></section> }
+<div class="terminal-stage" [class.launcher-hidden]="!state() && !starting()"><div #surface class="terminal-surface" aria-label="Interactive AI terminal"></div>
+  @if ((starting() || (state()?.status==='running' && !hasOutput())) && !disconnected() && !error()) { <section class="terminal-connecting"><div role="status" aria-label="Connecting terminal"><span class="connection-glyph" aria-hidden="true">&gt;_</span><span class="eyebrow">{{ choice()==='resume' ? 'RESUMING SESSION' : 'STARTING SESSION' }}</span><h2>Connecting to {{ providerLabel() }}</h2><p>{{ choice()==='resume' ? selectedSessionTitle() : 'Waiting for the first CLI output.' }}</p></div><button (click)="stop()" aria-label="Cancel connection">Cancel</button></section> }
+</div>
+@if (state()) { <footer class="terminal-footer">Ctrl/Cmd+click a source reference to open code <span>Session retained across views</span></footer> }

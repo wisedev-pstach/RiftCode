@@ -880,7 +880,6 @@ export class AppComponent implements OnInit, OnDestroy {
 
   private removeRepositoryListener?: () => void;
   private removeAgentListener?: () => void;
-  private readonly loadingStartedAt = performance.now();
   private refreshing = false;
   private refreshDirty = false;
   private selecting = false;
@@ -940,18 +939,7 @@ export class AppComponent implements OnInit, OnDestroy {
         this.repositorySearchHighlights.update((current) => new Map(current).set(data.path, data.lines));
       }
     };
-    const request = ++this.repositoryRequest;
-    void window.rift.openRepository()
-      .then((repository) => {
-        if (request === this.repositoryRequest) this.acceptRepository(repository);
-      })
-      .catch((reason: Error) => {
-        if (request === this.repositoryRequest) this.error.set(reason.message);
-      })
-      .finally(() => {
-        const remaining = Math.max(0, 2_000 - (performance.now() - this.loadingStartedAt));
-        setTimeout(() => this.loading.set(false), remaining);
-      });
+    void this.retryRepository();
 
     this.removeRepositoryListener = window.rift.onRepositoryChanged((changedPaths) => {
       const reviewed = new Set(this.reviewedFiles());
@@ -1061,6 +1049,14 @@ export class AppComponent implements OnInit, OnDestroy {
     this.highlightWorker.terminate();
     this.revokeImagePreviews(this.questionImageAttachments());
     this.revokeImagePreviews(this.chatImageAttachments());
+  }
+
+  async retryRepository(): Promise<void> {
+    const request=++this.repositoryRequest;
+    this.loading.set(true);this.error.set(null);
+    try { const repository=await window.rift.openRepository();if(request===this.repositoryRequest)this.acceptRepository(repository); }
+    catch(reason) { if(request===this.repositoryRequest)this.error.set(reason instanceof Error?reason.message:String(reason)); }
+    finally { if(request===this.repositoryRequest)this.loading.set(false); }
   }
 
   async chooseRepository(): Promise<void> {

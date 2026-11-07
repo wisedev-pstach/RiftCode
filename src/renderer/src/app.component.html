@@ -1,10 +1,14 @@
 @if (loading()) {
-  <main class="center-state"><span class="loading-wordmark"><strong>RIFT</strong><small>/code</small><em>v{{ appVersion }}</em></span><p>Opening repository...</p></main>
+  <main class="repository-loading">
+    <header><span class="loading-brand">RIFT<span>code</span></span><span class="skeleton-line" aria-hidden="true"></span></header>
+    <div class="repository-skeleton" aria-hidden="true"><aside>@for (row of [1,2,3,4,5]; track row) { <div class="skeleton-line"></div> }</aside><section><div class="skeleton-line"></div><div class="skeleton-line"></div><div class="skeleton-line"></div></section></div>
+    <div class="repository-loading-status" role="status" aria-label="Opening repository"><span class="opening-mark" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M8 26V6h9a6 6 0 0 1 0 12H8m9 0 8 8M19 3l-7 26"/></svg></span><h1>Opening your workspace</h1><p>Reading the repository and comparison.</p></div>
+  </main>
 } @else if (!repository()) {
   <main class="center-state">
     <span class="loading-wordmark"><strong>RIFT</strong><small>/code</small><em>v{{ appVersion }}</em></span>
     <h1>Open a Git repository</h1>
-    <p>{{ error() || "Launch Rift from a repository or choose one here." }}</p>
+    @if (error()) { <p role="alert">{{ error() }}</p><button class="primary-button" (click)="retryRepository()">Retry</button> } @else { <p>Launch Rift from a repository or choose one here.</p> }
     <button class="primary-button" (click)="chooseRepository()">Choose repository</button>
   </main>
 } @else {
@@ -57,11 +61,12 @@
          <rift-searchable-select id="comparison" label="Select comparison" searchLabel="Search comparisons"
            [options]="comparisonChoices()" [value]="repository()!.comparisonId" [disabled]="comparisonChanging()"
            (valueChange)="selectComparison($event)" />
-         <button class="context-action" [class.active]="contextItemCount() > 0" (click)="openContextDialog()" title="Add project details, links, files, images, or directories">
-           <span class="context-action-mark">C</span>
-           <span><strong>Context</strong><small>{{ contextItemCount() > 0 ? contextItemCount() + " items shared" : "Add project knowledge" }}</small></span>
-         </button>
+
        </div>
+      <div class="app-actions">
+        <nav class="workspace-navigation" aria-label="Workspace"><button [class.active]="!terminalOpen()" [attr.aria-pressed]="!terminalOpen()" (click)="showDiff()">Code</button><button [class.active]="terminalOpen()" [attr.aria-pressed]="terminalOpen()" (click)="openTerminal()" aria-label="AI terminal">AI terminal</button></nav>
+        <button class="project-context-button" (click)="openContextDialog()" title="Project context and knowledge" aria-label="Project context"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h6l2 2h10v12H3Z"/></svg><span>Context</span>@if (contextItemCount()) { <small>{{ contextItemCount() }}</small> }</button>
+      </div>
     </header>
 
     <section class="workspace" [class.review-open]="reviewSidebarOpen()" [class.resizing-changes]="changesPanelResizing()" [style.--changes-width]="effectiveChangesPanelWidth() + 'px'">
@@ -73,23 +78,11 @@
           </span>
           <span class="changes-heading-actions">
             @if (sidebarView() === "changes") {
-              <button
-                class="hide-reviewed-button"
-                [class.active]="hideReviewed()"
-                [attr.aria-pressed]="hideReviewed()"
-                aria-label="Hide reviewed files"
-                [title]="hideReviewed() ? 'Show reviewed files' : 'Hide reviewed files'"
-                (click)="toggleHideReviewed()"
-              ><span aria-hidden="true">✓</span></button>
-              @if (reviewSessionStarted()) {
-                <button
-                  class="clear-session-action"
-                  [class.armed]="clearSessionArmed()"
-                  [disabled]="agentRunning()"
-                  (click)="clearReviewSession()"
-                  title="Clear context, notes, chats, reviewed files, and selections"
-                >{{ clearSessionArmed() ? "Confirm" : "Clear" }}</button>
-              }
+              <button class="file-list-options-trigger" popovertarget="file-list-options" aria-label="File list options">⋯</button>
+              <div id="file-list-options" class="file-list-options" popover aria-label="File list options">
+                <button [attr.aria-pressed]="hideReviewed()" (click)="toggleHideReviewed()">{{ hideReviewed() ? 'Show reviewed files' : 'Hide reviewed files' }}</button>
+                @if (reviewSessionStarted()) { <button [disabled]="agentRunning()" (click)="clearReviewSession()" title="Clear context, notes, chats, reviewed files, and selections">{{ clearSessionArmed() ? 'Confirm clear' : 'Clear review session' }}</button> }
+              </div>
               <button
                 class="all-changes-button"
                 [class.active]="allChangesSelected()"
@@ -241,7 +234,6 @@
             <button class="search-shortcut-hint" (click)="openRepositorySearch()" title="Search all repository files and contents"><kbd>{{ platform === "darwin" ? "Cmd+F" : "Ctrl+F" }}</kbd><span>Search repo</span></button>
           </div>
           <div class="diff-options">
-            <button class="edit-file-button" (click)="openTerminal()" aria-label="AI terminal">AI terminal</button>
             <button class="edit-file-button" (click)="reviewSidebarOpen.set(!reviewSidebarOpen())" aria-label="Open review notes">Notes ({{ notes().length }})</button>
             <button class="edit-file-button" [class.active]="editMode()" [disabled]="!selectedFile() || selectedFile()?.status === 'deleted' || patch()?.binary" (click)="toggleEditMode()" [title]="editMode() ? 'Exit edit mode (Escape)' : 'Enter edit mode (Ctrl+E)'">{{ editMode() ? "Editing" : "Edit" }}</button>
             @if (editMode()) {
@@ -253,6 +245,8 @@
               [disabled]="!selectedFile()"
               (click)="toggleSelectedFileReviewed()"
             >{{ selectedPath() && isFileReviewed(selectedPath()!) ? "Reviewed" : "Mark reviewed" }}</button>
+            <button class="view-options-trigger" popovertarget="code-view-options">View</button>
+            <div id="code-view-options" class="code-view-options" popover aria-label="Code view options">
             <span class="language-pill">{{ detectedLanguage().label }}</span>
             <label class="mode-picker">
               <span class="visually-hidden">Diff layout</span>
@@ -265,6 +259,7 @@
               <input type="checkbox" [checked]="fullFile()" [disabled]="!selectedFile() || patch()?.binary" (change)="toggleFullFile($event)">
               <span>Full file</span>
             </label>
+            </div>
           </div>
         </div>
         <div class="diff-viewport">
@@ -489,7 +484,7 @@
                 (click)="sendNotesToAgent()"
                 [disabled]="selectedNotes().length === 0"
               >
-                <span class="ai-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 1c0 6.1-4.9 11-11 11 6.1 0 11 4.9 11 11 0-6.1 4.9-11 11-11-6.1 0-11-4.9-11-11Z"/><circle cx="19" cy="5" r="2"/></svg></span>{{ "Insert " + selectedNotes().length + " in terminal" }}
+                {{ "Insert " + selectedNotes().length + " in terminal" }}
               </button>
             </div>
 

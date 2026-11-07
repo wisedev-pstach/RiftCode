@@ -1,4 +1,10 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
+
+async function prepareReview(page:Page) {
+ const direct=page.locator('.review-prepare');
+ if(await direct.isVisible())await direct.click();
+ else { await page.locator('rift-ai-terminal summary').click();await page.locator('.terminal-context-actions').getByRole('button',{name:'Review changes',exact:true}).click();await page.keyboard.press('Escape'); }
+}
 
 test.beforeEach(async ({page}) => {
  await page.addInitScript(() => {
@@ -19,31 +25,251 @@ test.beforeEach(async ({page}) => {
  page.on('pageerror',error=>console.error('PAGE ERROR',error.message));
 });
 
+test('command composition separates launcher from a single aligned running bar',async({page})=>{
+ await expect(page.getByRole('region',{name:'Launch AI session'})).toBeVisible();
+ await page.screenshot({path:'/opt/data/output/riftcode/visual-refresh/after-dark-1440-launcher.png'});
+ const baseline=await page.locator('.terminal-toolbar').evaluate(el=>({height:el.getBoundingClientRect().height,buttons:el.querySelectorAll('button,select,summary').length}));
+ console.log('CURRENT COMPOSITION',JSON.stringify(baseline));
+ await expect(page.getByRole('region',{name:'Launch AI session'})).toBeVisible();
+ await page.getByRole('button',{name:/^(Start|Resume) session$/,exact:true}).click();
+ await expect(page.locator('.terminal-status')).toHaveText('running');
+ await expect(page.getByRole('combobox',{name:'Terminal provider'})).toHaveCount(0);
+ await expect(page.getByRole('region',{name:'Launch AI session'})).toHaveCount(0);
+ const bar=page.locator('.terminal-toolbar');
+ const geometry=await bar.evaluate(el=>({height:el.getBoundingClientRect().height,controls:[...el.querySelectorAll('button,summary')].filter(c=>c.checkVisibility()).map(c=>({y:c.getBoundingClientRect().y,h:c.getBoundingClientRect().height}))}));
+ expect(geometry.height).toBe(56);
+ expect(geometry.controls.length).toBeLessThanOrEqual(3);
+ expect(new Set(geometry.controls.map(c=>c.y)).size).toBe(1);
+ expect(geometry.controls.every(c=>c.h===32)).toBe(true);
+});
+
+test('workspace navigation and repository chrome align without duplicate code exits',async({page})=>{
+ await expect(page.getByRole('button',{name:'Code',exact:true})).toBeVisible();
+ await expect(page.getByRole('button',{name:'AI terminal',exact:true})).toHaveCount(1);
+ await expect(page.getByRole('button',{name:'Back to code',exact:true})).toHaveCount(0);
+ await page.getByRole('button',{name:'Code',exact:true}).click();
+ await expect(page.locator('.diff-panel')).toBeVisible();
+ await page.getByRole('button',{name:'View',exact:true}).click();
+ await expect(page.getByRole('checkbox',{name:'Full file',exact:true})).toBeVisible();
+ await page.keyboard.press('Escape');
+ await expect(page.getByRole('checkbox',{name:'Full file',exact:true})).not.toBeVisible();
+ const controls=await page.locator('.comparison-picker button').evaluateAll(els=>els.map(el=>({y:el.getBoundingClientRect().y,h:el.getBoundingClientRect().height})));
+ expect(new Set(controls.map(c=>c.y)).size).toBe(1);
+ expect(controls.every(c=>c.h===32)).toBe(true);
+});
+
+test('session discovery has cancellable truthful skeletons and reduced motion',async({page})=>{
+ await page.emulateMedia({reducedMotion:'reduce'});
+ await page.evaluate(()=>{(window as any).rift.terminalSessions=()=>new Promise(resolve=>(window as any).finishList=resolve);});
+ await page.getByRole('button',{name:'Resume existing',exact:true}).click();
+ await expect(page.getByRole('status',{name:'Loading provider sessions'})).toBeVisible();
+ await expect(page.locator('.session-skeleton')).toHaveCount(3);
+ expect(await page.locator('.session-skeleton').first().evaluate(el=>getComputedStyle(el).animationName)).toBe('none');
+ await page.getByRole('button',{name:'New session',exact:true}).click();
+ await page.evaluate(()=>(window as any).finishList([]));
+ await expect(page.getByRole('status',{name:'Loading provider sessions'})).toHaveCount(0);
+ await expect(page.getByRole('button',{name:/^(Start|Resume) session$/,exact:true})).toBeEnabled();
+});
+
+test('connecting waits for rendered CLI content, never ANSI frames or a fixed delay',async({page})=>{
+ await page.evaluate(()=>{
+  const f=window as any;f.connectionOutput='';f.connectionState=null;
+  const stop=f.rift.terminalStop; f.rift.terminalStop=async()=>{f.connectionState=null;await stop();};
+  f.rift.terminalStart=()=>new Promise(resolve=>f.finishConnection=()=>{f.connectionState={id:'silent',provider:'claude',mode:'review',cwd:'/fixture/repo',status:'running'};resolve(f.connectionState);});
+  f.rift.terminalRead=async(_id:string,cursor:number)=>({state:f.connectionState,data:f.connectionOutput.slice(cursor),cursor:f.connectionOutput.length,truncated:false});
+ });
+ await page.getByRole('button',{name:/^(Start|Resume) session$/,exact:true}).click();
+ const overlay=page.getByRole('status',{name:'Connecting terminal'});
+ await expect(overlay).toContainText('Claude Code');
+ await expect(page.getByRole('button',{name:'Cancel connection'})).toBeVisible();
+ await page.evaluate(()=>(window as any).finishConnection());
+ await page.evaluate(()=>(window as any).connectionOutput='\x1b[');
+ await page.waitForTimeout(200);
+ await expect(overlay).toBeVisible();
+ await page.evaluate(()=>(window as any).connectionOutput+='?2004h');
+ await page.waitForTimeout(200);
+ await expect(overlay).toBeVisible();
+ await page.evaluate(()=>(window as any).connectionOutput+='Sign in at your provider to continue > <img src=x>');
+ await expect(overlay).toHaveCount(0);
+ await expect(page.locator('rift-ai-terminal img')).toHaveCount(0);
+ await page.getByRole('button',{name:'Stop session',exact:true}).click();
+ await page.getByRole('button',{name:/^(Start|Resume) session$/,exact:true}).click();
+ await page.getByRole('button',{name:'Cancel connection'}).click();
+ await expect(page.getByRole('region',{name:'Launch AI session'})).toBeVisible();
+ expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.stop).length)).toBe(2);
+});
+
+test('repository opening uses semantic workspace skeletons and releases immediately on real completion',async({page})=>{
+ await page.addInitScript(()=>{const f=window as any;f.rift.openRepository=()=>new Promise((resolve,reject)=>{f.openRepo=()=>resolve(f.fixtureRepository);f.failRepo=reject;});});
+ await page.reload();
+ await page.emulateMedia({reducedMotion:'reduce'});
+ await expect(page.getByRole('status',{name:'Opening repository'})).toBeVisible();
+ await expect(page.locator('.repository-skeleton')).toBeVisible();
+ expect(await page.locator('.repository-skeleton .skeleton-line').first().evaluate(el=>getComputedStyle(el).animationName)).toBe('none');
+ await page.evaluate(()=>(window as any).openRepo());
+ await expect(page.getByRole('region',{name:'Launch AI session'})).toBeVisible({timeout:800});
+ await page.reload();
+ await expect(page.getByRole('status',{name:'Opening repository'})).toBeVisible();
+ await page.evaluate(()=>(window as any).failRepo(new Error('Fixture repository unavailable')));
+ await expect(page.getByRole('alert')).toContainText('Fixture repository unavailable');
+ await page.getByRole('button',{name:'Retry',exact:true}).click();
+ await expect(page.getByRole('status',{name:'Opening repository'})).toBeVisible();
+ await page.evaluate(()=>(window as any).openRepo());
+ await expect(page.getByRole('region',{name:'Launch AI session'})).toBeVisible({timeout:800});
+});
+
+test('terminal context menu dismisses outside and with Escape returning focus',async({page})=>{
+ const trigger=page.locator('rift-ai-terminal summary');
+ await trigger.click();
+ await expect(trigger).toHaveAttribute('aria-expanded','true');
+ await page.locator('.terminal-context-actions').getByRole('button',{name:'Review changes',exact:true}).focus();
+ await page.keyboard.press('Escape');
+ await expect(trigger).toHaveAttribute('aria-expanded','false');
+ await expect(trigger).toBeFocused();
+ await trigger.click();
+ await page.locator('.session-launcher h1').click();
+ await expect(trigger).toHaveAttribute('aria-expanded','false');
+});
+
+test('chrome typography and pane baselines remain readable rather than micro controls',async({page})=>{
+ await expect(page.getByRole('button',{name:'Changes',exact:true})).toBeVisible();
+ expect(await page.getByRole('button',{name:'Changes',exact:true}).evaluate(el=>parseFloat(getComputedStyle(el).fontSize))).toBeGreaterThanOrEqual(12);
+ const sidebar=await page.locator('.changes-panel > .panel-title').boundingBox();
+ const toolbar=await page.locator('.terminal-toolbar').boundingBox();
+ expect(sidebar!.y+sidebar!.height).toBe(toolbar!.y+toolbar!.height);
+ expect(await page.locator('.logo-letter').first().evaluate(el=>getComputedStyle(el).opacity)).toBe('1');
+});
+
+test('code controls stay aligned and legible with the notes inspector at 1024px',async({page})=>{
+ await page.setViewportSize({width:1024,height:900});
+ await page.getByRole('button',{name:'Code',exact:true}).click();
+ await page.locator('.diff-panel').getByRole('button',{name:'Open review notes',exact:true}).click();
+ await expect.poll(()=>page.locator('.diff-panel').evaluate(el=>el.getBoundingClientRect().width)).toBe(460);
+ const controls=await page.locator('.diff-options > button').evaluateAll(els=>els.map(el=>({h:el.getBoundingClientRect().height,y:el.getBoundingClientRect().y,right:el.getBoundingClientRect().right,font:parseFloat(getComputedStyle(el).fontSize)})));
+ expect(controls.every(c=>c.h===32&&c.font>=12)).toBe(true);
+ expect(new Set(controls.map(c=>c.y)).size).toBe(1);
+ const panel=(await page.locator('.diff-panel').boundingBox())!;
+ expect(controls.every(c=>c.right<=panel.x+panel.width)).toBe(true);
+ const actions=await page.locator('.notes-actions button').evaluateAll(els=>els.map(el=>({h:el.getBoundingClientRect().height,w:el.getBoundingClientRect().width})));
+ expect(actions.every(c=>c.h>=32&&c.w>=80)).toBe(true);
+});
+
+test('running identity keeps the selected conversation title, provider and purpose without configuration',async({page})=>{
+ await page.getByRole('combobox',{name:'Terminal provider'}).selectOption('opencode');
+ await page.getByRole('combobox',{name:'Session intent'}).selectOption('edit');
+ await page.getByRole('button',{name:'Resume existing',exact:true}).click();
+ await page.getByRole('listbox',{name:'Provider session',exact:true}).getByRole('option').first().click();
+ await page.getByRole('button',{name:'Resume session',exact:true}).click();
+ await expect(page.locator('.terminal-identity strong')).toHaveText('Fixture session in this repository');
+ await expect(page.locator('.terminal-identity')).toContainText('OpenCode');
+ await expect(page.locator('.terminal-identity')).toContainText('Edit');
+ await expect(page.getByRole('combobox',{name:'Session intent'})).toHaveCount(0);
+});
+
+test('failed session launch keeps prepared context and retries only on explicit action',async({page})=>{
+ await prepareReview(page);
+ await page.evaluate(()=>{const f=window as any;const start=f.rift.terminalStart;f.rift.terminalStart=async(...args:any[])=>{f.rift.terminalStart=start;throw new Error('Claude Code is not installed');};});
+ await page.getByRole('button',{name:'Start session',exact:true}).click();
+ await expect(page.getByRole('alert')).toContainText('Claude Code is not installed');
+ await expect(page.getByRole('textbox',{name:'Pending terminal context'})).toHaveValue(/Comparison/);
+ await page.getByRole('button',{name:'Retry session',exact:true}).click();
+ await expect(page.locator('.terminal-status')).toHaveText('running');
+ await expect(page.getByRole('textbox',{name:'Pending terminal context'})).toHaveValue(/Comparison/);
+ expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.input))).toEqual([]);
+});
+
+for(const theme of ['dark','light'])test(`notes inspector ${theme} has readable feedback and aligned safe actions`,async({page})=>{
+ if(theme==='light')await page.getByRole('button',{name:'Use light theme'}).click();
+ await page.getByRole('button',{name:'Code',exact:true}).click();
+ await page.locator('.diff-row.addition').first().click({button:'right'});
+ await page.getByRole('menuitem',{name:'Add note'}).click();
+ await page.getByRole('textbox',{name:'Review note',exact:true}).fill('Readable review feedback.');
+ await page.getByRole('button',{name:'Add note',exact:true}).click();
+ await page.getByRole('checkbox',{name:'Select note',exact:true}).check();
+ expect((await page.locator('.review-header').boundingBox())!.height).toBe(56);
+ expect(await page.locator('.review-note p').evaluate(el=>parseFloat(getComputedStyle(el).fontSize))).toBeGreaterThanOrEqual(13);
+ expect(await page.locator('.note-location strong').evaluate(el=>parseFloat(getComputedStyle(el).fontSize))).toBeGreaterThanOrEqual(12);
+ expect((await page.getByRole('button',{name:'Mark note done'}).boundingBox())!.height).toBeGreaterThanOrEqual(32);
+ const action=page.locator('.notes-actions .primary-agent-action');
+ expect(await action.evaluate(el=>getComputedStyle(el).color)).toBe(theme==='light'?'rgb(37, 49, 62)':'rgb(225, 230, 237)');
+});
+
+test('narrow retained session identity keeps provider status readable instead of clipping it',async({page})=>{
+ await page.setViewportSize({width:1024,height:900});
+ await page.getByRole('button',{name:'Resume existing',exact:true}).click();
+ await page.getByRole('listbox',{name:'Provider session',exact:true}).getByRole('option').first().click();
+ await page.getByRole('button',{name:'Resume session',exact:true}).click();
+ await page.getByRole('button',{name:'Open review notes',exact:true}).click();
+ await expect.poll(()=>page.locator('rift-ai-terminal').evaluate(el=>el.getBoundingClientRect().width)).toBe(460);
+ await expect.poll(()=>page.locator('.terminal-identity small').evaluate(el=>el.scrollWidth<=el.clientWidth)).toBe(true);
+});
+
+test('narrow repository opening reserves the same two header regions as the ready workspace',async({page})=>{
+ await page.setViewportSize({width:1024,height:900});
+ await page.addInitScript(()=>{(window as any).rift.openRepository=()=>new Promise(()=>{});});
+ await page.reload();
+ await expect(page.getByRole('status',{name:'Opening repository'})).toBeVisible();
+ expect((await page.locator('.repository-loading > header').boundingBox())!.height).toBe(112);
+});
+
+test('refresh discovery does not expose stale selectable conversations while awaiting metadata',async({page})=>{
+ await page.getByRole('button',{name:'Resume existing',exact:true}).click();
+ const list=page.getByRole('listbox',{name:'Provider session',exact:true});
+ await expect(list.getByRole('option')).toHaveCount(1);
+ await page.evaluate(()=>{(window as any).rift.terminalSessions=()=>new Promise(resolve=>(window as any).finishRefresh=resolve);});
+ await page.getByRole('button',{name:'Refresh sessions',exact:true}).click();
+ await expect(page.getByRole('status',{name:'Loading provider sessions'})).toBeVisible();
+ await expect(list.getByRole('option')).toHaveCount(0);
+ await page.evaluate(()=>(window as any).finishRefresh([]));
+ await expect(page.getByText('No sessions found in this repository.',{exact:true})).toBeVisible();
+});
+
+test('launcher starts the real terminal with usable pane geometry, never a hidden one-pixel PTY',async({page})=>{
+ await page.evaluate(()=>{const f=window as any;const start=f.rift.terminalStart;f.rift.terminalStart=(provider:string,mode:string,cols:number,rows:number,...rest:any[])=>{f.startDimensions={cols,rows};return start(provider,mode,cols,rows,...rest);};});
+ await page.getByRole('button',{name:'Start session',exact:true}).click();
+ const dimensions=await page.evaluate(()=>(window as any).startDimensions);
+ expect(dimensions.cols).toBeGreaterThan(80);expect(dimensions.rows).toBeGreaterThan(20);
+});
+
+test('resume launcher presents readable titled rows with dates and keyboard selection',async({page})=>{
+ await page.getByRole('button',{name:'Resume existing',exact:true}).click();
+ const list=page.getByRole('listbox',{name:'Provider session',exact:true});
+ const option=list.getByRole('option').first();
+ await expect(option).toContainText('Fixture session in this repository');
+ await expect(option.locator('time')).toHaveAttribute('datetime',/1970/);
+ await expect(option).not.toContainText('01953d6c');
+ await option.focus();
+ await page.keyboard.press('Enter');
+ await expect(option).toHaveAttribute('aria-selected','true');
+ await expect(page.getByRole('button',{name:'Resume session',exact:true})).toBeEnabled();
+ expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.start))).toEqual([]);
+});
+
 test('new or resume uses provider sessions in the current repo and preserves permission intent',async({page})=>{
  await page.evaluate(()=>{
   (window as any).rift.terminalSessions=async(provider:string)=>{(window as any).fixtureCalls.push({list:provider});return [{id:provider==='opencode'?'ses_2f6b4a8c9001AbCdEfGhIjKlMn':'01953d6c-1234-7123-9123-123456789abc',title:'Existing provider session',updatedAt:42}];};
   const old=(window as any).rift.terminalStart;
   (window as any).rift.terminalStart=(provider:string,mode:string,cols:number,rows:number,id?:string)=>{(window as any).fixtureCalls.push({resume:id});return old(provider,mode,cols,rows);};
  });
- await page.getByRole('combobox',{name:'Session choice',exact:true}).selectOption('resume');
+ await page.getByRole('button',{name:'Resume existing',exact:true}).click();
  await expect(page.getByRole('listbox',{name:'Provider session',exact:true})).toContainText('Existing provider session');
  await page.screenshot({path:'test-results/terminal-resume.png'});
- await page.getByRole('listbox',{name:'Provider session',exact:true}).selectOption('01953d6c-1234-7123-9123-123456789abc');
- await expect(page.getByRole('listbox',{name:'Provider session',exact:true})).toHaveAttribute('title','Existing provider session · 01953d6c-1234-7123-9123-123456789abc');
+ await page.getByRole('listbox',{name:'Provider session',exact:true}).getByRole('option').first().click();
+ await expect(page.getByRole('listbox',{name:'Provider session',exact:true}).getByRole('option').first()).toHaveAttribute('aria-selected','true');
  await page.getByRole('combobox',{name:'Session intent'}).selectOption('edit');
- await page.getByRole('button',{name:'Start session',exact:true}).click();
+ await page.getByRole('button',{name:/^(Start|Resume) session$/,exact:true}).click();
  await expect(page.locator('.terminal-status')).toHaveText('running');
  expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.resume))).toEqual([{resume:'01953d6c-1234-7123-9123-123456789abc'}]);
  expect(await page.evaluate(()=>(window as any).fixtureCalls.find((c:any)=>c.start))).toEqual({start:'claude',mode:'edit'});
- await expect(page.getByRole('combobox',{name:'Terminal provider'})).toBeDisabled();
+ await expect(page.getByRole('combobox',{name:'Terminal provider'})).toHaveCount(0);
  await page.getByRole('button',{name:'Stop session',exact:true}).click();
  await page.getByRole('combobox',{name:'Terminal provider'}).selectOption('opencode');
- await expect(page.getByRole('listbox',{name:'Provider session'})).toHaveValue('');
+ await expect(page.getByRole('listbox',{name:'Provider session'}).locator('[aria-selected="true"]')).toHaveCount(0);
  await expect(page.getByRole('listbox',{name:'Provider session'})).toContainText('Existing provider session');
 });
 
 test('Review changes prepares complete comparison context without starting or submitting',async({page})=>{
- await page.getByRole('button',{name:'Review changes',exact:true}).click();
+ await prepareReview(page);
  const pending=page.getByRole('textbox',{name:'Pending terminal context'});
  await expect(pending).toHaveValue(/Comparison: Working tree/);
  await expect(pending).toHaveValue(/Start revision: HEAD/);
@@ -51,7 +277,7 @@ test('Review changes prepares complete comparison context without starting or su
  await expect(pending).toHaveValue(/src\/changed.ts/);
  expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.start||c.input))).toEqual([]);
  await page.screenshot({path:'test-results/terminal-review-context.png'});
- await page.getByRole('button',{name:'Start session',exact:true}).click();
+ await page.getByRole('button',{name:/^(Start|Resume) session$/,exact:true}).click();
  await page.getByRole('button',{name:'Insert pending context',exact:true}).click();
  const calls=await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.input));
  expect(calls).toHaveLength(1);expect(calls[0].paste).toBe(true);expect(calls[0].input.endsWith('\r')).toBe(false);
@@ -60,23 +286,24 @@ test('Review changes prepares complete comparison context without starting or su
 test('saved explanation opens as retained terminal context, preserving local history',async({page})=>{
  await page.evaluate(()=>localStorage.setItem('rift:review-session:/fixture/repo:feature/terminal:working-tree:origin/feature-0',JSON.stringify({version:2,reviewedFiles:[],notes:[],conversations:[{id:1,repositoryRoot:'/fixture/repo',agent:'claude',model:null,question:'Saved explanation',context:{filePath:'src/changed.ts',startLine:2,endLine:2,diff:'+new'},status:'complete',result:null,error:null,history:[]}]})));
  await page.reload();
- await page.getByRole('button',{name:'Back to code',exact:true}).click();
+ await page.getByRole('button',{name:'Code',exact:true}).click();
  await page.getByRole('button',{name:'Open explanation: Saved explanation'}).click();
  await expect(page.getByRole('textbox',{name:'Pending terminal context'})).toHaveValue(/Saved explanation/);
- await expect(page.getByRole('button',{name:'Start session',exact:true})).toBeVisible();
+ await expect(page.getByRole('button',{name:/^(Start|Resume) session$/,exact:true})).toBeVisible();
  expect(await page.evaluate(()=>JSON.parse(localStorage.getItem('rift:review-session:/fixture/repo:feature/terminal:working-tree:origin/feature-0')!).conversations.length)).toBe(1);
  expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.start||c.input))).toEqual([]);
 });
 
 for(const operation of ['Input','Resize'] as const)for(const replacement of ['repository','stop-start'] as const) {
  test(`obsolete terminal ${operation} rejection cannot disconnect ${replacement} replacement`,async({page})=>{
-  await page.getByRole('button',{name:'Review changes',exact:true}).click();
-  await page.getByRole('button',{name:'Start session',exact:true}).click();
+  await prepareReview(page);
+  await page.getByRole('button',{name:/^(Start|Resume) session$/,exact:true}).click();
   await expect(page.locator('.terminal-status')).toHaveText('running');
   await expect(page.getByRole('button',{name:'Insert pending context',exact:true})).toBeEnabled();
   await page.evaluate(operation=>{
    const f=window as any;
-   f.rift['terminal'+operation]=()=>new Promise((_resolve,reject)=>{f.rejectObsolete=reject;});
+   const original=f.rift['terminal'+operation];
+   f.rift['terminal'+operation]=()=>{f.rift['terminal'+operation]=original;return new Promise((_resolve,reject)=>{f.rejectObsolete=reject;});};
    f.rift.chooseRepository=async()=>{await f.rift.terminalStop();f.fixtureRepository.root='/fixture/other';return {...f.fixtureRepository};};
   },operation);
   if(operation==='Input') {await page.locator('.xterm-helper-textarea').focus();await page.keyboard.type('x');}
@@ -86,7 +313,7 @@ for(const operation of ['Input','Resize'] as const)for(const replacement of ['re
   else await page.getByRole('button',{name:'Stop session',exact:true}).click();
   await expect(page.locator('.terminal-status')).toHaveText('No active session');
   // The substitute deliberately reuses its session ID: generation must also match.
-  await page.getByRole('button',{name:'Start session',exact:true}).click();
+  await page.getByRole('button',{name:/^(Start|Resume) session$/,exact:true}).click();
   await expect(page.getByRole('button',{name:'Insert pending context',exact:true})).toBeEnabled();
   await page.evaluate(()=>(window as any).rejectObsolete(new Error('Obsolete IPC')));
   await page.waitForTimeout(150);
@@ -97,7 +324,7 @@ for(const operation of ['Input','Resize'] as const)for(const replacement of ['re
 }
 
 test('late stop cannot clear a replacement start in another repository',async({page})=>{
- await page.getByRole('button',{name:'Start session',exact:true}).click();
+ await page.getByRole('button',{name:/^(Start|Resume) session$/,exact:true}).click();
  await expect(page.locator('.terminal-status')).toHaveText('running');
  await page.evaluate(()=>{
   const f=window as any;
@@ -108,7 +335,7 @@ test('late stop cannot clear a replacement start in another repository',async({p
  });
  await page.getByRole('button',{name:'Stop session',exact:true}).click();
  await page.getByRole('button',{name:'terminal-fixture',exact:true}).click();
- await page.getByRole('button',{name:'Start session',exact:true}).click();
+ await page.getByRole('button',{name:/^(Start|Resume) session$/,exact:true}).click();
  await expect(page.locator('.terminal-status')).toHaveText('Starting');
  await page.evaluate(()=>(window as any).finishStart());
  await expect(page.locator('.terminal-status')).toHaveText('running');
@@ -123,7 +350,7 @@ for(const outcome of ['resolve','reject'] as const) {
    f.rift.terminalSessions=(provider:string)=>new Promise((resolve,reject)=>f.lists.push({provider,resolve,reject}));
    f.rift.chooseRepository=async()=>{f.fixtureRepository.root='/fixture/other';return {...f.fixtureRepository};};
   });
-  await page.getByRole('combobox',{name:'Session choice',exact:true}).selectOption('resume');
+  await page.getByRole('button',{name:'Resume existing',exact:true}).click();
   await expect.poll(()=>page.evaluate(()=>(window as any).lists.length)).toBe(1);
   await page.getByRole('combobox',{name:'Terminal provider'}).selectOption('codex');
   await expect.poll(()=>page.evaluate(()=>(window as any).lists.length)).toBe(2);
@@ -137,21 +364,21 @@ for(const outcome of ['resolve','reject'] as const) {
   await expect(page.getByRole('listbox',{name:'Provider session',exact:true})).toContainText('Current repository session');
   await expect(page.getByRole('listbox',{name:'Provider session',exact:true})).not.toContainText('Obsolete');
   await expect(page.getByRole('alert')).toHaveCount(0);
-  await expect(page.getByRole('button',{name:'Start session',exact:true})).toBeDisabled();
+  await expect(page.getByRole('button',{name:/^(Start|Resume) session$/,exact:true})).toBeDisabled();
  });
 }
 
 test('resume listing failure is explicit, retryable and never starts a session',async({page})=>{
  await page.evaluate(()=>{(window as any).rift.terminalSessions=async()=>{throw new Error('Metadata unsupported');};});
- await page.getByRole('combobox',{name:'Session choice',exact:true}).selectOption('resume');
+ await page.getByRole('button',{name:'Resume existing',exact:true}).click();
  await expect(page.getByRole('alert')).toHaveText('Metadata unsupported');
- await expect(page.getByRole('button',{name:'Start session',exact:true})).toBeDisabled();
+ await expect(page.getByRole('button',{name:/^(Start|Resume) session$/,exact:true})).toBeDisabled();
  await page.evaluate(()=>{(window as any).rift.terminalSessions=async()=>[];});
  await page.getByRole('button',{name:'Refresh sessions',exact:true}).click();
  await expect(page.getByText('No sessions found in this repository.',{exact:true})).toBeVisible();
  await expect(page.getByRole('alert')).toHaveCount(0);
- await page.getByRole('combobox',{name:'Session choice',exact:true}).selectOption('new');
- await expect(page.getByRole('button',{name:'Start session',exact:true})).toBeEnabled();
+ await page.getByRole('button',{name:'New session',exact:true}).click();
+ await expect(page.getByRole('button',{name:/^(Start|Resume) session$/,exact:true})).toBeEnabled();
  expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.start))).toEqual([]);
 });
 
@@ -163,7 +390,7 @@ for(const width of [1024,1440])for(const theme of ['dark','light']) {
   expect((await toolbar.boundingBox())!.height).toBeLessThan(120);
   await expect(page.getByRole('button',{name:'Open review notes',exact:true})).toBeVisible();
   await expect(page.locator('.review-rails')).toHaveCount(0);
-  await page.getByRole('button',{name:'Start session',exact:true}).click();
+  await page.getByRole('button',{name:/^(Start|Resume) session$/,exact:true}).click();
   await page.waitForTimeout(250);
   await page.screenshot({path:`test-results/unified-${theme}-${width}-closed.png`});
   await page.getByRole('button',{name:'Select target comparison branch',exact:true}).click();
@@ -171,15 +398,15 @@ for(const width of [1024,1440])for(const theme of ['dark','light']) {
   await page.screenshot({path:`test-results/unified-${theme}-${width}-branch-open.png`});
   await page.getByRole('combobox',{name:'Search target branches'}).press('Escape');
   await page.getByRole('button',{name:'Stop session',exact:true}).click();
-  await page.getByRole('combobox',{name:'Session choice',exact:true}).selectOption('resume');
+  await page.getByRole('button',{name:'Resume existing',exact:true}).click();
   await expect(page.getByRole('listbox',{name:'Provider session',exact:true})).toContainText('Fixture session');
   expect((await page.getByRole('listbox',{name:'Provider session',exact:true}).boundingBox())!.height).toBeGreaterThan(80);
   await page.screenshot({path:`test-results/unified-${theme}-${width}-resume.png`});
-  await page.getByRole('button',{name:'Review changes',exact:true}).click();
+  await prepareReview(page);
   if(theme==='light')expect(await page.getByRole('textbox',{name:'Pending terminal context'}).evaluate(el=>getComputedStyle(el).backgroundColor)).toBe('rgb(255, 255, 255)');
   await page.screenshot({path:`test-results/unified-${theme}-${width}-review.png`});
-  await page.getByRole('button',{name:'Back to code',exact:true}).click();
-  expect(await page.getByRole('button',{name:'AI terminal',exact:true}).evaluate(el=>parseFloat(getComputedStyle(el).fontSize))).toBeLessThan(13);
+  await page.getByRole('button',{name:'Code',exact:true}).click();
+  expect(await page.getByRole('button',{name:'AI terminal',exact:true}).evaluate(el=>parseFloat(getComputedStyle(el).fontSize))).toBeGreaterThanOrEqual(13);
   await page.locator('.diff-row.addition').first().click({button:'right'});
   const label=page.getByRole('menuitem',{name:'Insert selection in AI terminal'}).locator('strong');
   expect((await label.boundingBox())!.height).toBeLessThan(20);
@@ -190,24 +417,24 @@ for(const width of [1024,1440])for(const theme of ['dark','light']) {
 test('retained native session shows its actual provider and intent without respawning',async({page})=>{
  await page.evaluate(()=>{(window as any).rift.terminalRead=async()=>({state:{id:'retained',provider:'codex',mode:'edit',cwd:'/fixture/repo',status:'running'},data:'',cursor:0,truncated:false});});
  await expect(page.locator('.terminal-status')).toHaveText('running');
- await expect(page.getByRole('combobox',{name:'Terminal provider'})).toHaveValue('codex');
- await expect(page.getByRole('combobox',{name:'Session intent'})).toHaveValue('edit');
+ await expect(page.locator('.terminal-identity')).toContainText('Codex');
+ await expect(page.getByRole('combobox',{name:'Session intent'})).toHaveCount(0);
  await expect(page.getByRole('button',{name:'Stop session',exact:true})).toBeEnabled();
  expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.start))).toEqual([]);
 });
 
 test('late context insertion cannot discard unsent context in a new repository',async({page})=>{
- await page.getByRole('button',{name:'Start session',exact:true}).click();
+ await page.getByRole('button',{name:/^(Start|Resume) session$/,exact:true}).click();
  await page.waitForTimeout(250);
  await page.evaluate(()=>{
   const f=window as any;f.rift.terminalInput=()=>new Promise<void>(resolve=>f.finishInput=resolve);
   f.rift.chooseRepository=async()=>{await f.rift.terminalStop();f.fixtureRepository.root='/fixture/other';return {...f.fixtureRepository};};
  });
- await page.getByRole('button',{name:'Review changes',exact:true}).click();
+ await prepareReview(page);
  await expect.poll(()=>page.evaluate(()=>!!(window as any).finishInput)).toBe(true);
  await page.getByRole('button',{name:'terminal-fixture',exact:true}).click();
  await expect(page.locator('.terminal-status')).toHaveText('No active session');
- await page.getByRole('button',{name:'Review changes',exact:true}).click();
+ await prepareReview(page);
  await expect(page.getByRole('textbox',{name:'Pending terminal context'})).toBeVisible();
  await page.evaluate(()=>(window as any).finishInput());
  await expect(page.getByRole('textbox',{name:'Pending terminal context'})).toBeVisible();
@@ -286,7 +513,7 @@ for (const kind of ['target','comparison'] as const) {
   await expect(trigger).toContainText(target?'origin/feature-50':'Change 50');
   expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.target||c.comparison))).toEqual(target?[{target:'origin/feature-51'},{target:'origin/feature-50'}]:[{comparison:'commit:52'},{comparison:'commit:50'}]);
   await trigger.click();
-  await page.locator('.terminal-surface').click();
+  await page.locator('.session-launcher h1').click();
   await expect(query).toHaveCount(0);
   await trigger.focus();
   await trigger.press('ArrowDown');
@@ -301,7 +528,7 @@ test('AI workspace replaces legacy navigation and selection action stays horizon
  await expect(page.getByRole('button',{name:'Legacy chats'})).toHaveCount(0);
  await expect(page.getByRole('button',{name:'Open chats'})).toHaveCount(0);
  await expect(page.getByRole('button',{name:'Open code review'})).toHaveCount(0);
- await page.getByRole('button',{name:'Back to code',exact:true}).click();
+ await page.getByRole('button',{name:'Code',exact:true}).click();
  await page.locator('.diff-row.addition').first().click({button:'right'});
  const action=page.getByRole('menuitem',{name:'Insert selection in AI terminal'});
  const label=action.locator('strong');
@@ -317,7 +544,7 @@ test('AI workspace replaces legacy navigation and selection action stays horizon
 
 for(const replacement of ['repository','newer-navigation'] as const) {
  test(`obsolete source navigation rejection cannot update ${replacement} context`,async({page})=>{
-  await page.getByRole('button',{name:'Start session',exact:true}).click();
+  await page.getByRole('button',{name:/^(Start|Resume) session$/,exact:true}).click();
   await expect(page.locator('.terminal-status')).toHaveText('running');
   await page.waitForTimeout(200);
   await page.evaluate(()=>{
@@ -347,7 +574,7 @@ for(const replacement of ['repository','newer-navigation'] as const) {
 }
 
 test('wrapped ANSI source links stay literal, require modifier and navigate unchanged files',async({page})=>{
- await page.getByRole('button',{name:'Start session',exact:true}).click();
+ await page.getByRole('button',{name:/^(Start|Resume) session$/,exact:true}).click();
  await expect(page.getByText('running',{exact:true})).toBeVisible();
  const screen=page.locator('.xterm-screen');
  const box=(await screen.boundingBox())!;
@@ -381,16 +608,16 @@ for (const outcome of ['resolve', 'reject'] as const) {
     return {...fixture.fixtureRepository};
    };
   });
-  await page.getByRole('button',{name:'Start session',exact:true}).click();
+  await page.getByRole('button',{name:/^(Start|Resume) session$/,exact:true}).click();
   await expect(page.locator('.terminal-status')).toHaveText('Starting');
   await page.getByRole('button',{name:'terminal-fixture',exact:true}).click();
   await expect(page.locator('.terminal-cwd')).toContainText('/fixture/other');
   await expect(page.locator('.terminal-status')).toHaveText('No active session');
-  await expect(page.getByRole('button',{name:'Start session',exact:true})).toBeEnabled();
+  await expect(page.getByRole('button',{name:/^(Start|Resume) session$/,exact:true})).toBeEnabled();
   await expect(page.getByRole('button',{name:'Stop session',exact:true})).toHaveCount(0);
   expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.pendingStart).length)).toBe(1);
   await page.screenshot({path:`test-results/terminal-repository-switch-${outcome}.png`});
-  await page.getByRole('button',{name:'Start session',exact:true}).click();
+  await page.getByRole('button',{name:/^(Start|Resume) session$/,exact:true}).click();
   await expect(page.locator('.terminal-status')).toHaveText('Starting');
   await page.evaluate(outcome=>{
    const old=(window as any).pendingStarts[0];
@@ -409,7 +636,7 @@ for (const outcome of ['resolve', 'reject'] as const) {
 }
 
 test('read rejection stops polling and requires explicit Stop and Start recovery',async({page})=>{
- await page.getByRole('button',{name:'Start session',exact:true}).click();
+ await page.getByRole('button',{name:/^(Start|Resume) session$/,exact:true}).click();
  await expect(page.getByText('running',{exact:true})).toBeVisible();
  await page.evaluate(()=>{
   const original=(window as any).rift.terminalRead;
@@ -428,30 +655,30 @@ test('read rejection stops polling and requires explicit Stop and Start recovery
  await page.evaluate(()=>(window as any).restoreFixtureRead());
  await page.getByRole('button',{name:'Stop session',exact:true}).click();
  await expect(page.getByText('No active session',{exact:true})).toBeVisible();
- await page.getByRole('button',{name:'Start session',exact:true}).click();
+ await page.getByRole('button',{name:/^(Start|Resume) session$/,exact:true}).click();
  await expect(page.getByText('running',{exact:true})).toBeVisible();
  expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.start).length)).toBe(2);
 });
 
 test('context is retained when no session is available',async({page})=>{
- await page.getByRole('button',{name:'Back to code',exact:true}).click();
+ await page.getByRole('button',{name:'Code',exact:true}).click();
  await page.locator('.diff-row.addition').first().click({button:'right'});
  await page.getByRole('menuitem',{name:'Insert selection in AI terminal'}).click();
  await expect(page.getByRole('textbox',{name:'Pending terminal context'})).toHaveValue(/\+new/);
  expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.paste).length)).toBe(0);
- await page.getByRole('button',{name:'Start session',exact:true}).click();
+ await page.getByRole('button',{name:/^(Start|Resume) session$/,exact:true}).click();
  await page.getByRole('button',{name:'Insert pending context'}).click();
  await expect(page.getByRole('textbox',{name:'Pending terminal context'})).not.toBeVisible();
  expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.paste).length)).toBe(1);
 });
 
 test('notes and selected diff insert as context only and CLI shortcuts are not stolen',async({page})=>{
- await page.getByRole('button',{name:'Start session',exact:true}).click();
+ await page.getByRole('button',{name:/^(Start|Resume) session$/,exact:true}).click();
  await expect(page.getByText('running',{exact:true})).toBeVisible();
  await page.locator('.xterm-helper-textarea').focus();
  await page.keyboard.press('Control+f');
  await expect(page.getByRole('dialog',{name:'Search repository'})).not.toBeVisible();
- await page.getByRole('button',{name:'Back to code',exact:true}).click();
+ await page.getByRole('button',{name:'Code',exact:true}).click();
  const line=page.locator('.diff-row.addition').first();
  await line.click({button:'right'});
  await page.getByRole('menuitem',{name:'Insert selection in AI terminal'}).click();
@@ -460,7 +687,7 @@ test('notes and selected diff insert as context only and CLI shortcuts are not s
  expect(calls[0].input).toContain('Location: src/changed.ts:2-2');
  expect(calls[0].input).toContain('+new');
  expect(calls[0].input.endsWith('\r')).toBe(false);
- await page.getByRole('button',{name:'Back to code',exact:true}).click();
+ await page.getByRole('button',{name:'Code',exact:true}).click();
  await line.click({button:'right'});
  await page.getByRole('menuitem',{name:'Add note'}).click();
  await page.getByRole('textbox',{name:'Review note',exact:true}).fill('Synthetic fixture note only');
@@ -481,7 +708,7 @@ test('notes and selected diff insert as context only and CLI shortcuts are not s
 test('terminal-first workspace retains session, inserts selection without Enter and navigates source links', async ({page}) => {
  await expect(page.getByRole('combobox',{name:'Terminal provider'})).toBeVisible();
  await page.getByRole('combobox',{name:'Terminal provider'}).selectOption('codex');
- await page.getByRole('button',{name:'Start session',exact:true}).click();
+ await page.getByRole('button',{name:/^(Start|Resume) session$/,exact:true}).click();
  await expect(page.getByText('running', {exact:true})).toBeVisible();
  await expect(page.locator('.xterm-screen')).toBeVisible();
  await page.screenshot({path:'test-results/terminal-dark.png'});
@@ -502,3 +729,73 @@ test('terminal-first workspace retains session, inserts selection without Enter 
  await page.getByRole('button',{name:'Use light theme'}).click();
  await page.screenshot({path:'test-results/terminal-light.png'});
 });
+
+for(const width of [1024,1280,1440])for(const theme of ['dark','light']) {
+ test(`visual evidence ${theme} ${width}: launcher loading running inspector`,async({page})=>{
+  test.setTimeout(60000);
+  await page.setViewportSize({width,height:900});
+  await page.emulateMedia({reducedMotion:'reduce'});
+  await expect(page.getByRole('region',{name:'Launch AI session'})).toBeVisible();
+  if(theme==='light')await page.getByRole('button',{name:'Use light theme'}).click();
+  const capture=async(name:string)=>{
+   await page.evaluate(()=>{
+    if(document.getElementById('browser-fixture-label'))return;
+    const label=document.createElement('div');label.id='browser-fixture-label';label.textContent='BROWSER PREVIEW · SYNTHETIC BRIDGE / DATA';
+    label.style.cssText='position:fixed;bottom:7px;left:380px;z-index:99999;font:10px sans-serif;letter-spacing:.04em;color:#919da9;pointer-events:none';document.body.append(label);
+   });
+   await page.screenshot({path:`/opt/data/output/riftcode/visual-refresh/${theme}-${width}-${name}.png`});
+  };
+  await capture('launcher');
+  await page.evaluate(()=>{(window as any).rift.terminalSessions=()=>new Promise(resolve=>(window as any).finishMatrixList=resolve);});
+  await page.getByRole('button',{name:'Resume existing',exact:true}).click();
+  await expect(page.getByRole('status',{name:'Loading provider sessions'})).toBeVisible();
+  await capture('list-loading');
+  await page.evaluate(()=>(window as any).finishMatrixList([
+   {id:'01953d6c-1234-7123-9123-123456789abc',title:'Terminal workspace · cancellation review',updatedAt:1793966400000},
+   {id:'01953d6c-1234-7123-9123-123456789abd',title:'Source links and repository navigation',updatedAt:1793880000000},
+   {id:'01953d6c-1234-7123-9123-123456789abe',title:'Review notes and selection context',updatedAt:1793793600000}
+  ]));
+  await page.getByRole('listbox',{name:'Provider session',exact:true}).getByRole('option').first().click();
+  await capture('resume');
+  await page.evaluate(()=>{const f=window as any;const start=f.rift.terminalStart;f.rift.terminalStart=(...args:any[])=>new Promise(resolve=>f.finishMatrixStart=async()=>resolve(await start(...args)));});
+  await page.getByRole('button',{name:'Resume session',exact:true}).click();
+  await expect(page.getByRole('status',{name:'Connecting terminal'})).toBeVisible();
+  await capture('connecting');
+  await page.evaluate(()=>(window as any).finishMatrixStart());
+  await expect(page.getByRole('status',{name:'Connecting terminal'})).toHaveCount(0);
+  await capture('running');
+  await page.getByRole('button',{name:'Select target comparison branch',exact:true}).click();
+  await page.getByRole('combobox',{name:'Search target branches'}).fill('feature-5');
+  await capture('branch');
+  await page.keyboard.press('Escape');
+  await page.getByRole('button',{name:'Code',exact:true}).click();
+  await page.locator('.diff-row.addition').first().click({button:'right'});
+  await page.getByRole('menuitem',{name:'Add note'}).click();
+  await page.getByRole('textbox',{name:'Review note',exact:true}).fill('Check cancellation when switching repositories. Preserve unsent context.');
+  await page.getByRole('button',{name:'Add note',exact:true}).click();
+  await page.getByRole('checkbox',{name:'Select note',exact:true}).check();
+  await expect(page.locator('.review-panel')).toContainText('Check cancellation');
+  await capture('code-notes');
+  await page.locator('.diff-row.addition').first().click({button:'right'});
+  await capture('selection-notes');
+  await page.keyboard.press('Escape');
+  await page.getByRole('button',{name:'AI terminal',exact:true}).click();
+  const geometry=await page.locator('.terminal-toolbar').evaluate(el=>{
+   const r=el.getBoundingClientRect();const controls=[...el.querySelectorAll('button,summary')].filter(c=>c.checkVisibility()).map(c=>{const b=c.getBoundingClientRect();return {y:b.y,h:b.height,right:b.right};});return {width:r.width,height:r.height,right:r.right,controls};
+  });
+  expect(geometry.height).toBe(56);expect(geometry.controls).toHaveLength(3);
+  expect(new Set(geometry.controls.map(c=>c.y)).size).toBe(1);
+  expect(geometry.controls.every(c=>c.h===32&&c.right<=geometry.right)).toBe(true);
+  console.log('VERIFIED GEOMETRY',theme,width,JSON.stringify(geometry));
+  await capture('running-notes');
+  await page.getByRole('button',{name:'Stop session',exact:true}).click();
+  await page.getByRole('button',{name:'Collapse sidebar'}).click();
+  await prepareReview(page);
+  await expect(page.getByRole('textbox',{name:'Pending terminal context'})).toBeVisible();
+  await capture('review-context');
+  await page.addInitScript(theme=>{localStorage.setItem('rift:theme',theme);(window as any).rift.openRepository=()=>new Promise(()=>{});},theme);
+  await page.reload();
+  await expect(page.getByRole('status',{name:'Opening repository'})).toBeVisible();
+  await capture('repository-opening');
+ });
+}

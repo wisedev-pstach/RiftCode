@@ -1,5 +1,7 @@
 # Unified AI terminal verification — 0.8.0
 
+> **Current visual continuation:** [VISUAL-REFRESH.md](VISUAL-REFRESH.md) supersedes the toolbar/screenshot descriptions, UI count and renderer/package hashes below. The latest uncommitted renderer over `c11df00fc790b4be00b6d1080d21c47be80cdfc5` passes 33 core + 30 installer + 55 browser UI + 8 Electron Node-runtime/PTY tests. All four packages have been regenerated and read back against its final six runtime assets. The remainder of this document records the previous unified-workspace milestone; its native acceptance limits still apply.
+
 Verified the saved, uncommitted `feat/terminal-ai-workspace` working tree over published HEAD `1c7845d1256e8c2e0dfda6ff4ffb1ff4767b80b9`. No commit, push, merge, schedule or release was performed. Installer sources and version 0.8.0 are unchanged in this continuation.
 
 ## Executed checks

@@ -22,7 +22,7 @@ function harness() {
   const compiled=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,experimentalDecorators:true}}).outputText;
   vm.runInNewContext(compiled,{exports,window:{rift:bridge},ResizeObserver:class {observe(){} disconnect(){}},clearTimeout,
     require:(id:string)=>{
-      if(id==='@angular/core')return {Component:decorator,Input:decorator,Output:decorator,ViewChild:decorator,signal,effect:()=>{},EventEmitter:class {emit(){}}};
+      if(id==='@angular/core')return {Component:decorator,Input:decorator,Output:decorator,ViewChild:decorator,HostListener:decorator,signal,effect:()=>{},EventEmitter:class {emit(){}}};
       if(id==='@xterm/xterm')return {Terminal};
       if(id==='@xterm/addon-fit')return {FitAddon:class {}};
       if(id==='../../shared/source-links')return {sourceLinks:()=>[]};
