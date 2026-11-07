@@ -49,40 +49,14 @@
         </button>
          <span class="comparison-arrow">/</span>
          @if (repository()!.targetBranches.length > 0) {
-           <div class="searchable-branch-picker"><div class="branch-query"><input type="text" maxlength="200" aria-label="Search target branches" placeholder="Search target…" [value]="targetBranchSearch()" (input)="targetBranchSearch.set($any($event.target).value)" (keydown.escape)="targetBranchSearch.set('')">@if (targetBranchSearch()) { <button aria-label="Clear target branch search" (click)="targetBranchSearch.set('')">×</button> }</div>
-           <label class="target-branch-picker">
-             <span class="visually-hidden">Select target comparison branch</span>
-             <span class="target-branch-prefix">vs</span>
-             <select
-               [value]="repository()!.targetBranch"
-               [disabled]="comparisonChanging()"
-               (change)="selectTargetBranch($event)"
-               title="Choose the target comparison branch"
-             >
-               @if (!repository()!.targetBranch) { <option value="" disabled>Select target</option> }
-               @for (branch of visibleTargetBranches(); track branch.ref) {
-                 <option [value]="branch.ref" [selected]="branch.ref === repository()!.targetBranch">{{ branch.label }}</option>
-               }
-             </select>
-           </label>
-           @if (targetBranchSearch() && matchingTargetBranches().length === 0) { <small class="branch-no-results" role="status">No matching target branches</small> }</div>
+           <rift-searchable-select id="target" label="Select target comparison branch" searchLabel="Search target branches" prefix="vs"
+             [options]="targetBranchChoices()" [value]="repository()!.targetBranch" [disabled]="comparisonChanging()"
+             (valueChange)="selectTargetBranch($event)" />
            <span class="comparison-arrow">/</span>
          }
-         <div class="searchable-branch-picker"><div class="branch-query"><input type="text" maxlength="200" aria-label="Search comparisons" placeholder="Search current / comparison…" [value]="comparisonSearch()" (input)="comparisonSearch.set($any($event.target).value)" (keydown.escape)="comparisonSearch.set('')">@if (comparisonSearch()) { <button aria-label="Clear comparison search" (click)="comparisonSearch.set('')">×</button> }</div><label>
-          <span class="visually-hidden">Select comparison</span>
-          <select
-            [value]="repository()!.comparisonId"
-            [disabled]="comparisonChanging()"
-            (change)="selectComparison($event)"
-            title="Choose what to review"
-          >
-            @for (option of visibleComparisons(); track option.id) {
-              <option [value]="option.id" [selected]="option.id === repository()!.comparisonId">
-                {{ option.label }} - {{ option.detail }}
-              </option>
-            }
-           </select>
-         </label>@if (comparisonSearch() && matchingComparisons().length === 0) { <small class="branch-no-results" role="status">No matching comparisons</small> }</div>
+         <rift-searchable-select id="comparison" label="Select comparison" searchLabel="Search comparisons"
+           [options]="comparisonChoices()" [value]="repository()!.comparisonId" [disabled]="comparisonChanging()"
+           (valueChange)="selectComparison($event)" />
          <button class="context-action" [class.active]="contextItemCount() > 0" (click)="openContextDialog()" title="Add project details, links, files, images, or directories">
            <span class="context-action-mark">C</span>
            <span><strong>Context</strong><small>{{ contextItemCount() > 0 ? contextItemCount() + " items shared" : "Add project knowledge" }}</small></span>
@@ -257,281 +231,8 @@
         ></button>
       </aside>
 
-      <rift-ai-terminal [hidden]="!terminalOpen()" [root]="repository()!.root" [paths]="repositoryPaths()" [dark]="darkTheme()" [noteCount]="notes().length" [selectedNoteCount]="selectedNotes().length" [hasSelection]="selectedLineCount() > 0" (back)="showDiff()" (legacy)="openChats()" (copyNotes)="copyNotes()" (insertNotes)="insertTerminalNotes()" (insertSelection)="insertTerminalSelection()" (navigate)="navigateTerminalSource($event)" (readyChange)="terminalReady.set($event)" />
-      @if (terminalOpen()) {
-      } @else if (reviewPageOpen()) {
-        <section class="review-page" aria-label="Code review">
-          <header class="review-page-header">
-            <button class="back-to-diff" (click)="showDiff()">← Back to diff</button>
-            <span><strong>Code review</strong><small>{{ repository()!.name }} · {{ repository()!.comparisonLabel }}</small></span>
-            <button class="context-page-action" [class.active]="contextItemCount() > 0" (click)="openContextDialog()"><strong>Context</strong><small>{{ contextItemCount() > 0 ? contextItemCount() + " items" : "Add references" }}</small></button>
-          </header>
-          <div class="review-page-body">
-            @if (reviewQuestion() || reviewResult() || reviewError() || agentRunning()) {
-              <div class="review-result-head">
-                <span><small>Independent review</small><strong>{{ reviewQuestion() || "Reviewing current changes" }}</strong></span>
-                <button (click)="resetReview()" [disabled]="agentRunning()">New review</button>
-              </div>
-              <article class="review-result-card">
-                <header><span class="review-mark">R</span><span><strong>{{ agentLabel(selectedAgent()!) }}</strong><small>{{ modelLabel(selectedAgent()!, reviewResult()?.model || selectedModel()) }} · {{ reviewTone() }}</small></span>@if (agentRunning()) { <i class="loading-spinner" aria-label="Review in progress"></i> }</header>
-                @if (reviewResult(); as result) {
-                  @if (result.tools.length > 0) {
-                    <section class="review-tool-activity">
-                      <header><strong>Tool activity</strong><small>{{ result.tools.length }} {{ result.tools.length === 1 ? "call" : "calls" }}</small></header>
-                      <div>
-                        @for (tool of result.tools; track tool.id) {
-                          <details class="review-tool-call" [class.failed]="tool.status === 'failed'" [class.running]="tool.status === 'running'" [class.interrupted]="tool.status === 'interrupted'">
-                            <summary><i>{{ tool.status === "failed" ? "!" : tool.status === "running" ? "…" : tool.status === "interrupted" ? "■" : "✓" }}</i><strong>{{ tool.name }}</strong><small>{{ tool.status }}</small><span aria-hidden="true">⌄</span></summary>
-                            <pre>{{ tool.detail || "No call details were provided." }}</pre>
-                          </details>
-                        }
-                      </div>
-                    </section>
-                  }
-                  @if (result.explanation) { <div class="markdown-response review-markdown" (click)="openReviewFile($event)" [innerHTML]="renderReviewMarkdown(result.explanation)"></div> }
-                }
-                @if (agentRunning() && !reviewResult()?.explanation) { <div class="review-waiting"><span class="ai-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 1c0 6.1-4.9 11-11 11 6.1 0 11 4.9 11 11 0-6.1 4.9-11 11-11-6.1 0-11-4.9-11-11Z"/><circle cx="19" cy="5" r="2"/></svg></span><span><strong>Reviewing the comparison</strong><small>Findings will appear here as the agent works.</small></span></div> }
-                @if (reviewError()) { <p class="agent-error">{{ reviewError() }}</p> }
-              </article>
-              @if (!agentRunning() && (reviewResult()?.explanation || reviewInterrupted())) {
-                <section class="reconsider-panel">
-                  <div><strong>{{ reviewInterrupted() ? "Guide the next pass" : "Changed the code?" }}</strong><p>{{ reviewInterrupted() ? "The current turn stopped without cancelling this review. Add a shorter or more focused instruction." : "Ask for a fresh pass. Resolved findings will be dropped and new regressions called out." }}</p></div>
-                  <textarea rows="2" maxlength="20000" [placeholder]="reviewInterrupted() ? 'For example: focus on blockers and finish quickly' : 'Optional: describe what changed...'" [value]="reconsiderDraft()" (input)="reconsiderDraft.set($any($event.target).value)"></textarea>
-                  <div class="review-result-actions">@if (reviewResult()?.explanation) { <button (click)="saveReviewMarkdown()">Save .md</button><button class="take-review-to-chat" (click)="takeReviewToChat()">Take to chat</button> }<button class="reconsider-button" (click)="reconsiderReview()">{{ reviewInterrupted() ? "Continue review" : "Reconsider" }}</button></div>
-                </section>
-              } @else if (agentRunning()) {
-                <div class="review-result-actions"><button (click)="interruptAgent()">Interrupt review</button></div>
-              }
-            } @else {
-            <div class="review-page-lead">
-              <span class="review-mark">R</span>
-              <span><small>Independent pass</small><strong>Set the tone for this review</strong><p>The agent will inspect the complete comparison and relevant surrounding code.</p></span>
-            </div>
-            <div class="review-page-card">
-              <div class="review-agent-grid">
-                <label><span>Provider</span>@if (agents().length > 0) { <select [value]="selectedAgent()" (change)="selectAgent($event)">@for (agent of agents(); track agent.id) { <option [value]="agent.id" [selected]="agent.id === selectedAgent()">{{ agent.label }}</option> }</select> } @else { <small>No supported agent detected</small> }</label>
-                <label><span>Model</span><select [value]="selectedModel() || ''" [disabled]="!selectedAgent() || modelsLoading()" (change)="selectReviewModel($event)"><option value="">{{ modelsLoading() ? "Loading models..." : "Default model" }}</option>@for (model of agentModels(); track model) { <option [value]="model">{{ modelLabel(selectedAgent()!, model) }}</option> }</select></label>
-              </div>
-              <fieldset class="tone-switch review-page-tones">
-                <legend>Review voice</legend>
-                <button [class.active]="reviewTone() === 'professional'" (click)="reviewTone.set('professional')"><span class="tone-index">01</span><strong>Professional</strong><small>Measured, objective, and precise. Findings are ordered by severity with practical fixes.</small></button>
-                <button [class.active]="reviewTone() === 'honest'" (click)="reviewTone.set('honest')"><span class="tone-index">02</span><strong>Honest</strong><small>Technically fair, brutally direct, and sharp enough that weak code feels it.</small></button>
-              </fieldset>
-              <div class="review-tone-note" [class.honest]="reviewTone() === 'honest'"><strong>{{ reviewTone() === "honest" ? "No cushioning." : "Senior-level feedback." }}</strong><p>{{ reviewTone() === "honest" ? "Dry irony is allowed. Inventing problems is not." : "Clear findings, practical fixes, no theatrics." }}</p></div>
-              <label class="review-request" for="review-page-request"><span>Your focus <small>optional</small></span><textarea id="review-page-request" rows="4" maxlength="20000" placeholder="Security, architecture, regressions, test coverage..." [value]="reviewDraft()" (input)="reviewDraft.set($any($event.target).value)"></textarea></label>
-              <div class="review-page-actions">
-                <button class="context-shortcut" (click)="openContextDialog()"><span>Context</span><small>{{ contextItemCount() > 0 ? contextItemCount() + " items available to the agent" : "Add docs, links, files, images, or directories" }}</small><i>→</i></button>
-                <button class="run-review-button" (click)="startReview()" [disabled]="!selectedAgent() || agentRunning() || modelsLoading()"><span class="ai-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 1c0 6.1-4.9 11-11 11 6.1 0 11 4.9 11 11 0-6.1 4.9-11 11-11-6.1 0-11-4.9-11-11Z"/><circle cx="19" cy="5" r="2"/></svg></span>{{ agentRunning() ? "Review in progress" : "Start " + (reviewTone() === "honest" ? "honest" : "professional") + " review" }}</button>
-              </div>
-            </div>
-            }
-          </div>
-        </section>
-      } @else if (chatPageOpen()) {
-        <section class="chat-page" aria-label="Chats" [style.--chat-font-size.px]="chatFontSize()">
-          <header class="chat-page-header">
-            <button class="back-to-diff" (click)="leaveChatPage()">← {{ activeConversation() ? "Back to chats" : "Back to diff" }}</button>
-            <span><strong>Chats</strong><small>{{ repository()!.name }} · {{ repository()!.comparisonLabel }}</small></span>
-            <div class="chat-header-actions">
-              <label class="chat-font-control" title="Chat text size"><span>A</span><input type="range" min="12" max="20" step="1" [value]="chatFontSize()" (input)="updateChatFontSize($event)" aria-label="Chat text size"><strong>A</strong></label>
-              @if (agents().length > 0) {
-                <label class="chat-provider-control" title="Provider for new chats"><span class="visually-hidden">Provider for new chats</span><select [value]="selectedAgent()" (change)="selectAgent($event)">@for (agent of agents(); track agent.id) { <option [value]="agent.id" [selected]="agent.id === selectedAgent()">{{ agent.label }}</option> }</select></label>
-              }
-              <button class="new-chat-button" (click)="startNewChat()" [disabled]="!selectedAgent() || agentRunning()">New chat</button>
-            </div>
-          </header>
-
-          @if (activeConversation() && repositoryConversations().length > 0) {
-            <nav class="conversation-tabs" aria-label="Conversation tabs">
-              <button class="all-chat-tab" (click)="openChats()">All chats</button>
-              @for (conversation of repositoryConversations(); track conversation.id) {
-                <div class="conversation-tab" [class.active]="conversation.id === activeConversationId()">
-                  <button class="conversation-tab-open" (click)="openConversation(conversation.id)" [title]="conversation.title || conversation.question || 'New chat'">
-                    <span class="conversation-status status-{{ conversation.status }}"></span><span>{{ conversation.title || conversation.question || "New chat" }}</span>
-                  </button>
-                  <button class="conversation-tab-close" (click)="closeConversation(conversation.id)" title="Close chat" [attr.aria-label]="'Close ' + (conversation.title || conversation.question || 'new chat')">×</button>
-                </div>
-              }
-            </nav>
-          }
-
-          @if (activeConversation(); as conversation) {
-            <div #chatThread class="inference-thread" tabindex="0" (scroll)="handleChatScroll()" (wheel)="handleChatWheel($event)" (pointerdown)="beginChatScrollTakeover()" (pointerup)="endChatScrollTakeover()" (pointercancel)="endChatScrollTakeover()" (keydown)="handleChatScrollKeydown($event)">
-              <div #chatContent class="chat-content">
-              @if (conversation.attachedReview) {
-                <details class="review-chat-attachment">
-                  <summary><span class="review-mark">R</span><span><strong>Code review attached</strong><small>Use your message to choose what to fix and what to leave</small></span><i aria-hidden="true">⌄</i></summary>
-                  <div class="markdown-response review-markdown" (click)="openReviewFile($event)" [innerHTML]="renderReviewMarkdown(conversation.attachedReview)"></div>
-                </details>
-              }
-              @for (turn of conversation.history; track $index) {
-                <div class="chat-message user-message historical-message">
-                  <span>You</span>
-                  <p>{{ turn.question || "Explain this" }}</p>
-                  @if (turn.context; as context) {
-                    <button class="conversation-context" (click)="jumpToConversationContext(context)" title="Jump to referenced code">
-                      <span class="context-pin" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M5 2.5h6l4 4v11H5z"/><path d="M11 2.5v4h4M7.5 10h5M7.5 13h5"/></svg></span>
-                      <span><strong>{{ shortName(context.filePath) }}</strong><small>Lines {{ context.startLine }}{{ context.endLine !== context.startLine ? "-" + context.endLine : "" }} · Jump to code</small></span>
-                    </button>
-                  }
-                </div>
-                <div class="chat-message assistant-message historical-message">
-                  <span>{{ agentLabel(conversation.agent) }} · {{ modelLabel(conversation.agent, conversation.model) }}</span>
-                  @if (turn.result?.explanation) { <div class="markdown-response" [innerHTML]="renderMarkdown(turn.result!.explanation)"></div> }
-                  @if (turn.error) {
-                    @if (isAgentAuthError(turn.error)) {
-                      <div class="agent-auth-error"><span>!</span><div><strong>Reconnect {{ agentLabel(conversation.agent) }}</strong><p>{{ turn.error }}</p></div></div>
-                    } @else { <p class="agent-error">{{ turn.error }}</p> }
-                  }
-                </div>
-              }
-              @if (conversation.question) {
-                <div class="chat-message user-message">
-                  <span>You</span>
-                  <p>{{ conversation.question }}</p>
-                  @if (conversation.context; as context) {
-                    <button class="conversation-context" (click)="jumpToConversationContext(context)" title="Jump to referenced code">
-                      <span class="context-pin" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M5 2.5h6l4 4v11H5z"/><path d="M11 2.5v4h4M7.5 10h5M7.5 13h5"/></svg></span>
-                      <span><strong>{{ shortName(context.filePath) }}</strong><small>Lines {{ context.startLine }}{{ context.endLine !== context.startLine ? "-" + context.endLine : "" }} · Jump to code</small></span>
-                    </button>
-                  }
-                </div>
-
-                <div class="chat-message assistant-message">
-                  <span>{{ agentLabel(conversation.agent) }} · {{ modelLabel(conversation.agent, conversation.model) }}</span>
-                  @if (conversation.result; as result) {
-                    @if (result.tools.length > 0) {
-                      <div class="agent-tools">
-                        <span>Live activity</span>
-                      <div class="agent-tools-grid">
-                        @for (tool of result.tools.slice(0, activityExpanded() ? result.tools.length : 6); track tool.id) {
-                          <button type="button" class="tool-tile" [class.failed]="tool.status === 'failed'" [class.running]="tool.status === 'running'" [class.interrupted]="tool.status === 'interrupted'" (click)="openToolCall(tool)" [title]="'View full ' + tool.name + ' call'">
-                            <i>{{ tool.status === "failed" ? "!" : tool.status === "running" ? "…" : tool.status === "interrupted" ? "■" : "✓" }}</i>
-                            <span><strong>{{ tool.name }}</strong>@if (tool.detail) { <small>{{ tool.detail }}</small> }</span>
-                          </button>
-                        }
-                      </div>
-                      @if (result.tools.length > 6) {
-                        <button type="button" class="activity-toggle" (click)="activityExpanded.update((expanded) => !expanded)">{{ activityExpanded() ? "Show less" : "Show " + (result.tools.length - 6) + " more" }}</button>
-                      }
-                      </div>
-                    }
-                    @if (result.explanation) { <div class="markdown-response" [innerHTML]="renderMarkdown(result.explanation)"></div> }
-                  }
-                  @if (conversation.status === "running") {
-                    <div class="agent-pending"><span class="ai-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 1c0 6.1-4.9 11-11 11 6.1 0 11 4.9 11 11 0-6.1 4.9-11 11-11-6.1 0-11-4.9-11-11Z"/><circle cx="19" cy="5" r="2"/></svg></span><span><strong>Agent is working <i class="loading-spinner" aria-hidden="true"></i></strong><small>Tool calls and output appear here live</small></span></div>
-                  } @else if (conversation.status === "interrupted") {
-                    <p class="agent-interrupted">Turn interrupted. Send guidance below to continue this conversation.</p>
-                  }
-                  @if (conversation.error) {
-                    @if (isAgentAuthError(conversation.error)) {
-                      <div class="agent-auth-error"><span>!</span><div><strong>Reconnect {{ agentLabel(conversation.agent) }}</strong><p>{{ conversation.error }}</p></div></div>
-                    } @else { <p class="agent-error">{{ conversation.error }}</p> }
-                  }
-                </div>
-              }
-              <div #chatBottom class="chat-bottom" aria-hidden="true"></div>
-              </div>
-            </div>
-            <footer class="chat-page-footer">
-              @if (conversation.status === "running") {
-                <span>Provider request in progress</span><button (click)="interruptAgent()">Interrupt</button>
-              } @else {
-                <div class="chat-composer" [class.has-model-picker]="!conversation.question">
-                  @if (!conversation.question) {
-                    <div class="chat-model-picker">
-                      <button type="button" class="chat-model-trigger" (click)="toggleChatModelPicker()" [disabled]="modelsLoading()" [attr.aria-expanded]="chatModelPickerOpen()" title="Choose model">
-                        <span class="model-mark">M</span>
-                        <span><small>Model</small><strong>{{ modelsLoading() ? "Loading..." : modelLabel(conversation.agent, conversation.model) }}</strong></span>
-                        <i aria-hidden="true">⌃</i>
-                      </button>
-                      @if (chatModelPickerOpen() && !modelsLoading()) {
-                        <div class="chat-model-popover">
-                          <label for="chat-model-search">Choose model</label>
-                          <input
-                            id="chat-model-search"
-                            type="search"
-                            autocomplete="off"
-                            autofocus
-                            placeholder="Search models..."
-                            [value]="chatModelSearch()"
-                            (input)="updateChatModelSearch($event)"
-                            (keydown)="handleChatModelKeydown($event)"
-                          >
-                          <div class="chat-model-results">
-                            @if (!chatModelSearch()) {
-                              <button type="button" [class.selected]="conversation.model === null" (click)="selectChatModel(null)"><strong>Default model</strong><small>Use the provider default</small></button>
-                            }
-                            @for (model of filteredChatModels(); track model) {
-                              <button type="button" [class.selected]="conversation.model === model" (click)="selectChatModel(model)" [title]="model">{{ modelLabel(conversation.agent, model) }}</button>
-                            } @empty {
-                              @if (chatModelSearch()) { <small>No matching models</small> }
-                            }
-                          </div>
-                        </div>
-                      }
-                    </div>
-                  }
-                  <div class="chat-input-wrap">
-                    <label class="visually-hidden" for="chat-reply">Continue conversation</label>
-                    <textarea
-                      id="chat-reply"
-                      rows="2"
-                      maxlength="20000"
-                      [placeholder]="conversation.question ? 'Continue this conversation...' : conversation.attachedReview ? 'Tell the agent what to fix and what to leave...' : 'Ask about this repository...'"
-                      [value]="chatReplyDraft()"
-                      (focus)="chatModelPickerOpen.set(false)"
-                      (input)="chatReplyDraft.set($any($event.target).value)"
-                      (paste)="pasteImages($event, 'chat')"
-                      (keydown)="handleChatReplyKeydown($event)"
-                    ></textarea>
-                    @if (chatImageAttachments().length > 0) {
-                      <div class="image-attachments">
-                        @for (attachment of chatImageAttachments(); track attachment.id) {
-                          <figure><img [src]="attachment.previewUrl" [alt]="attachment.name"><button type="button" (click)="removeImageAttachment(attachment.id, 'chat')" title="Remove image" aria-label="Remove image">×</button></figure>
-                        }
-                      </div>
-                    }
-                    <small>Enter to send · Shift+Enter for a new line</small>
-                  </div>
-                  <button class="chat-send" (click)="sendChatReply()" [disabled]="!chatReplyDraft().trim() && chatImageAttachments().length === 0"><span>Send</span><i aria-hidden="true">↑</i></button>
-                </div>
-              }
-            </footer>
-          } @else {
-            <div class="chat-history">
-              <header><span class="ai-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 1c0 6.1-4.9 11-11 11 6.1 0 11 4.9 11 11 0-6.1 4.9-11 11-11-6.1 0-11-4.9-11-11Z"/><circle cx="19" cy="5" r="2"/></svg></span><span><strong>Conversations</strong><small>Rift and {{ selectedAgentOption()?.label || "provider" }} chats for this repository</small></span></header>
-              <div class="chat-history-list">
-                @for (conversation of repositoryConversations(); track conversation.id) {
-                  <button (click)="openConversation(conversation.id)">
-                    <span class="conversation-status status-{{ conversation.status }}"></span>
-                    <span><strong>{{ conversation.title || conversation.question || "New chat" }}</strong><small>{{ agentLabel(conversation.agent) }} · {{ modelLabel(conversation.agent, conversation.model) }} · {{ conversationUpdatedLabel(conversation) }}@if (conversation.context; as context) { · {{ shortName(context.filePath) }}:{{ context.startLine }}{{ context.endLine !== context.startLine ? "-" + context.endLine : "" }}}</small></span>
-                    <span class="history-arrow">→</span>
-                  </button>
-                }
-                @if (providerSessionsLoading()) {
-                  <p class="chat-list-message">Loading {{ selectedAgentOption()?.label }} conversations...</p>
-                } @else if (providerSessionsError()) {
-                  <p class="chat-list-message error">{{ providerSessionsError() }}</p>
-                } @else if (providerSessionsAgent() === selectedAgent()) {
-                  @for (session of providerSessions(); track session.id) {
-                    @if (!isProviderSessionImported(session)) {
-                      <button (click)="resumeProviderSession(session)" [disabled]="providerSessionOpeningId() !== null">
-                        <span class="conversation-status status-complete"></span>
-                        <span><strong>{{ session.title }}</strong><small>{{ selectedAgentOption()?.label }} · {{ providerSessionOpeningId() === session.id ? "Loading conversation..." : sessionUpdatedLabel(session.updatedAt) }}</small></span>
-                        <span class="history-arrow">→</span>
-                      </button>
-                    }
-                  }
-                }
-                @if (repositoryConversations().length === 0 && !providerSessionsLoading() && providerSessions().length === 0) {
-                  <p class="chat-list-message">No conversations found for this repository. Start a new chat to begin.</p>
-                }
-              </div>
-            </div>
-          }
-        </section>
-      } @else {
+      <rift-ai-terminal [hidden]="!terminalOpen()" [root]="repository()!.root" [paths]="repositoryPaths()" [dark]="darkTheme()" [noteCount]="notes().length" [selectedNoteCount]="selectedNotes().length" [hasSelection]="selectedLineCount() > 0" (review)="prepareTerminalReview()" (notes)="reviewSidebarOpen.set(!reviewSidebarOpen())" (back)="showDiff()" (copyNotes)="copyNotes()" (insertNotes)="insertTerminalNotes()" (insertSelection)="insertTerminalSelection()" (navigate)="navigateTerminalSource($event)" (readyChange)="terminalReady.set($event)" />
+      @if (!terminalOpen()) {
       <section class="diff-panel">
         <div class="diff-toolbar">
           <div>
@@ -540,6 +241,8 @@
             <button class="search-shortcut-hint" (click)="openRepositorySearch()" title="Search all repository files and contents"><kbd>{{ platform === "darwin" ? "Cmd+F" : "Ctrl+F" }}</kbd><span>Search repo</span></button>
           </div>
           <div class="diff-options">
+            <button class="edit-file-button" (click)="openTerminal()" aria-label="AI terminal">AI terminal</button>
+            <button class="edit-file-button" (click)="reviewSidebarOpen.set(!reviewSidebarOpen())" aria-label="Open review notes">Notes ({{ notes().length }})</button>
             <button class="edit-file-button" [class.active]="editMode()" [disabled]="!selectedFile() || selectedFile()?.status === 'deleted' || patch()?.binary" (click)="toggleEditMode()" [title]="editMode() ? 'Exit edit mode (Escape)' : 'Enter edit mode (Ctrl+E)'">{{ editMode() ? "Editing" : "Edit" }}</button>
             @if (editMode()) {
               <button class="save-file-button" [class.dirty]="selectedFileHasEdits()" [disabled]="!selectedFileHasEdits() || fileSaving()" (click)="saveCurrentFile()">{{ fileSaving() ? "Saving..." : "Save" }} <kbd>Ctrl+S</kbd></button>
@@ -736,44 +439,12 @@
       }
 
       <aside class="review-panel">
-        @if (!reviewSidebarOpen()) {
-          <div class="review-rails">
-            <button class="review-rail" (click)="reviewSidebarOpen.set(true)" title="Open review notes" aria-label="Open review notes">
-              <span class="note-icon">N</span>
-              <small>Notes</small>
-              @if (notes().length > 0) { <b>{{ notes().length }}</b> }
-            </button>
-            <button class="review-rail" (click)="openTerminal()" aria-label="AI terminal" title="AI terminal">&gt;_</button>
-             <button class="review-rail conversation-rail" [class.active]="chatPageOpen()" (click)="openChats()" [disabled]="!selectedAgent()" title="Open chats" aria-label="Open chats">
-              <span class="ai-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 1c0 6.1-4.9 11-11 11 6.1 0 11 4.9 11 11 0-6.1 4.9-11 11-11-6.1 0-11-11-11-11Z"/><circle cx="19" cy="5" r="2"/></svg></span>
-              <small>Chats</small>
-              @if (repositoryConversations().some((conversation) => conversation.status === "running")) { <i class="rail-spinner" aria-label="Explanation is running"></i> }
-            </button>
-            <button class="review-rail review-mode-rail" [class.active]="reviewPageOpen()" (click)="openReviewPage()" [disabled]="!selectedAgent()" title="Review the complete comparison" aria-label="Open code review">
-              <span class="review-mark">R</span>
-              <small>Review</small>
-            </button>
-          </div>
-        } @else {
+        @if (reviewSidebarOpen()) {
           <div class="panel-title review-header">
             <span>Review notes</span>
-            <button (click)="openTerminal()" aria-label="AI terminal" title="AI terminal">&gt;_</button>
             <button (click)="reviewSidebarOpen.set(false)" title="Collapse sidebar" aria-label="Collapse sidebar">×</button>
           </div>
           <div class="review-content">
-            <div class="agent-control">
-              <label for="review-agent">Legacy chat agent</label>
-              @if (agents().length > 0) {
-                <select id="review-agent" [value]="selectedAgent()" (change)="selectAgent($event)">
-                  @for (agent of agents(); track agent.id) {
-                    <option [value]="agent.id" [selected]="agent.id === selectedAgent()">{{ agent.label }} · default model</option>
-                  }
-                </select>
-              } @else {
-                <span>Use AI terminal for Claude, OpenCode or Codex</span>
-              }
-            </div>
-
             <div class="notes-heading">
               <span>{{ notes().length }} {{ notes().length === 1 ? "note" : "notes" }}</span>
               <span class="notes-heading-actions">
@@ -887,70 +558,11 @@
             <button (click)="cancelNote()">Cancel</button>
             <button class="save-note" (click)="saveNote()" [disabled]="!noteDraft().trim()">Add note</button>
           </div>
-        } @else if (questionComposerOpen()) {
-          <label for="explain-question">Question <small>Enter to send · Shift+Enter for a new line</small></label>
-          <div class="explain-agent-controls">
-            <label><span>Provider</span><select [value]="selectedAgent()" (change)="selectAgent($event)">@for (agent of agents(); track agent.id) { <option [value]="agent.id" [selected]="agent.id === selectedAgent()">{{ agent.label }}</option> }</select></label>
-            <label><span>Conversation</span><select [value]="continuingConversationId() || 'new'" [disabled]="providerSessionOpeningId() !== null" (change)="selectExplainConversation($event)"><option value="new" [selected]="continuingConversationId() === null">New conversation</option>@for (conversation of availableConversations(); track conversation.id) { <option [value]="conversation.id" [selected]="conversation.id === continuingConversationId()">{{ conversation.title || conversation.question || "New chat" }} · {{ conversationUpdatedLabel(conversation) }}</option> }@if (providerSessionsLoading()) { <option disabled>Loading provider sessions...</option> } @else if (providerSessionsAgent() === selectedAgent()) { @for (session of providerSessions(); track session.id) { @if (!isProviderSessionImported(session)) { <option [value]="'provider:' + session.id">{{ session.title }} · {{ sessionUpdatedLabel(session.updatedAt) }}</option> } } }</select></label>
-            <label class="model-search-field">
-              <span>Model</span>
-              <div class="model-search-control">
-                <input
-                  type="search"
-                  autocomplete="off"
-                  [placeholder]="modelsLoading() ? 'Loading models…' : 'Default model'"
-                  [value]="modelSearch()"
-                  [disabled]="modelsLoading()"
-                  (focus)="modelPickerOpen.set(true)"
-                  (input)="updateModelSearch($event)"
-                  (keydown)="handleModelSearchKeydown($event)"
-                  aria-label="Search models"
-                  [attr.aria-expanded]="modelPickerOpen()"
-                >
-                @if (selectedModel()) { <button type="button" (click)="selectModel(null)" title="Use default model" aria-label="Use default model">×</button> }
-                @if (modelPickerOpen() && !modelsLoading()) {
-                  <div class="model-search-results">
-                    <button type="button" [class.selected]="selectedModel() === null && !modelSearch()" (click)="selectModel(null)">Default model</button>
-                    @for (model of filteredAgentModels(); track model) {
-                      <button type="button" [class.selected]="model === selectedModel()" (click)="selectModel(model)" [title]="model">{{ modelLabel(selectedAgent()!, model) }}</button>
-                    } @empty {
-                      <small>No matching models</small>
-                    }
-                  </div>
-                }
-              </div>
-            </label>
-          </div>
-          <textarea
-            id="explain-question"
-            rows="6"
-            maxlength="20000"
-            autofocus
-            placeholder="Explain, fix, or refactor this"
-            [value]="questionDraft()"
-            (input)="questionDraft.set($any($event.target).value)"
-            (paste)="pasteImages($event, 'question')"
-            (keydown)="handleExplainKeydown($event)"
-          ></textarea>
-          @if (questionImageAttachments().length > 0) {
-            <div class="image-attachments composer-images">
-              @for (attachment of questionImageAttachments(); track attachment.id) {
-                <figure><img [src]="attachment.previewUrl" [alt]="attachment.name"><button type="button" (click)="removeImageAttachment(attachment.id, 'question')" title="Remove image" aria-label="Remove image">×</button></figure>
-              }
-            </div>
-          }
-          <div class="note-composer-actions">
-            <button (click)="cancelQuestion()">Cancel</button>
-            <button class="save-note" (click)="explainSelection()" [disabled]="!selectedAgent() || agentRunning() || modelsLoading()">Ask agent</button>
-          </div>
         } @else {
           @if (!allChangesSelected()) {
             <button role="menuitem" (click)="startNote()"><span class="tool-mark">+</span><span><strong>Add note</strong><small>Attach review feedback</small></span><kbd class="tool-shortcut">{{ platform === "darwin" ? "Cmd+N" : "Ctrl+N" }}</kbd></button>
           }
-          <button role="menuitem" (click)="insertTerminalSelection()"><strong>Insert selection in AI terminal</strong><small>Context only — no Enter</small></button>
-          <button role="menuitem" (click)="startExplain()" [disabled]="!selectedAgent() || agentRunning()">
-            <span class="ai-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 1c0 6.1-4.9 11-11 11 6.1 0 11 4.9 11 11 0-6.1 4.9-11 11-11-6.1 0-11-4.9-11-11Z"/><circle cx="19" cy="5" r="2"/></svg></span><span><strong>Ask agent</strong><small>Explain, fix, or refactor</small></span><kbd class="tool-shortcut">{{ platform === "darwin" ? "Cmd+K" : "Ctrl+K" }}</kbd>
-          </button>
+          <button role="menuitem" (click)="insertTerminalSelection()"><span class="tool-mark" aria-hidden="true">&gt;_</span><span><strong>Insert selection in AI terminal</strong><small>Context only — no Enter</small></span><kbd class="tool-shortcut">{{ platform === 'darwin' ? 'Cmd+K' : 'Ctrl+K' }}</kbd></button>
         }
       </section>
     }

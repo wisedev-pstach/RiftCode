@@ -12,6 +12,7 @@ import {
 } from "@angular/core";
 import { marked } from "marked";
 import { AiTerminalComponent } from './ai-terminal.component';
+import { SearchableSelectComponent } from './searchable-select.component';
 import type { SourceLocation } from '../../shared/terminal';
 import type { AgentConversationHistory, AgentId, AgentMode, AgentOption, AgentRunResult, AgentSession, AgentStreamEvent, AgentToolEvent, ChangedFile, ContextResourcePath, FilePatch, GitHubAuthStatus, RepositoryFileView, RepositorySearchResult, RepositorySnapshot, UpdateStatus } from "../../shared/contracts";
 import versionManifest from "../../../version.json";
@@ -532,7 +533,7 @@ function buildExplorerEntries(
 @Component({
   selector: "rift-root",
   standalone: true,
-  imports: [AiTerminalComponent],
+  imports: [AiTerminalComponent, SearchableSelectComponent],
   templateUrl: "./app.component.html",
   changeDetection: ChangeDetectionStrategy.OnPush
 })
@@ -643,12 +644,8 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly agentError = signal<string | null>(null);
   readonly agentModalOpen = signal(false);
   readonly chatPageOpen = signal(false);
-  readonly targetBranchSearch = signal('');
-  readonly comparisonSearch = signal('');
-  readonly matchingTargetBranches = computed(() => this.repository()?.targetBranches.filter(branch => branch.label.toLowerCase().includes(this.targetBranchSearch().trim().toLowerCase())) ?? []);
-  readonly visibleTargetBranches = computed(() => this.repository()?.targetBranches.filter(branch => branch.ref === this.repository()?.targetBranch || this.matchingTargetBranches().some(match => match.ref === branch.ref)) ?? []);
-  readonly matchingComparisons = computed(() => this.repository()?.comparisons.filter(option => `${option.label} ${option.detail}`.toLowerCase().includes(this.comparisonSearch().trim().toLowerCase())) ?? []);
-  readonly visibleComparisons = computed(() => this.repository()?.comparisons.filter(option => option.id === 'working-tree' || option.id === 'current-branch' || option.id === this.repository()?.comparisonId || this.matchingComparisons().some(match => match.id === option.id)) ?? []);
+  readonly targetBranchChoices = computed(() => this.repository()?.targetBranches.map(branch => ({value: branch.ref, label: branch.label})) ?? []);
+  readonly comparisonChoices = computed(() => this.repository()?.comparisons.map(option => ({value: option.id, label: option.label, detail: option.detail, pinned: option.id === 'working-tree' || option.id === 'current-branch'})) ?? []);
   readonly terminalOpen = signal(true);
   readonly terminalReady = signal(false);
   readonly sourceTarget = signal<SourceLocation | null>(null);
@@ -674,7 +671,7 @@ export class AppComponent implements OnInit, OnDestroy {
       this.repositoryFileError.set(null); this.repositoryFileLoading.set(false); this.repositoryFileView.set(file);
       this.selectedRange.set(null); this.sourceTarget.set(location);
       requestAnimationFrame(()=>this.diffScroll?.nativeElement.querySelector('.source-target')?.scrollIntoView({block:'center'}));
-    } catch(e) { this.reviewMessage.set(e instanceof Error?e.message:String(e)); }
+    } catch(e) { if(this.repository()?.root===root && request===this.repositoryViewRequest)this.reviewMessage.set(e instanceof Error?e.message:String(e)); }
   }
   readonly activeQuestion = signal("");
   readonly conversations = signal<Conversation[]>([]);
@@ -1078,19 +1075,17 @@ export class AppComponent implements OnInit, OnDestroy {
     }
   }
 
-  async selectComparison(event: Event): Promise<void> {
-    if (!(event.target instanceof HTMLSelectElement)) return;
-    const select = event.target;
+  async selectComparison(value: string): Promise<void> {
+    if (this.comparisonChanging()) return;
     const request = ++this.repositoryRequest;
     this.comparisonChanging.set(true);
     this.selectedRange.set(null);
     this.allChangesSelected.set(false);
     try {
-      const repository = await window.rift.selectComparison(select.value);
+      const repository = await window.rift.selectComparison(value);
       if (request === this.repositoryRequest) this.acceptRepository(repository);
     } catch (reason) {
       if (request === this.repositoryRequest) {
-        select.value = this.repository()?.comparisonId ?? "working-tree";
         this.error.set(reason instanceof Error ? reason.message : String(reason));
       }
     } finally {
@@ -1653,7 +1648,6 @@ export class AppComponent implements OnInit, OnDestroy {
       document.getElementById(tool === "note" ? "review-note" : "explain-question")?.focus();
       return true;
     }
-    if (tool === "question" && (!this.selectedAgent() || this.agentRunning())) return false;
     const rows = this.rows();
     const range = this.selectedRange();
     let index = range?.focus ?? -1;
@@ -1800,19 +1794,17 @@ export class AppComponent implements OnInit, OnDestroy {
     this.requestSearchPreviewHighlighting();
   }
 
-  async selectTargetBranch(event: Event): Promise<void> {
-    if (!(event.target instanceof HTMLSelectElement)) return;
-    const select = event.target;
+  async selectTargetBranch(value: string): Promise<void> {
+    if (this.comparisonChanging()) return;
     const request = ++this.repositoryRequest;
     this.comparisonChanging.set(true);
     this.selectedRange.set(null);
     this.allChangesSelected.set(false);
     try {
-      const repository = await window.rift.selectTargetBranch(select.value);
+      const repository = await window.rift.selectTargetBranch(value);
       if (request === this.repositoryRequest) this.acceptRepository(repository);
     } catch (reason) {
       if (request === this.repositoryRequest) {
-        select.value = this.repository()?.targetBranch ?? "";
         this.error.set(reason instanceof Error ? reason.message : String(reason));
       }
     } finally {
@@ -2165,62 +2157,11 @@ export class AppComponent implements OnInit, OnDestroy {
     }
   }
 
-  startExplain(useLatestConversation = true): void {
-    const savedSelection = this.loadSavedSelection();
-    const agent = this.agents().some((option) => option.id === savedSelection.agent) ? savedSelection.agent : this.selectedAgent();
-    if (agent) {
-      this.selectedAgent.set(agent);
-      const savedModel = savedSelection.agent === agent ? savedSelection.model : this.loadSavedModel(agent);
-      const model = savedModel && this.modelsAgent === agent && this.agentModels().includes(savedModel)
-        ? savedModel
-        : null;
-      this.selectedModel.set(model);
-      this.modelSearch.set(model ? this.modelLabel(agent, model) : "");
-    }
-    if (useLatestConversation) this.useExplainConversation(this.preferredConversation(agent), false);
-    this.noteComposerOpen.set(false);
-    this.questionDraft.set("");
-    this.clearImageAttachments("question");
-    this.modelSearch.set(this.selectedModel() && agent ? this.modelLabel(agent, this.selectedModel()!) : "");
-    this.modelPickerOpen.set(false);
-    this.questionComposerOpen.set(true);
-    if (agent) {
-      if (this.modelsAgent !== agent) void this.loadAgentModels(agent);
-      void this.loadProviderSessions(agent);
-    }
-  }
+  startExplain(_useLatestConversation = true): void { this.insertTerminalSelection(); }
 
-  startSidebarExplain(): void {
-    if (!this.selectedAgent() || this.agentRunning()) return;
-    if (!this.selectedContext()) {
-      this.selectedRange.set(null);
-      this.allChangesSelected.set(true);
-    }
-    this.toolsMenu.set({
-      x: Math.max(6, window.innerWidth - (this.reviewSidebarOpen() ? 710 : 444)),
-      y: 86
-    });
-    this.startExplain();
-  }
-
-  openChats(): void {
-    this.terminalOpen.set(false);
-    this.reviewPageOpen.set(false);
-    this.chatPageOpen.set(true);
-    this.activeConversationId.set(null);
-    const agent = this.selectedAgent();
-    if (agent) void this.loadProviderSessions(agent);
-  }
-
-  openReviewPage(): void {
-    this.terminalOpen.set(false);
-    this.reviewSidebarOpen.set(false);
-    this.chatPageOpen.set(false);
-    this.reviewPageOpen.set(true);
-    this.activeConversationId.set(null);
-    const agent = this.selectedAgent();
-    if (agent && this.modelsAgent !== agent && !this.modelsLoading()) void this.loadAgentModels(agent);
-  }
+  startSidebarExplain(): void { this.insertTerminalSelection(); }
+  openChats(): void { this.openTerminal(); }
+  openReviewPage(): void { this.openTerminal(); }
 
   selectReviewModel(event: Event): void {
     if (event.target instanceof HTMLSelectElement) this.selectModel(event.target.value || null);
@@ -2311,6 +2252,12 @@ export class AppComponent implements OnInit, OnDestroy {
     this.contextDialogOpen.set(false);
     this.persistReviewSession();
     this.reviewMessage.set(this.contextItemCount() > 0 ? "Project context saved" : "Project context cleared");
+  }
+
+  prepareTerminalReview():void {
+    if(!this.repository())return;
+    this.openTerminal();
+    void this.aiTerminal?.insert(this.buildReviewPrompt(this.reviewDraft().trim() || "Review the complete comparison and report the findings that matter."));
   }
 
   async startReview(): Promise<void> {
@@ -2795,21 +2742,12 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   openConversation(id?: number): void {
-    this.terminalOpen.set(false);
-    const conversation = this.conversations().find((entry) => entry.id === (id ?? this.activeConversationId()));
+    const conversation = this.repositoryConversations().find((entry) => entry.id === (id ?? this.activeConversationId()));
     if (!conversation) return;
-    this.activeConversationId.set(conversation.id);
-    this.activeQuestion.set(conversation.question);
-    this.agentResult.set(conversation.result);
-    this.agentError.set(conversation.error);
-    this.chatReplyDraft.set("");
-    this.clearImageAttachments("chat");
-    this.activityExpanded.set(false);
-    this.selectedToolCall.set(null);
-    this.chatModelPickerOpen.set(false);
-    this.chatModelSearch.set("");
-    this.chatPageOpen.set(true);
-    this.scrollChatToBottom(true);
+    this.openTerminal();
+    const context=conversation.context;
+    const text=['Saved Rift context (not a provider resume)',context?`Location: ${context.filePath}:${context.startLine}-${context.endLine}\n${context.diff}`:'',...conversation.history.flatMap(turn=>[turn.question,turn.result?.explanation??'']),conversation.question,conversation.result?.explanation??''].join('\n\n');
+    this.aiTerminal?.retain(text);
   }
 
   closeConversation(id: number): void {

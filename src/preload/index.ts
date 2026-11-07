@@ -3,7 +3,8 @@ import type { RiftApi } from "../shared/contracts";
 
 const api: RiftApi = {
   platform: process.platform as RiftApi["platform"],
-  terminalStart: (provider, mode, cols, rows) => ipcRenderer.invoke('terminal:start', provider, mode, cols, rows),
+  terminalSessions: provider => ipcRenderer.invoke('terminal:sessions', provider),
+  terminalStart: (provider, mode, cols, rows, resumeSessionId) => ipcRenderer.invoke('terminal:start', provider, mode, cols, rows, resumeSessionId),
   terminalRead: (id, cursor) => ipcRenderer.invoke('terminal:read', id, cursor),
   terminalInput: (id, data, paste) => ipcRenderer.invoke('terminal:input', id, data, paste),
   terminalResize: (id, cols, rows) => ipcRenderer.invoke('terminal:resize', id, cols, rows),

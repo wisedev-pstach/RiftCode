@@ -11,16 +11,37 @@ import { listRepositoryFiles, loadFilePatch, loadRepository, readRepositoryViewF
 import type { IpcMainInvokeEvent } from "electron";
 import type { AgentConversationHistory, AgentConversationMessage, AgentId, AgentMode, AgentOption, AgentRunResult, AgentSession, AgentStreamEvent, AgentToolEvent, GitHubAuthStatus, GitHubIssueResult, RepositorySnapshot, UpdateStatus } from "../shared/contracts";
 import versionManifest from "../../version.json";
-import { TerminalService } from './terminal-service';
+import { TerminalService, terminalLaunch, terminalEnvironment } from './terminal-service';
+import type { TerminalProvider } from '../shared/terminal';
+import { assertTerminalProvider, providerArgs, openCodeInteractiveArgs } from '../shared/terminal';
+import { listTerminalSessions, listOpenCodeSessions } from './terminal-sessions';
 import { previewUserData } from './preview';
 const previewDirectory = previewUserData(process.argv, app.getPath('appData'));
 if (previewDirectory) { mkdirSync(previewDirectory, {recursive:true}); app.setPath('userData',previewDirectory); app.setName('Rift Preview'); }
-const terminal = new TerminalService(async (provider) => {
+async function resolveTerminalCommand(provider:TerminalProvider):Promise<string|null> {
   await shellPathReady;
   try {
     const found = await execute(process.platform === 'win32' ? 'where.exe' : 'which', [provider]);
     return found.split(/\r?\n/).find(path => process.platform !== 'win32' || /\.(exe|cmd|bat)$/i.test(path)) ?? null;
   } catch { return null; }
+}
+async function terminalMetadataCommand(command:string,args:string[],root:string):Promise<string> {
+  const launch=terminalLaunch(command,args);
+  const result=await promisify(execFile)(launch.file,typeof launch.args==='string'?[launch.args]:launch.args,{cwd:root,env:terminalEnvironment(),timeout:5000,maxBuffer:1024*1024,windowsHide:true,windowsVerbatimArguments:typeof launch.args==='string'});
+  return result.stdout;
+}
+async function providerSessions(root:string,provider:TerminalProvider):Promise<AgentSession[]> {
+  assertTerminalProvider(provider);
+  if(provider!=='opencode')return listTerminalSessions(root,provider);
+  return listOpenCodeSessions(root,async()=>{
+    const command=await resolveTerminalCommand(provider);
+    if(!command)throw new Error('OpenCode is not installed.');
+    return terminalMetadataCommand(command,['session','list','--format','json'],root);
+  });
+}
+const terminal = new TerminalService(resolveTerminalCommand,providerSessions,async(provider,mode,id,command,root)=>{
+  if(provider!=='opencode')return providerArgs(provider,mode,id);
+  return openCodeInteractiveArgs(mode,id,await terminalMetadataCommand(command,['--help'],root));
 });
 
 function agentSessionTitle(prompt: string): string {
@@ -830,10 +851,18 @@ async function openRepository(path: string): Promise<RepositorySnapshot> {
 }
 
 function registerIpc(): void {
-  ipcMain.handle('terminal:start', (event, provider, mode, cols, rows) => {
+  ipcMain.handle('terminal:sessions', async (event, provider) => {
     assertTrustedSender(event);
     if (!snapshot || snapshot.root !== currentRepositoryPath) throw new Error('Open a repository first.');
-    return terminal.start(snapshot.root, provider, mode, cols, rows);
+    const root=snapshot.root, generation=repositoryGeneration;
+    const sessions=await providerSessions(root,provider);
+    if (generation!==repositoryGeneration || snapshot?.root!==root || currentRepositoryPath!==root) throw new Error('Repository changed.');
+    return sessions;
+  });
+  ipcMain.handle('terminal:start', (event, provider, mode, cols, rows, resumeSessionId) => {
+    assertTrustedSender(event);
+    if (!snapshot || snapshot.root !== currentRepositoryPath) throw new Error('Open a repository first.');
+    return terminal.start(snapshot.root, provider, mode, cols, rows, resumeSessionId);
   });
   ipcMain.handle('terminal:read', (event, id, cursor) => {
     assertTrustedSender(event);

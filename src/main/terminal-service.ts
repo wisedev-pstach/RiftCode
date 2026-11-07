@@ -2,6 +2,8 @@ import * as pty from 'node-pty';
 import type { IPty } from 'node-pty';
 import { randomUUID } from 'node:crypto';
 import { realpath, stat } from 'node:fs/promises';
+import { listTerminalSessions } from './terminal-sessions';
+import type { AgentSession } from '../shared/contracts';
 import { contextPaste, providerArgs } from '../shared/terminal';
 import type { TerminalMode, TerminalProvider, TerminalRead, TerminalState } from '../shared/terminal';
 
@@ -15,10 +17,10 @@ export class TerminalService {
   private offset = 0;
   private inputWindow = 0;
   private inputCount = 0;
-  constructor(private readonly resolveCommand: (provider: TerminalProvider) => Promise<string | null>) {}
+  constructor(private readonly resolveCommand: (provider: TerminalProvider) => Promise<string | null>, private readonly sessions: (root:string, provider:TerminalProvider)=>Promise<AgentSession[]> = listTerminalSessions, private readonly resolveArguments:(provider:TerminalProvider,mode:TerminalMode,resumeSessionId:string|undefined,command:string,root:string)=>Promise<string[]> = async(provider,mode,id)=>providerArgs(provider,mode,id)) {}
 
-  async start(root: string, provider: TerminalProvider, mode: TerminalMode, cols: number, rows: number): Promise<TerminalState> {
-    const args = providerArgs(provider, mode);
+  async start(root: string, provider: TerminalProvider, mode: TerminalMode, cols: number, rows: number, resumeSessionId?:string): Promise<TerminalState> {
+    providerArgs(provider, mode, resumeSessionId); // Validate renderer values before any asynchronous work.
     dimensions(cols, rows);
     if (this.starting || this.state) throw new Error('Stop the current session before starting another.');
     const generation = this.generation;
@@ -26,9 +28,17 @@ export class TerminalService {
     try {
       const cwd = await realpath(root);
       if (!(await stat(cwd)).isDirectory()) throw new Error('Repository unavailable.');
+      if (generation !== this.generation) throw new Error('Terminal start cancelled.');
+      if (resumeSessionId !== undefined) {
+        const sessions = await this.sessions(cwd, provider);
+        if (generation !== this.generation) throw new Error('Terminal start cancelled.');
+        if (!sessions.some(session=>session.id===resumeSessionId)) throw new Error('Session does not belong to the current repository and provider.');
+      }
       const command = await this.resolveCommand(provider);
       if (generation !== this.generation) throw new Error('Terminal start cancelled.');
       if (!command) throw new Error(`${provider} is not installed or is not on PATH. Install and authenticate it in your system terminal first.`);
+      const args=await this.resolveArguments(provider,mode,resumeSessionId,command,cwd);
+      if (generation !== this.generation) throw new Error('Terminal start cancelled.');
       const launch = terminalLaunch(command, args);
       const child = pty.spawn(launch.file, launch.args, { name: 'xterm-256color', cwd, cols, rows, env: terminalEnvironment() });
       this.process = child;
@@ -90,7 +100,7 @@ function dimensions(cols: number, rows: number): void {
 export function terminalLaunch(command: string, args: string[], platform = process.platform): {file:string;args:string[] | string} {
   if (platform === 'win32' && /\.(cmd|bat)$/i.test(command)) {
     // Only discovered executable paths and fixed provider arguments reach cmd. Never interpolate input/context.
-    if (/["%\r\n&|<>^!]/.test(command) || args.some(arg => !/^[a-z-]+$/.test(arg))) throw new Error('Unsafe Windows CLI launcher path. Install a native executable instead.');
+    if (/["%\r\n&|<>^!]/.test(command) || args.some(arg => !/^[a-zA-Z0-9_-]+$/.test(arg))) throw new Error('Unsafe Windows CLI launcher path. Install a native executable instead.');
     return {file: `${process.env.SystemRoot || 'C:\\Windows'}\\System32\\cmd.exe`, args:`/d /s /c ""${command}" ${args.join(' ')}"`};
   }
   return {file:command,args};

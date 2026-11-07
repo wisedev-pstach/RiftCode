@@ -62,6 +62,51 @@ test('natural CLI exit has no shell fallback and closes its remaining owned proc
  } finally {service.reset();if(pid){try{process.kill(pid,'SIGKILL');}catch{}}await rm(root,{recursive:true,force:true});}
 });
 
+test('resume requires current repository membership before spawning and passes native flags', async () => {
+ const root=await mkdtemp(join(tmpdir(),'rift-resume-')); const fixture=join(root,'fixture');
+ const id='01953d6c-1234-7123-9123-123456789abc';
+ await writeFile(fixture,'#!/usr/bin/env node\nconsole.log(JSON.stringify(process.argv.slice(2)));setInterval(()=>{},1000);\n',{mode:0o755});
+ const listed: string[]=[];
+ const service=new TerminalService(async()=>fixture,async(cwd,provider)=>{listed.push(cwd+':'+provider);return [{id,title:'fixture',updatedAt:0}];});
+ try {
+  await assert.rejects(service.start(root,'claude','review',80,24,'aaaaaaaa-1234-7123-9123-123456789abc'),/repository/);
+  const state=await service.start(root,'claude','review',80,24,id);
+  await until(()=>service.read(state.id,0).data.includes(id));
+  assert.match(service.read(state.id,0).data,/--resume/);
+  assert.equal(listed.length,2);
+ } finally {service.reset();await rm(root,{recursive:true,force:true});}
+});
+
+test('reset during membership listing cannot spawn or clear a newer pending start', async () => {
+ const pending: ((value:any[])=>void)[]=[];
+ const service=new TerminalService(async()=>'/not-spawned',async()=>await new Promise<any[]>(r=>pending.push(r)));
+ const id='01953d6c-1234-7123-9123-123456789abc';
+ const old=service.start(process.cwd(),'claude','review',80,24,id);
+ await until(()=>pending.length===1);service.reset();
+ const next=service.start(process.cwd(),'claude','review',80,24,id);
+ await until(()=>pending.length===2);
+ pending[0]([{id}]);await assert.rejects(old,/cancelled/);
+ await assert.rejects(service.start(process.cwd(),'claude','review',80,24),/Stop/);
+ service.reset();pending[1]([{id}]);await assert.rejects(next,/cancelled/);
+ assert.equal(service.read(null,0).state,null);
+});
+
+test('trusted interactive capability resolution is applied before real PTY spawn',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'rift-capability-')), fixture=join(root,'fixture');
+ await writeFile(fixture,'#!/usr/bin/env node\nconsole.log(JSON.stringify(process.argv.slice(2)));setInterval(()=>{},1000);\n',{mode:0o755});
+ const service=new TerminalService(async()=>fixture,async()=>[],async()=>['mini','--agent','plan']);
+ try{const state=await service.start(root,'opencode','review',80,24);await until(()=>service.read(state.id,0).data.includes('mini'));assert.match(service.read(state.id,0).data,/plan/);}
+ finally{service.reset();await rm(root,{recursive:true,force:true});}
+});
+
+test('reset cancels a start awaiting trusted CLI capability detection',async()=>{
+ let finish!:(value:string[])=>void;
+ const service=new TerminalService(async()=>'/not-spawned',async()=>[],async()=>await new Promise<string[]>(r=>finish=r));
+ const start=service.start(process.cwd(),'opencode','review',80,24);
+ await until(()=>!!finish);finish(['mini','--agent','plan']);queueMicrotask(()=>service.reset());
+ await assert.rejects(start,/cancelled/);assert.equal(service.read(null,0).state,null);
+});
+
 test('stop cancels pending start even in the final resolver microtask', async () => {
  let resolve!: (s:string)=>void;
  const service = new TerminalService(async () => await new Promise<string>(r => { resolve=r; }));

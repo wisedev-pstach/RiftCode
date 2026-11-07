@@ -7,14 +7,32 @@ export interface TerminalState {
 export interface TerminalRead { state: TerminalState | null; data: string; cursor: number; truncated: boolean }
 export interface SourceLocation { path: string; line: number; column: number; endLine?: number }
 
-export function providerArgs(provider: TerminalProvider, mode: TerminalMode): string[] {
+export function assertTerminalProvider(provider: unknown): asserts provider is TerminalProvider {
+  if (provider !== 'claude' && provider !== 'opencode' && provider !== 'codex') throw new Error('Unsupported terminal provider.');
+}
+export function validResumeSessionId(provider: TerminalProvider, id: unknown): id is string {
+  return typeof id === 'string' && id.length <= 100 && (provider === 'opencode'
+    ? /^ses_[a-zA-Z0-9]{20,40}$/.test(id)
+    : /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(id));
+}
+export function providerArgs(provider: TerminalProvider, mode: TerminalMode, resumeSessionId?: string): string[] {
+  assertTerminalProvider(provider);
+  if (resumeSessionId !== undefined && !validResumeSessionId(provider, resumeSessionId)) throw new Error('Invalid provider session ID.');
+  const resume = resumeSessionId === undefined ? [] : [provider === 'claude' ? '--resume' : provider === 'opencode' ? '--session' : 'resume', resumeSessionId];
   if (mode !== 'review' && mode !== 'edit') throw new Error('Invalid terminal mode.');
   switch (provider) {
-    case 'claude': return ['--permission-mode', mode === 'review' ? 'plan' : 'default'];
-    case 'opencode': return ['--agent', mode === 'review' ? 'plan' : 'build'];
-    case 'codex': return [...(mode === 'review' ? ['--sandbox', 'read-only'] : []), '--ask-for-approval', 'on-request'];
+    case 'claude': return ['--permission-mode', mode === 'review' ? 'plan' : 'default', ...resume];
+    case 'opencode': return ['--agent', mode === 'review' ? 'plan' : 'build', ...resume];
+    case 'codex': return [...(mode === 'review' ? ['--sandbox', 'read-only'] : []), '--ask-for-approval', 'on-request', ...resume];
     default: throw new Error('Unsupported terminal provider.');
   }
+}
+
+export function openCodeInteractiveArgs(mode:TerminalMode,resumeSessionId:string|undefined,help:string):string[] {
+  const args=providerArgs('opencode',mode,resumeSessionId);
+  if(/--agent\b/.test(help))return args;
+  if(/\bmini\b/.test(help))return ['mini',...args];
+  throw new Error('Unsupported OpenCode interactive CLI: no agent/mini capability advertised by --help.');
 }
 
 export function contextPaste(text: string): string {
