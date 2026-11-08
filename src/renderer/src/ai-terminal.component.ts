@@ -33,6 +33,16 @@ export class AiTerminalComponent implements AfterViewInit, OnDestroy {
   readonly choice=signal<'new'|'resume'>('new'); readonly resumeId=signal(''); readonly sessions=signal<AgentSession[]>([]); readonly loadingSessions=signal(false); readonly sessionError=signal(''); private listGeneration=0;
   readonly state=signal<TerminalState|null>(null); readonly starting=signal(false); readonly ready=signal(false);
   readonly error=signal(''); readonly pending=signal(''); readonly hasOutput=signal(false); readonly activeTitle=signal('');
+  readonly reviewRequested=signal(false);
+  private preparedReview='';
+  prepareReview(text:string):void {
+    this.reviewRequested.set(true);
+    if(!this.state() && !this.starting())this.mode.set('review');
+    // Navigating back to the same comparison must not replace an unsent edited draft.
+    if(this.preparedReview===text && this.pending())return;
+    this.preparedReview=text;
+    this.retain(text);
+  }
   readonly available=!!window.rift?.terminalStart;
   private terminal?: Terminal; private fit=new FitAddon(); private observer?: ResizeObserver;
   private timer?: ReturnType<typeof setTimeout>; private cursor=0; private destroyed=false; private generation=0;
@@ -40,7 +50,7 @@ export class AiTerminalComponent implements AfterViewInit, OnDestroy {
   constructor() {
     effect(()=>{this.root();this.provider();const choice=this.choice();this.resumeId.set('');this.sessions.set([]);this.sessionError.set('');this.listGeneration++;this.loadingSessions.set(false);if(choice==='resume')void this.loadSessions();});
     effect(() => { const dark=this.dark(); if(this.terminal) this.terminal.options.theme=dark?{background:'#0b0d10',foreground:'#d9dde5',cursor:'#c8ff63'}:{background:'#fafbfc',foreground:'#25313e',cursor:'#476a1c'}; });
-    effect(() => { const root=this.root(); if(this.previousRoot && root!==this.previousRoot) { this.generation++; this.starting.set(false); this.state.set(null); this.error.set(''); this.disconnected.set(false); this.cursor=0; this.hasOutput.set(false); this.activeTitle.set(''); this.terminal?.reset(); this.setReady(false); } this.previousRoot=root; });
+    effect(() => { const root=this.root(); if(this.previousRoot && root!==this.previousRoot) { this.preparedReview=''; this.reviewRequested.set(false); this.generation++; this.starting.set(false); this.state.set(null); this.error.set(''); this.disconnected.set(false); this.cursor=0; this.hasOutput.set(false); this.activeTitle.set(''); this.terminal?.reset(); this.setReady(false); } this.previousRoot=root; });
   }
   ngAfterViewInit(): void {
     this.terminal=new Terminal({fontSize:13,fontFamily:'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',scrollback:3000,convertEol:false,allowProposedApi:false,linkHandler:{activate:()=>{}},theme:this.dark()?{background:'#0b0d10',foreground:'#d9dde5',cursor:'#c8ff63'}:{background:'#fafbfc',foreground:'#25313e',cursor:'#476a1c'}});
@@ -53,7 +63,7 @@ export class AiTerminalComponent implements AfterViewInit, OnDestroy {
   }
   providerLabel():string { return {claude:'Claude Code',opencode:'OpenCode',codex:'Codex'}[this.provider()]; }
   sessionIso(value:number):string { return new Date(value).toISOString(); }
-  sessionDate(value:number):string { return new Date(value).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}); }
+  sessionDate(value:number):string { return new Date(value).toLocaleString(undefined,{month:'short',day:'numeric',year:'numeric',hour:'2-digit',minute:'2-digit'}); }
   sessionKey(event:KeyboardEvent):void {
     if(!['ArrowDown','ArrowUp','Home','End'].includes(event.key))return;
     const rows=Array.from((event.currentTarget as HTMLElement).querySelectorAll<HTMLButtonElement>('[role="option"]'));

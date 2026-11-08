@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import {nativeSessionMetadata} from '../fixtures/native-session-metadata';
 
 async function prepareReview(page:Page) {
  const direct=page.locator('.review-prepare');
@@ -25,9 +26,50 @@ test.beforeEach(async ({page}) => {
  page.on('pageerror',error=>console.error('PAGE ERROR',error.message));
 });
 
+test('compact right rail preserves Notes Terminal Review and never relabels or submits an active edit session',async({page})=>{
+ await expect(page.locator('.review-rails')).toBeVisible();
+ await expect(page.locator('.workspace-navigation')).toHaveCount(0);
+ await expect(page.locator('.review-rail small')).toHaveText(['Notes','Terminal','Review']);
+ await page.getByRole('combobox',{name:'Session intent'}).selectOption('edit');
+ await page.getByRole('button',{name:'Start session',exact:true}).click();
+ await expect(page.locator('.terminal-status')).toHaveText('running');
+ await page.locator('.review-rail').filter({hasText:'Review'}).click();
+ await expect(page.getByRole('textbox',{name:'Pending terminal context'})).toHaveValue(/Review the complete comparison/);
+ await expect(page.locator('.terminal-identity')).toContainText('Edit');
+ await expect(page.getByRole('status',{name:'Review permission notice'})).toContainText('Edit');
+ await page.getByRole('textbox',{name:'Pending terminal context'}).fill('Keep my unsent review draft');
+ await page.getByRole('button',{name:'AI terminal',exact:true}).click();
+ await page.getByRole('button',{name:'Open code review',exact:true}).click();
+ await expect(page.locator('.review-mode-rail')).toHaveClass(/active/);
+ await expect(page.getByRole('textbox',{name:'Pending terminal context'})).toHaveValue('Keep my unsent review draft');
+ await page.getByRole('button',{name:'Open review notes',exact:true}).click();
+ await expect(page.locator('.review-rails')).toBeVisible();
+ await page.getByRole('button',{name:'AI terminal',exact:true}).click();
+ await page.getByRole('button',{name:'Back to code',exact:true}).click();
+ await expect(page.locator('.diff-panel')).toBeVisible();
+ await expect(page.getByRole('button',{name:'Open review notes',exact:true})).toHaveCount(1);
+ await page.getByRole('button',{name:'AI terminal',exact:true}).click();
+ await expect(page.locator('.terminal-status')).toHaveText('running');
+ expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.start||c.stop||c.input))).toEqual([{start:'claude',mode:'edit'}]);
+});
+
+test('native resume rows show full local dates and times with exact ISO tooltips for every provider',async({page})=>{
+ const stamp=Date.parse('2026-11-06T14:23:45.678Z');
+ await page.evaluate(stamp=>{(window as any).rift.terminalSessions=async(provider:string)=>[{id:provider==='opencode'?'ses_2f6b4a8c9001AbCdEfGhIjKlMn':'01953d6c-1234-7123-9123-123456789abc',title:provider+' renamed conversation',updatedAt:stamp}];},stamp);
+ for(const provider of ['claude','opencode','codex']) {
+  await page.getByRole('combobox',{name:'Terminal provider'}).selectOption(provider);
+  await page.getByRole('button',{name:'Resume existing',exact:true}).click();
+  const row=page.getByRole('option').filter({hasText:provider+' renamed conversation'});
+  await expect(row).toBeVisible();
+  await expect(row.locator('time')).toHaveText(/2026.*\d{1,2}:\d{2}/);
+  await expect(row.locator('time')).toHaveAttribute('title','Updated 2026-11-06T14:23:45.678Z');
+ }
+ expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.start))).toEqual([]);
+});
+
 test('command composition separates launcher from a single aligned running bar',async({page})=>{
  await expect(page.getByRole('region',{name:'Launch AI session'})).toBeVisible();
- await page.screenshot({path:'/opt/data/output/riftcode/visual-refresh/after-dark-1440-launcher.png'});
+ await page.screenshot({path:'/opt/data/output/riftcode/compact-rail/after-dark-1440-launcher.png'});
  const baseline=await page.locator('.terminal-toolbar').evaluate(el=>({height:el.getBoundingClientRect().height,buttons:el.querySelectorAll('button,select,summary').length}));
  console.log('CURRENT COMPOSITION',JSON.stringify(baseline));
  await expect(page.getByRole('region',{name:'Launch AI session'})).toBeVisible();
@@ -44,10 +86,10 @@ test('command composition separates launcher from a single aligned running bar',
 });
 
 test('workspace navigation and repository chrome align without duplicate code exits',async({page})=>{
- await expect(page.getByRole('button',{name:'Code',exact:true})).toBeVisible();
+ await expect(page.getByRole('button',{name:'Back to code',exact:true})).toBeVisible();
  await expect(page.getByRole('button',{name:'AI terminal',exact:true})).toHaveCount(1);
- await expect(page.getByRole('button',{name:'Back to code',exact:true})).toHaveCount(0);
- await page.getByRole('button',{name:'Code',exact:true}).click();
+ await expect(page.getByRole('button',{name:'Back to code',exact:true})).toHaveCount(1);
+ await page.getByRole('button',{name:'Back to code',exact:true}).click();
  await expect(page.locator('.diff-panel')).toBeVisible();
  await page.getByRole('button',{name:'View',exact:true}).click();
  await expect(page.getByRole('checkbox',{name:'Full file',exact:true})).toBeVisible();
@@ -142,8 +184,8 @@ test('chrome typography and pane baselines remain readable rather than micro con
 
 test('code controls stay aligned and legible with the notes inspector at 1024px',async({page})=>{
  await page.setViewportSize({width:1024,height:900});
- await page.getByRole('button',{name:'Code',exact:true}).click();
- await page.locator('.diff-panel').getByRole('button',{name:'Open review notes',exact:true}).click();
+ await page.getByRole('button',{name:'Back to code',exact:true}).click();
+ await page.locator('.review-rails').getByRole('button',{name:'Open review notes',exact:true}).click();
  await expect.poll(()=>page.locator('.diff-panel').evaluate(el=>el.getBoundingClientRect().width)).toBe(460);
  const controls=await page.locator('.diff-options > button').evaluateAll(els=>els.map(el=>({h:el.getBoundingClientRect().height,y:el.getBoundingClientRect().y,right:el.getBoundingClientRect().right,font:parseFloat(getComputedStyle(el).fontSize)})));
  expect(controls.every(c=>c.h===32&&c.font>=12)).toBe(true);
@@ -180,7 +222,7 @@ test('failed session launch keeps prepared context and retries only on explicit 
 
 for(const theme of ['dark','light'])test(`notes inspector ${theme} has readable feedback and aligned safe actions`,async({page})=>{
  if(theme==='light')await page.getByRole('button',{name:'Use light theme'}).click();
- await page.getByRole('button',{name:'Code',exact:true}).click();
+ await page.getByRole('button',{name:'Back to code',exact:true}).click();
  await page.locator('.diff-row.addition').first().click({button:'right'});
  await page.getByRole('menuitem',{name:'Add note'}).click();
  await page.getByRole('textbox',{name:'Review note',exact:true}).fill('Readable review feedback.');
@@ -286,7 +328,7 @@ test('Review changes prepares complete comparison context without starting or su
 test('saved explanation opens as retained terminal context, preserving local history',async({page})=>{
  await page.evaluate(()=>localStorage.setItem('rift:review-session:/fixture/repo:feature/terminal:working-tree:origin/feature-0',JSON.stringify({version:2,reviewedFiles:[],notes:[],conversations:[{id:1,repositoryRoot:'/fixture/repo',agent:'claude',model:null,question:'Saved explanation',context:{filePath:'src/changed.ts',startLine:2,endLine:2,diff:'+new'},status:'complete',result:null,error:null,history:[]}]})));
  await page.reload();
- await page.getByRole('button',{name:'Code',exact:true}).click();
+ await page.getByRole('button',{name:'Back to code',exact:true}).click();
  await page.getByRole('button',{name:'Open explanation: Saved explanation'}).click();
  await expect(page.getByRole('textbox',{name:'Pending terminal context'})).toHaveValue(/Saved explanation/);
  await expect(page.getByRole('button',{name:/^(Start|Resume) session$/,exact:true})).toBeVisible();
@@ -389,7 +431,7 @@ for(const width of [1024,1440])for(const theme of ['dark','light']) {
   const toolbar=page.locator('.terminal-toolbar');
   expect((await toolbar.boundingBox())!.height).toBeLessThan(120);
   await expect(page.getByRole('button',{name:'Open review notes',exact:true})).toBeVisible();
-  await expect(page.locator('.review-rails')).toHaveCount(0);
+  await expect(page.locator('.review-rails')).toBeVisible();
   await page.getByRole('button',{name:/^(Start|Resume) session$/,exact:true}).click();
   await page.waitForTimeout(250);
   await page.screenshot({path:`test-results/unified-${theme}-${width}-closed.png`});
@@ -405,8 +447,8 @@ for(const width of [1024,1440])for(const theme of ['dark','light']) {
   await prepareReview(page);
   if(theme==='light')expect(await page.getByRole('textbox',{name:'Pending terminal context'}).evaluate(el=>getComputedStyle(el).backgroundColor)).toBe('rgb(255, 255, 255)');
   await page.screenshot({path:`test-results/unified-${theme}-${width}-review.png`});
-  await page.getByRole('button',{name:'Code',exact:true}).click();
-  expect(await page.getByRole('button',{name:'AI terminal',exact:true}).evaluate(el=>parseFloat(getComputedStyle(el).fontSize))).toBeGreaterThanOrEqual(13);
+  await page.getByRole('button',{name:'Back to code',exact:true}).click();
+  expect(await page.locator('.review-rail small').first().evaluate(el=>getComputedStyle(el).writingMode)).toBe('horizontal-tb');
   await page.locator('.diff-row.addition').first().click({button:'right'});
   const label=page.getByRole('menuitem',{name:'Insert selection in AI terminal'}).locator('strong');
   expect((await label.boundingBox())!.height).toBeLessThan(20);
@@ -431,6 +473,7 @@ test('late context insertion cannot discard unsent context in a new repository',
   f.rift.chooseRepository=async()=>{await f.rift.terminalStop();f.fixtureRepository.root='/fixture/other';return {...f.fixtureRepository};};
  });
  await prepareReview(page);
+ await page.getByRole('button',{name:'Insert pending context',exact:true}).click();
  await expect.poll(()=>page.evaluate(()=>!!(window as any).finishInput)).toBe(true);
  await page.getByRole('button',{name:'terminal-fixture',exact:true}).click();
  await expect(page.locator('.terminal-status')).toHaveText('No active session');
@@ -513,7 +556,7 @@ for (const kind of ['target','comparison'] as const) {
   await expect(trigger).toContainText(target?'origin/feature-50':'Change 50');
   expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.target||c.comparison))).toEqual(target?[{target:'origin/feature-51'},{target:'origin/feature-50'}]:[{comparison:'commit:52'},{comparison:'commit:50'}]);
   await trigger.click();
-  await page.locator('.session-launcher h1').click();
+  await page.getByRole('button',{name:'AI terminal',exact:true}).click();
   await expect(query).toHaveCount(0);
   await trigger.focus();
   await trigger.press('ArrowDown');
@@ -527,8 +570,8 @@ for (const kind of ['target','comparison'] as const) {
 test('AI workspace replaces legacy navigation and selection action stays horizontal',async({page})=>{
  await expect(page.getByRole('button',{name:'Legacy chats'})).toHaveCount(0);
  await expect(page.getByRole('button',{name:'Open chats'})).toHaveCount(0);
- await expect(page.getByRole('button',{name:'Open code review'})).toHaveCount(0);
- await page.getByRole('button',{name:'Code',exact:true}).click();
+ await expect(page.getByRole('button',{name:'Open code review'})).toHaveCount(1);
+ await page.getByRole('button',{name:'Back to code',exact:true}).click();
  await page.locator('.diff-row.addition').first().click({button:'right'});
  const action=page.getByRole('menuitem',{name:'Insert selection in AI terminal'});
  const label=action.locator('strong');
@@ -661,7 +704,7 @@ test('read rejection stops polling and requires explicit Stop and Start recovery
 });
 
 test('context is retained when no session is available',async({page})=>{
- await page.getByRole('button',{name:'Code',exact:true}).click();
+ await page.getByRole('button',{name:'Back to code',exact:true}).click();
  await page.locator('.diff-row.addition').first().click({button:'right'});
  await page.getByRole('menuitem',{name:'Insert selection in AI terminal'}).click();
  await expect(page.getByRole('textbox',{name:'Pending terminal context'})).toHaveValue(/\+new/);
@@ -678,7 +721,7 @@ test('notes and selected diff insert as context only and CLI shortcuts are not s
  await page.locator('.xterm-helper-textarea').focus();
  await page.keyboard.press('Control+f');
  await expect(page.getByRole('dialog',{name:'Search repository'})).not.toBeVisible();
- await page.getByRole('button',{name:'Code',exact:true}).click();
+ await page.getByRole('button',{name:'Back to code',exact:true}).click();
  const line=page.locator('.diff-row.addition').first();
  await line.click({button:'right'});
  await page.getByRole('menuitem',{name:'Insert selection in AI terminal'}).click();
@@ -687,7 +730,7 @@ test('notes and selected diff insert as context only and CLI shortcuts are not s
  expect(calls[0].input).toContain('Location: src/changed.ts:2-2');
  expect(calls[0].input).toContain('+new');
  expect(calls[0].input.endsWith('\r')).toBe(false);
- await page.getByRole('button',{name:'Code',exact:true}).click();
+ await page.getByRole('button',{name:'Back to code',exact:true}).click();
  await line.click({button:'right'});
  await page.getByRole('menuitem',{name:'Add note'}).click();
  await page.getByRole('textbox',{name:'Review note',exact:true}).fill('Synthetic fixture note only');
@@ -730,6 +773,65 @@ test('terminal-first workspace retains session, inserts selection without Enter 
  await page.screenshot({path:'test-results/terminal-light.png'});
 });
 
+for(const width of [1024,1440])for(const theme of ['dark','light'])test(`native metadata fixture parity ${theme} ${width} across all providers`,async({page})=>{
+ test.setTimeout(60000);
+ const sessions=await nativeSessionMetadata();
+ await page.setViewportSize({width,height:900});
+ await page.emulateMedia({reducedMotion:'reduce'});
+ if(theme==='light')await page.getByRole('button',{name:'Use light theme'}).click();
+ await page.evaluate(sessions=>{
+  const f=window as any;
+  f.rift.terminalSessions=async(provider:keyof typeof sessions)=>sessions[provider];
+  const start=f.rift.terminalStart;
+  f.rift.terminalStart=(provider:string,mode:string,cols:number,rows:number,resume?:string)=>{f.fixtureCalls.push({nativeResume:provider,resume});return start(provider,mode,cols,rows);};
+  const label=document.createElement('div');label.textContent='BROWSER · SYNTHETIC BRIDGE / NATIVE-SCHEMA SCRATCH FIXTURES';label.style.cssText='position:fixed;bottom:7px;left:300px;z-index:99999;font:10px sans-serif;color:#919da9;pointer-events:none';document.body.append(label);
+ },sessions);
+ for(const provider of ['claude','opencode','codex'] as const){
+  await page.getByRole('combobox',{name:'Terminal provider'}).selectOption(provider);
+  await page.getByRole('button',{name:'New session',exact:true}).click();
+  await page.screenshot({path:`/opt/data/output/riftcode/compact-rail/native-${provider}-${theme}-${width}-new.png`});
+  await page.getByRole('button',{name:'Resume existing',exact:true}).click();
+  const row=page.getByRole('option').filter({hasText:sessions[provider][0].title});
+  await expect(row).toBeVisible();await expect(row.locator('time')).toContainText('2026');
+  await row.click();await expect(row).toHaveAttribute('aria-selected','true');
+  await page.screenshot({path:`/opt/data/output/riftcode/compact-rail/native-${provider}-${theme}-${width}-resume.png`});
+  await page.getByRole('button',{name:'Open code review',exact:true}).click();
+  await expect(page.getByRole('textbox',{name:'Pending terminal context'})).toHaveValue(/Comparison: Working tree/);
+  await expect(page.getByRole('combobox',{name:'Session intent'})).toHaveValue('review');
+  // CSS visibility and Playwright click() auto-scroll do not prove the action is reachable.
+  const expectLaunchInView=async()=>{
+   const geometry=await page.locator('.session-launcher .primary-button').evaluate(el=>{
+    const r=el.getBoundingClientRect(), clip=el.closest('.launcher-space')!.getBoundingClientRect();
+    const pending=document.querySelector('.terminal-pending')!.getBoundingClientRect();
+    return {top:r.top,bottom:r.bottom,clipTop:clip.top,clipBottom:clip.bottom,pendingTop:pending.top,
+     fullyInViewport:r.top>=0&&r.left>=0&&r.bottom<=innerHeight&&r.right<=innerWidth,
+     fullyInLauncher:r.top>=clip.top&&r.bottom<=clip.bottom,
+     unobstructed:el.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2))};
+   });
+   expect(geometry,`${provider} ${theme} ${width}: primary launch action without scrolling`).toMatchObject({fullyInViewport:true,fullyInLauncher:true,unobstructed:true});
+   expect(geometry.bottom).toBeLessThanOrEqual(geometry.pendingTop);
+  };
+  await expectLaunchInView();
+  await page.getByRole('button',{name:'New session',exact:true}).click();
+  await expectLaunchInView();
+  await page.getByRole('button',{name:'Resume existing',exact:true}).click();
+  await expect(row).toBeVisible();await row.click();
+  await expectLaunchInView();
+  await page.screenshot({path:`/opt/data/output/riftcode/compact-rail/native-${provider}-${theme}-${width}-review.png`});
+  await page.getByRole('button',{name:'Resume session',exact:true}).click();
+  await expect(page.locator('.terminal-identity strong')).toHaveText(sessions[provider][0].title);
+  expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.input))).toEqual([]);
+  await page.getByRole('button',{name:'Back to code',exact:true}).click();
+  await page.getByRole('button',{name:'AI terminal',exact:true}).click();
+  await expect(page.locator('.terminal-status')).toHaveText('running');
+  await page.getByRole('button',{name:'Stop session',exact:true}).click();
+  await page.getByRole('button',{name:'Discard',exact:true}).click();
+ }
+ const calls=await page.evaluate(()=>(window as any).fixtureCalls);
+ expect(calls.filter((c:any)=>c.start)).toEqual(['claude','opencode','codex'].map(start=>({start,mode:'review'})));
+ expect(calls.filter((c:any)=>c.nativeResume)).toEqual(['claude','opencode','codex'].map(provider=>({nativeResume:provider,resume:sessions[provider as keyof typeof sessions][0].id})));
+});
+
 for(const width of [1024,1280,1440])for(const theme of ['dark','light']) {
  test(`visual evidence ${theme} ${width}: launcher loading running inspector`,async({page})=>{
   test.setTimeout(60000);
@@ -743,7 +845,7 @@ for(const width of [1024,1280,1440])for(const theme of ['dark','light']) {
     const label=document.createElement('div');label.id='browser-fixture-label';label.textContent='BROWSER PREVIEW · SYNTHETIC BRIDGE / DATA';
     label.style.cssText='position:fixed;bottom:7px;left:380px;z-index:99999;font:10px sans-serif;letter-spacing:.04em;color:#919da9;pointer-events:none';document.body.append(label);
    });
-   await page.screenshot({path:`/opt/data/output/riftcode/visual-refresh/${theme}-${width}-${name}.png`});
+   await page.screenshot({path:`/opt/data/output/riftcode/compact-rail/${theme}-${width}-${name}.png`});
   };
   await capture('launcher');
   await page.evaluate(()=>{(window as any).rift.terminalSessions=()=>new Promise(resolve=>(window as any).finishMatrixList=resolve);});
@@ -768,7 +870,7 @@ for(const width of [1024,1280,1440])for(const theme of ['dark','light']) {
   await page.getByRole('combobox',{name:'Search target branches'}).fill('feature-5');
   await capture('branch');
   await page.keyboard.press('Escape');
-  await page.getByRole('button',{name:'Code',exact:true}).click();
+  await page.getByRole('button',{name:'Back to code',exact:true}).click();
   await page.locator('.diff-row.addition').first().click({button:'right'});
   await page.getByRole('menuitem',{name:'Add note'}).click();
   await page.getByRole('textbox',{name:'Review note',exact:true}).fill('Check cancellation when switching repositories. Preserve unsent context.');

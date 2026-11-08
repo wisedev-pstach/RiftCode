@@ -10,6 +10,11 @@ const MAX_ENTRIES = 1000;
 const MAX_BYTES = 8 * 1024 * 1024;
 const MAX_MS = 3000;
 const unavailable = () => new Error('Provider session metadata is unavailable or unsupported. Use the provider in your system terminal; no authentication was attempted.');
+function validTime(value:unknown):value is number { return typeof value==='number' && Number.isSafeInteger(value) && value>=0 && value<=8640000000000000; }
+function newestSessions(sessions:AgentSession[]):AgentSession[] {
+  const seen=new Set<string>();
+  return sessions.sort((a,b)=>b.updatedAt-a.updatedAt).filter(s=>{if(seen.has(s.id))return false;seen.add(s.id);return true;}).slice(0,100);
+}
 function record(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
@@ -17,6 +22,25 @@ function parse(text: string): Record<string, unknown> | null { try { return reco
 function samePath(a: string, b: string): boolean { return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b; }
 function title(value: unknown, fallback: string): string {
   return typeof value === 'string' ? value.replace(/[\x00-\x1f\x7f-\x9f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0,120) || fallback : fallback;
+}
+/** Native bounded first-prompt preview fallback; never export conversation bodies. */
+function claudePrompt(text:string, id:string):string {
+  let command='';
+  for(const line of text.split('\n')) {
+    const event=parse(line);
+    if(!event || event.type!=='user' || event.sessionId!==id || event.isMeta || event.isCompactSummary || event.isSidechain)continue;
+    const content=record(event.message)?.content;
+    if(Array.isArray(content) && content.some(b=>record(b)?.type==='tool_result'))continue;
+    const texts=typeof content==='string'?[content]:Array.isArray(content)?content.filter(b=>record(b)?.type==='text').map(b=>record(b)?.text):[];
+    for(const raw of texts) {
+      const preview=title(raw,'');if(!preview)continue;
+      const cmd=preview.match(/<command-name>(.*?)<\/command-name>/);
+      if(cmd){command ||= cmd[1];continue;}
+      if(/^(<local-command-stdout>|<session-start-hook>|<tick>|<goal>|\[Request interrupted by user|<ide_opened_file>|<ide_selection>)/.test(preview))continue;
+      return preview;
+    }
+  }
+  return command;
 }
 async function matchesRoot(value: unknown, root: string): Promise<boolean> {
   if (typeof value !== 'string' || value.length > 4096 || !isAbsolute(value)) return false;
@@ -46,10 +70,10 @@ export async function listOpenCodeSessions(root:string, run:()=>Promise<string>)
     for(const value of rows) {
       const row=record(value), time=record(row?.time);
       const updated=time?.updated ?? row?.updated;
-      if(!row || !validResumeSessionId('opencode',row.id) || !await matchesRoot(row.directory,cwd) || typeof updated!=='number' || !Number.isSafeInteger(updated) || updated<0)continue;
-      sessions.push({id:row.id,title:title(row.title,'OpenCode conversation'),updatedAt:updated});
+      if(!row || !validResumeSessionId('opencode',row.id) || !await matchesRoot(row.directory,cwd) || !validTime(updated))continue;
+      sessions.push({id:row.id,title:title(row.title,'Untitled conversation'),updatedAt:updated});
     }
-    return [...new Map(sessions.sort((a,b)=>b.updatedAt-a.updatedAt).map(s=>[s.id,s])).values()].slice(0,100);
+    return newestSessions(sessions);
   }catch{throw unavailable();}
 }
 
@@ -62,17 +86,29 @@ export async function listTerminalSessions(root: string, provider: TerminalProvi
   let visited = 0, bytes = 0;
   const sessions: AgentSession[] = [];
   const check = () => { if (visited > MAX_ENTRIES || bytes > MAX_BYTES || Date.now()-started > MAX_MS) throw unavailable(); };
-  const readPrefix = async (path: string): Promise<{text:string;mtime:number;complete:boolean} | null> => {
+  const readPrefix = async (path: string, tail = false, limit = PREFIX_BYTES): Promise<{text:string;tail:string;mtime:number;complete:boolean} | null> => {
     check();
     if (!await safePath(home,path)) return null;
-    const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    // Reject special files before open: a FIFO can otherwise block before fstat.
+    const entry = await lstat(path);
+    if (!entry.isFile() || entry.nlink !== 1) return null;
+    // Nonblocking also protects the lstat/open replacement race on POSIX.
+    const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
     try {
       const details = await handle.stat();
       if (!details.isFile() || details.nlink !== 1) return null;
-      const buffer=Buffer.alloc(PREFIX_BYTES);
+      const buffer=Buffer.alloc(limit);
       const {bytesRead}=await handle.read(buffer,0,buffer.length,0);
       bytes+=bytesRead;check();
-      return {text:buffer.toString('utf8',0,bytesRead),mtime:details.mtimeMs,complete:bytesRead===details.size};
+      const text=buffer.toString('utf8',0,bytesRead);
+      let end=text;
+      if(tail && details.size>limit) {
+        const result=await handle.read(buffer,0,buffer.length,details.size-limit);
+        bytes+=result.bytesRead;check();
+        // Drop partial boundary records; never interpret fragments as metadata.
+        end=buffer.toString('utf8',0,result.bytesRead).split('\n').slice(1).join('\n');
+      }
+      return {text,tail:end,mtime:details.mtimeMs,complete:bytesRead===details.size};
     } finally { await handle.close(); }
   };
   const walk = async (directory: string, depth: number, acceptDirectory: (name:string, depth:number)=>boolean, acceptFile: (name:string)=>boolean, visit:(path:string,name:string)=>Promise<void>): Promise<void> => {
@@ -90,18 +126,29 @@ export async function listTerminalSessions(root: string, provider: TerminalProvi
       const directory=join(home,'.claude','projects',cwd.replace(/[^a-zA-Z0-9]/g,'-'));
       await walk(directory,0,()=>false,name=>name.endsWith('.jsonl'),async(path,name)=>{
         const id=name.slice(0,-6);if(!validResumeSessionId(provider,id))return;
-        const prefix=await readPrefix(path);if(!prefix)return;
-        let scoped=false, label:unknown;
-        for(const line of prefix.text.split('\n')) {
+        const prefix=await readPrefix(path,true);if(!prefix)return;
+        let scoped=false, custom:unknown, generated:unknown, summary:unknown;
+        if(parse(prefix.text.split('\n')[0])?.isSidechain===true)return;
+        for(const line of (prefix.text+'\n'+prefix.tail).split('\n')) {
           const event=parse(line);if(!event)continue;
           // A matching filename is not sufficient: require the provider's own session and cwd metadata.
           if(event.sessionId===id && await matchesRoot(event.cwd,cwd))scoped=true;
-          if(event.type==='ai-title')label??=event.aiTitle;
-          if(event.type==='summary')label??=event.summary;
+          if(event.sessionId!==undefined && event.sessionId!==id)continue;
+          if(event.type==='custom-title' && event.sessionId===id)custom=event.customTitle;
+          if(event.type==='ai-title')generated=event.aiTitle;
+          if(event.type==='summary')summary=event.summary;
+          if(event.type==='last-prompt')summary=event.lastPrompt;
         }
-        if(scoped)sessions.push({id,title:title(label,'Claude conversation'),updatedAt:prefix.mtime});
+        if(scoped)sessions.push({id,title:title(custom,title(generated,title(summary,claudePrompt(prefix.text,id)||'Untitled conversation'))),updatedAt:prefix.mtime});
       });
     } else if(provider === 'codex') {
+      // Native append-only rename index: last usable row wins, never authorizes resume.
+      const names=new Map<string,{label:string;updated:number}>();
+      const index=await readPrefix(join(home,'.codex','session_index.jsonl'),true,1024*1024);
+      for(const line of index?.tail.split('\n') ?? []) {
+        const row=parse(line), updated=typeof row?.updated_at==='string'?Date.parse(row.updated_at):NaN;
+        if(row && validResumeSessionId(provider,row.id) && Number.isFinite(updated) && title(row.thread_name,''))names.set(row.id,{label:title(row.thread_name,''),updated});
+      }
       await walk(join(home,'.codex','sessions'),3,(name,depth)=>depth===3 ? /^\d{4}$/.test(name) : /^\d{2}$/.test(name),name=>/^rollout-.*\.jsonl$/.test(name),async(path,name)=>{
         const prefix=await readPrefix(path);if(!prefix)return;
         const event=parse(prefix.text.split('\n',1)[0]);
@@ -109,17 +156,23 @@ export async function listTerminalSessions(root: string, provider: TerminalProvi
         if(event?.type!=='session_meta' || !meta || !validResumeSessionId(provider,meta.id) || !name.endsWith(`-${meta.id}.jsonl`) || !await matchesRoot(meta.cwd,cwd))return;
         const timestamp=typeof meta.timestamp==='string'?Date.parse(meta.timestamp):NaN;
         if(!Number.isFinite(timestamp))return;
-        sessions.push({id:meta.id,title:'Codex conversation',updatedAt:prefix.mtime});
+        const indexed=names.get(meta.id);
+        let preview='';
+        for(const line of prefix.text.split('\n')) {
+          const row=parse(line), payload=record(row?.payload);
+          if(row?.type==='event_msg' && payload?.type==='user_message') { preview=title(payload.message,'');if(preview)break; }
+        }
+        sessions.push({id:meta.id,title:indexed?.label ?? (preview||'Untitled conversation'),updatedAt:Math.max(prefix.mtime,indexed?.updated ?? 0)});
       });
     } else {
       await walk(join(home,'.local','share','opencode','storage','session'),1,name=>/^[a-zA-Z0-9_-]{1,100}$/.test(name),name=>name.endsWith('.json'),async(path,name)=>{
         const id=name.slice(0,-5);if(!validResumeSessionId(provider,id))return;
         const prefix=await readPrefix(path);if(!prefix?.complete)return;
         const meta=parse(prefix.text),time=record(meta?.time);
-        if(meta?.id!==id || !await matchesRoot(meta?.directory,cwd) || typeof time?.updated!=='number' || !Number.isSafeInteger(time.updated) || time.updated<0)return;
-        sessions.push({id,title:title(meta.title,'OpenCode conversation'),updatedAt:time.updated});
+        if(meta?.id!==id || !await matchesRoot(meta?.directory,cwd) || !validTime(time?.updated))return;
+        sessions.push({id,title:title(meta.title,'Untitled conversation'),updatedAt:time.updated});
       });
     }
-    return [...new Map(sessions.sort((a,b)=>b.updatedAt-a.updatedAt).map(s=>[s.id,s])).values()].slice(0,100);
+    return newestSessions(sessions);
   } catch { throw unavailable(); }
 }

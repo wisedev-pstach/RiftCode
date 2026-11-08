@@ -64,7 +64,7 @@
 
        </div>
       <div class="app-actions">
-        <nav class="workspace-navigation" aria-label="Workspace"><button [class.active]="!terminalOpen()" [attr.aria-pressed]="!terminalOpen()" (click)="showDiff()">Code</button><button [class.active]="terminalOpen()" [attr.aria-pressed]="terminalOpen()" (click)="openTerminal()" aria-label="AI terminal">AI terminal</button></nav>
+
         <button class="project-context-button" (click)="openContextDialog()" title="Project context and knowledge" aria-label="Project context"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h6l2 2h10v12H3Z"/></svg><span>Context</span>@if (contextItemCount()) { <small>{{ contextItemCount() }}</small> }</button>
       </div>
     </header>
@@ -234,7 +234,6 @@
             <button class="search-shortcut-hint" (click)="openRepositorySearch()" title="Search all repository files and contents"><kbd>{{ platform === "darwin" ? "Cmd+F" : "Ctrl+F" }}</kbd><span>Search repo</span></button>
           </div>
           <div class="diff-options">
-            <button class="edit-file-button" (click)="reviewSidebarOpen.set(!reviewSidebarOpen())" aria-label="Open review notes">Notes ({{ notes().length }})</button>
             <button class="edit-file-button" [class.active]="editMode()" [disabled]="!selectedFile() || selectedFile()?.status === 'deleted' || patch()?.binary" (click)="toggleEditMode()" [title]="editMode() ? 'Exit edit mode (Escape)' : 'Enter edit mode (Ctrl+E)'">{{ editMode() ? "Editing" : "Edit" }}</button>
             @if (editMode()) {
               <button class="save-file-button" [class.dirty]="selectedFileHasEdits()" [disabled]="!selectedFileHasEdits() || fileSaving()" (click)="saveCurrentFile()">{{ fileSaving() ? "Saving..." : "Save" }} <kbd>Ctrl+S</kbd></button>
@@ -434,6 +433,12 @@
       }
 
       <aside class="review-panel">
+        <nav class="review-rails" aria-label="Workspace tools">
+          <button class="review-rail" [class.active]="reviewSidebarOpen()" [attr.aria-expanded]="reviewSidebarOpen()" (click)="reviewSidebarOpen.set(!reviewSidebarOpen())" title="Review notes" aria-label="Open review notes"><span class="note-icon" aria-hidden="true">N</span><small>Notes</small>@if (notes().length) { <b>{{ notes().length }}</b> }</button>
+          <button class="review-rail conversation-rail" [class.active]="terminalOpen() && !aiTerminal?.reviewRequested()" (click)="openTerminal(); aiTerminal?.reviewRequested?.set(false)" title="New or resume a Claude Code, OpenCode or Codex session" aria-label="AI terminal"><span aria-hidden="true">&gt;_</span><small>Terminal</small></button>
+          <button class="review-rail review-mode-rail" [class.active]="terminalOpen() && aiTerminal?.reviewRequested()" (click)="prepareTerminalReview()" title="Prepare the complete comparison in the terminal" aria-label="Open code review"><span class="review-mark" aria-hidden="true">R</span><small>Review</small></button>
+        </nav>
+        <div class="notes-drawer" [hidden]="!reviewSidebarOpen()">
         @if (reviewSidebarOpen()) {
           <div class="panel-title review-header">
             <span>Review notes</span>
@@ -490,6 +495,7 @@
 
           </div>
         }
+        </div>
       </aside>
     </section>
 

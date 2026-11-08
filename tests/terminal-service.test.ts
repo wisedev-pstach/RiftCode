@@ -62,19 +62,21 @@ test('natural CLI exit has no shell fallback and closes its remaining owned proc
  } finally {service.reset();if(pid){try{process.kill(pid,'SIGKILL');}catch{}}await rm(root,{recursive:true,force:true});}
 });
 
-test('resume requires current repository membership before spawning and passes native flags', async () => {
+for(const provider of ['claude','opencode','codex'] as const)for(const mode of ['review','edit'] as const)test(`${provider} ${mode} resume revalidates repository membership and passes native flags to a real PTY`, async () => {
  const root=await mkdtemp(join(tmpdir(),'rift-resume-')); const fixture=join(root,'fixture');
- const id='01953d6c-1234-7123-9123-123456789abc';
+ const id=provider==='opencode'?'ses_2f6b4a8c9001AbCdEfGhIjKlMn':'01953d6c-1234-7123-9123-123456789abc';
  await writeFile(fixture,'#!/usr/bin/env node\nconsole.log(JSON.stringify(process.argv.slice(2)));setInterval(()=>{},1000);\n',{mode:0o755});
- const listed: string[]=[];
+ const listed:string[]=[];
  const service=new TerminalService(async()=>fixture,async(cwd,provider)=>{listed.push(cwd+':'+provider);return [{id,title:'fixture',updatedAt:0}];});
- try {
-  await assert.rejects(service.start(root,'claude','review',80,24,'aaaaaaaa-1234-7123-9123-123456789abc'),/repository/);
-  const state=await service.start(root,'claude','review',80,24,id);
+ try{
+  const foreign=provider==='opencode'?'ses_2f6b4a8c9001AbCdEfGhIjKlMo':'aaaaaaaa-1234-7123-9123-123456789abc';
+  await assert.rejects(service.start(root,provider,mode,80,24,foreign),/repository/);
+  const state=await service.start(root,provider,mode,80,24,id);
   await until(()=>service.read(state.id,0).data.includes(id));
-  assert.match(service.read(state.id,0).data,/--resume/);
+  const {providerArgs}=await import('../src/shared/terminal');
+  assert.deepEqual(JSON.parse(service.read(state.id,0).data.trim()),providerArgs(provider,mode,id));
   assert.equal(listed.length,2);
- } finally {service.reset();await rm(root,{recursive:true,force:true});}
+ }finally{service.reset();await rm(root,{recursive:true,force:true});}
 });
 
 test('reset during membership listing cannot spawn or clear a newer pending start', async () => {

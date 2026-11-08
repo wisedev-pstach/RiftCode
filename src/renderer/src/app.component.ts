@@ -2253,7 +2253,7 @@ export class AppComponent implements OnInit, OnDestroy {
   prepareTerminalReview():void {
     if(!this.repository())return;
     this.openTerminal();
-    void this.aiTerminal?.insert(this.buildReviewPrompt(this.reviewDraft().trim() || "Review the complete comparison and report the findings that matter."));
+    this.aiTerminal?.prepareReview(this.buildReviewPrompt(this.reviewDraft().trim() || "Review the complete comparison and report the findings that matter."));
   }
 
   async startReview(): Promise<void> {

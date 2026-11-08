@@ -70,8 +70,15 @@ rift-ai-terminal .stop-session { color:var(--ws-danger); background:transparent;
 .terminal-context-actions { position:absolute; z-index:80; top:40px; right:0; width:300px; padding:8px; border:1px solid var(--ws-line); border-radius:8px; background:var(--ws-surface); box-shadow:0 12px 32px #0003; display:grid; gap:4px; }
 .terminal-context-actions button { justify-content:flex-start; border:0; background:transparent; }
 .terminal-context-actions p { color:var(--ws-muted); margin:8px; font-size:12px; line-height:1.55; }
-.launcher-space { flex:1; min-height:0; overflow:auto; display:flex; align-items:flex-start; justify-content:center; padding:clamp(32px,8vh,88px) 32px 32px; }
-.session-launcher { width:540px; max-width:100%; }
+.launcher-space { flex:1; min-height:0; overflow:hidden; display:flex; align-items:flex-start; justify-content:center; padding:clamp(32px,8vh,88px) 32px 32px; }
+.session-launcher { width:540px; max-width:100%; max-height:100%; min-height:0; display:flex; flex-direction:column; }
+.launch-options { min-height:0; overflow:auto; }
+.session-launcher > footer,.launch-consent { flex:none; }
+.launcher-space.has-context { padding-block:20px; }
+.has-context .session-launcher h1 { margin-top:8px; font-size:22px; }
+.has-context .session-launcher header p { margin-bottom:16px; }
+.has-context .launch-choice,.has-context .terminal-resume { margin-top:16px; }
+.has-context .session-launcher footer { margin-top:16px; padding-top:16px; }
 .eyebrow { color:var(--ws-muted); font-size:11px; letter-spacing:.13em; font-weight:600; }
 .session-launcher h1 { margin:12px 0 8px; font-size:26px; line-height:1.25; font-weight:550; letter-spacing:-.7px; }
 .session-launcher header p { margin:0 0 32px; font-size:13px; color:var(--ws-muted); line-height:1.6; }
