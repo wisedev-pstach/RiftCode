@@ -27,6 +27,13 @@ export class TerminalService {
       });
     }finally{this.trackedSending=false;}
   }
+  /** Explicit user submission only. Readiness is not login/trust approval. */
+  async submit(id:string,text:string):Promise<void>{
+    const child=this.active(id);
+    if(typeof text!=='string'||!text.trim()||Buffer.byteLength(text,'utf8')>32768)throw new Error('Request must be between 1 byte and 32 KiB.');
+    if(!this.pasteReady)throw new Error('Wait for native CLI input readiness. Nothing sent.');
+    try{child.write(contextPaste(text)+'\r');}catch{throw new Error('PTY write failed; submission is uncertain. Inspect the CLI before retrying.');}
+  }
   private generation = 0;
   private starting = false;
   private process: IPty | null = null;

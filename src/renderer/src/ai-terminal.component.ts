@@ -3,11 +3,27 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import type { AgentSession,PromptSummary } from '../../shared/contracts';
 import type { ILink } from '@xterm/xterm';
+import {buildTerminalReview,type ReviewContext,type ReviewScope} from '../../shared/review-request';
 import { sourceLinks } from '../../shared/source-links';
 import type { TerminalMode, TerminalProvider, TerminalState, SourceLocation } from '../../shared/terminal';
 
 @Component({selector:'rift-ai-terminal',standalone:true,templateUrl:'./ai-terminal.component.html',styles:[`:host {position:relative;display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden} :host([hidden]) {display:none}`]})
 export class AiTerminalComponent implements AfterViewInit, OnDestroy {
+  readonly reviewWorkbench:boolean=false;
+  readonly slot:'terminal'|'review'='terminal';
+  @Input() reviewContext:ReviewContext|null=null;
+  readonly briefCollapsed=signal(false);
+  readonly reviewScope=signal<ReviewScope>('comparison');readonly instructions=signal('');readonly reviewTone=signal<'professional'|'honest'>('professional');readonly followUp=signal('');readonly reviewSending=signal(false);readonly reviewRuns=signal(0);readonly lastReview=signal('');
+  async runReviewRequest(followUp=false):Promise<void>{
+    const id=this.state()?.id,generation=this.generation;
+    if(!this.reviewWorkbench||!id||!this.ready()||this.reviewSending())return;
+    let text:string;
+    try{text=followUp?this.followUp():buildTerminalReview(this.reviewContext!,this.reviewScope(),this.instructions(),this.reviewTone());if(!text.trim())return;}catch(e){this.error.set(message(e));return;}
+    this.reviewSending.set(true);this.error.set('');
+    try{await window.rift.terminalSubmitReview(id,text);if(this.destroyed||generation!==this.generation||id!==this.state()?.id)return;if(followUp){if(this.followUp()===text)this.followUp.set('');}else{this.reviewRuns.update(n=>n+1);this.lastReview.set(text);this.briefCollapsed.set(true);}this.terminal?.focus();}
+    catch(e){if(!this.destroyed&&generation===this.generation&&id===this.state()?.id)this.error.set(message(e));}
+    finally{if(generation===this.generation)this.reviewSending.set(false);}
+  }
   readonly root=signal(''); readonly paths=signal<string[]>([]); readonly dark=signal(true);
   readonly noteCount=signal(0); readonly selectedNoteCount=signal(0); readonly hasSelection=signal(false);
   @Input('root') set rootInput(value:string) {this.root.set(value);}
@@ -26,7 +42,7 @@ export class AiTerminalComponent implements AfterViewInit, OnDestroy {
   @Output() readonly checkpointReview=new EventEmitter<PromptSummary>();
   readonly trackOpen=signal(false);readonly trackDraft=signal('');readonly tracking=signal(false);readonly summaries=signal<PromptSummary[]>([]);readonly summaryError=signal('');readonly summaryLoading=signal(false);private summaryRequest=0;
   async refreshCheckpoints():Promise<void>{
-    if(!window.rift.promptSummaries)return;
+    if(this.reviewWorkbench||!window.rift.promptSummaries)return;
     const request=++this.summaryRequest,root=this.root(),generation=this.generation;this.summaryLoading.set(true);
     try{const result=await window.rift.promptSummaries();if(!this.destroyed&&request===this.summaryRequest&&root===this.root()&&generation===this.generation){this.summaries.set(result);this.summaryError.set('');}}
     catch(e){if(request===this.summaryRequest&&generation===this.generation)this.summaryError.set(`${message(e)}. Previous summary may be stale; refresh changes to retry.`);}
@@ -53,16 +69,6 @@ export class AiTerminalComponent implements AfterViewInit, OnDestroy {
   readonly choice=signal<'new'|'resume'>('new'); readonly resumeId=signal(''); readonly sessions=signal<AgentSession[]>([]); readonly loadingSessions=signal(false); readonly sessionError=signal(''); private listGeneration=0;
   readonly state=signal<TerminalState|null>(null); readonly starting=signal(false); readonly ready=signal(false);
   readonly error=signal(''); readonly pending=signal(''); readonly hasOutput=signal(false); readonly activeTitle=signal('');
-  readonly reviewRequested=signal(false);
-  private preparedReview='';
-  prepareReview(text:string):void {
-    this.reviewRequested.set(true);
-    if(!this.state() && !this.starting())this.mode.set('review');
-    // Navigating back to the same comparison must not replace an unsent edited draft.
-    if(this.preparedReview===text && this.pending())return;
-    this.preparedReview=text;
-    this.retain(text);
-  }
   readonly available=!!window.rift?.terminalStart;
   private terminal?: Terminal; private fit=new FitAddon(); private observer?: ResizeObserver;
   private timer?: ReturnType<typeof setTimeout>; private cursor=0; private destroyed=false; private generation=0;
@@ -71,13 +77,13 @@ export class AiTerminalComponent implements AfterViewInit, OnDestroy {
     effect(()=>{const tracking=this.tracking()&&this.trackOpen();if(this.terminal)this.terminal.options.disableStdin=tracking;});
     effect(()=>{this.root();this.provider();const choice=this.choice();this.resumeId.set('');this.sessions.set([]);this.sessionError.set('');this.listGeneration++;this.loadingSessions.set(false);if(choice==='resume')void this.loadSessions();});
     effect(() => { const dark=this.dark(); if(this.terminal) this.terminal.options.theme=dark?{background:'#0b0d10',foreground:'#d9dde5',cursor:'#c8ff63'}:{background:'#fafbfc',foreground:'#25313e',cursor:'#476a1c'}; });
-    effect(() => { const root=this.root(); if(this.previousRoot && root!==this.previousRoot) { this.preparedReview=''; this.reviewRequested.set(false); this.generation++;this.tracking.set(false);this.summaries.set([]);this.summaryRequest++;this.summaryLoading.set(false);this.summaryError.set(''); this.starting.set(false); this.state.set(null); this.error.set(''); this.disconnected.set(false); this.cursor=0; this.hasOutput.set(false); this.activeTitle.set(''); this.terminal?.reset(); this.setReady(false); } this.previousRoot=root; });
+    effect(() => { const root=this.root(); if(this.previousRoot && root!==this.previousRoot) { this.reviewSending.set(false);this.reviewRuns.set(0);this.lastReview.set('');this.briefCollapsed.set(false);this.followUp.set(''); this.generation++;this.tracking.set(false);this.summaries.set([]);this.summaryRequest++;this.summaryLoading.set(false);this.summaryError.set(''); this.starting.set(false); this.state.set(null); this.error.set(''); this.disconnected.set(false); this.cursor=0; this.hasOutput.set(false); this.activeTitle.set(''); this.terminal?.reset(); this.setReady(false); } this.previousRoot=root; });
   }
   ngAfterViewInit(): void {
     this.terminal=new Terminal({fontSize:13,fontFamily:'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',scrollback:3000,convertEol:false,allowProposedApi:false,linkHandler:{activate:()=>{}},theme:this.dark()?{background:'#0b0d10',foreground:'#d9dde5',cursor:'#c8ff63'}:{background:'#fafbfc',foreground:'#25313e',cursor:'#476a1c'}});
     this.terminal.loadAddon(this.fit); this.terminal.open(this.surface.nativeElement);
-    this.terminal.onData(data => { if(this.tracking()&&this.trackOpen())return;const id=this.state()?.id, generation=this.generation; if(!this.disconnected()&&id&&this.state()?.status==='running') void window.rift.terminalInput(id,data,false).catch(e=>{if(!this.destroyed&&generation===this.generation&&this.state()?.id===id)this.fail(e);}); });
-    this.terminal.onResize(({cols,rows}) => { const id=this.state()?.id, generation=this.generation; if(id&&this.state()?.status==='running') void window.rift.terminalResize(id,cols,rows).catch(e=>{if(!this.destroyed&&generation===this.generation&&this.state()?.id===id)this.fail(e);}); });
+    this.terminal.onData(data => { if(this.tracking()&&this.trackOpen())return;const id=this.state()?.id, generation=this.generation; if(!this.disconnected()&&id&&this.state()?.status==='running') void window.rift.terminalInput(id,data,false,this.slot).catch(e=>{if(!this.destroyed&&generation===this.generation&&this.state()?.id===id)this.fail(e);}); });
+    this.terminal.onResize(({cols,rows}) => { const id=this.state()?.id, generation=this.generation; if(id&&this.state()?.status==='running') void window.rift.terminalResize(id,cols,rows,this.slot).catch(e=>{if(!this.destroyed&&generation===this.generation&&this.state()?.id===id)this.fail(e);}); });
     this.terminal.registerLinkProvider({provideLinks:(line,callback)=>callback(this.links(line))});
     this.observer=new ResizeObserver(()=>{if(this.surface.nativeElement.clientWidth>0) this.fit.fit();}); this.observer.observe(this.surface.nativeElement);
     if(this.available) void this.poll();
@@ -110,16 +116,16 @@ export class AiTerminalComponent implements AfterViewInit, OnDestroy {
     const generation=++this.generation; this.starting.set(true); this.activeTitle.set(this.choice()==='resume'?this.selectedSessionTitle():''); this.hasOutput.set(false); this.error.set(''); this.disconnected.set(false);
     try {
       this.fit.fit();
-      const state=await window.rift.terminalStart(this.provider(),this.mode(),this.terminal.cols,this.terminal.rows,this.choice()==='resume'?this.resumeId():undefined);
+      const state=await window.rift.terminalStart(this.provider(),this.mode(),this.terminal.cols,this.terminal.rows,this.choice()==='resume'?this.resumeId():undefined,this.slot);
       if(this.destroyed||generation!==this.generation)return;
-      this.terminal.reset(); this.cursor=0; this.state.set(state);this.summaries.set([]);this.summaryError.set('');this.checkpointReset.emit(); if(this.surface.nativeElement.checkVisibility())this.terminal.focus();
+      this.terminal.reset(); this.cursor=0; this.state.set(state);this.reviewRuns.set(0);this.lastReview.set('');this.briefCollapsed.set(false);this.summaries.set([]);this.summaryError.set('');if(!this.reviewWorkbench)this.checkpointReset.emit(); if(this.surface.nativeElement.checkVisibility())this.terminal.focus();
       if(!this.timer) void this.poll();
     } catch(e) { if(generation===this.generation)this.error.set(message(e)); }
     finally { if(generation===this.generation)this.starting.set(false); }
   }
   async stop(): Promise<void> {
-    const generation=++this.generation; this.starting.set(false);this.tracking.set(false);this.summaryRequest++;this.summaryLoading.set(false); this.setReady(false);
-    try { const stopped=await window.rift.terminalStop(); if(this.destroyed||generation!==this.generation)return; this.state.set(null); this.cursor=0; this.hasOutput.set(false); this.terminal?.reset(); this.error.set(''); this.disconnected.set(false);if(stopped?.checkpointError)this.summaryError.set(`Session stopped, but checkpoint freeze failed: ${stopped.checkpointError}. Previous summary may be stale; retry Finish checkpoint.`);else await this.refreshCheckpoints(); if(!this.timer) void this.poll(); }
+    const generation=++this.generation; this.starting.set(false);this.tracking.set(false);this.reviewSending.set(false);this.summaryRequest++;this.summaryLoading.set(false); this.setReady(false);
+    try { const stopped=await window.rift.terminalStop(this.slot); if(this.destroyed||generation!==this.generation)return; this.state.set(null); this.cursor=0; this.hasOutput.set(false); this.terminal?.reset(); this.error.set(''); this.disconnected.set(false);if(stopped?.checkpointError)this.summaryError.set(`Session stopped, but checkpoint freeze failed: ${stopped.checkpointError}. Previous summary may be stale; retry Finish checkpoint.`);else await this.refreshCheckpoints(); if(!this.timer) void this.poll(); }
     catch(e) {if(!this.destroyed&&generation===this.generation)this.fail(e);}
   }
   retain(text:string):void { this.pending.set(text.slice(0,32768));this.error.set(text.length>32768?'Context preview truncated to 32 KiB; saved history is unchanged.':''); }
@@ -129,7 +135,7 @@ export class AiTerminalComponent implements AfterViewInit, OnDestroy {
     const id=this.state()?.id;
     if(!id||!this.ready()) { this.error.set('Start a session and wait for the CLI input before inserting context. Nothing was sent.'); return; }
     const generation=this.generation;
-    try { await window.rift.terminalInput(id,text,true); if(this.destroyed||generation!==this.generation||this.state()?.id!==id)return; if(this.pending()===text)this.pending.set(''); this.terminal?.focus(); this.error.set(''); }
+    try { await window.rift.terminalInput(id,text,true,this.slot); if(this.destroyed||generation!==this.generation||this.state()?.id!==id)return; if(this.pending()===text)this.pending.set(''); this.terminal?.focus(); this.error.set(''); }
     catch(e) {if(!this.destroyed&&generation===this.generation)this.error.set(message(e));}
   }
   async copyPending(): Promise<void> { try {await window.rift.copyText(this.pending());}catch(e){this.error.set(message(e));} }
@@ -139,7 +145,7 @@ export class AiTerminalComponent implements AfterViewInit, OnDestroy {
     this.polling=true;
     const generation=this.generation;
     try {
-      const result=await window.rift.terminalRead(this.state()?.id??null,this.cursor);
+      const result=await window.rift.terminalRead(this.state()?.id??null,this.cursor,this.slot);
       if(this.destroyed||generation!==this.generation)return;
       this.state.set(result.state); this.cursor=result.cursor;
       if(result.state){this.provider.set(result.state.provider);this.mode.set(result.state.mode);}

@@ -1,4 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
+import {reviewFixture} from '../fixtures/review-workspace';
+import {contextPaste} from '../../src/shared/terminal';
 import {promptFixture} from '../fixtures/prompt-checkpoints';
 import {nativeSessionMetadata} from '../fixtures/native-session-metadata';
 
@@ -27,7 +29,7 @@ for(const width of [1024,1440])for(const theme of ['dark','light'])test(`tracked
   await expect(page.locator('.diff-panel')).toContainText('dirty before prompt');await expect(page.locator('.diff-panel')).toContainText('HEAD');await shot('review-exact-diff');
   await page.locator('.file-row').filter({hasText:'added.ts'}).click();await expect(page.locator('.diff-panel')).toContainText('new second line');
   await page.locator('.file-row').filter({hasText:'deleted.ts'}).click();await expect(page.locator('.diff-panel')).toContainText('delete this line');
-  await page.getByRole('button',{name:'AI terminal',exact:true}).click();await expect(page.locator('.terminal-status')).toHaveText('running');
+  await page.getByRole('button',{name:'AI terminal',exact:true}).click();await expect(page.locator('rift-ai-terminal .terminal-status')).toHaveText('running');
   await page.locator('rift-ai-terminal summary').click();await page.getByRole('button',{name:'Track a prompt',exact:true}).click();
   await page.getByRole('textbox',{name:'Tracked prompt'}).fill('Second prompt: replace added lines');await page.getByRole('button',{name:'Send & track',exact:true}).click();
   await expect(page.locator('.prompt-summary')).toHaveCount(2);await expect(page.locator('.prompt-summary').first()).toContainText('Frozen checkpoint · 3 files · +3 −2');await expect(page.locator('.prompt-summary').last()).toContainText('1 file · +1 −2');await shot('two-prompts');
@@ -52,7 +54,7 @@ test('late checkpoint patch cannot enter an empty replacement repository',async(
 test('Stop remains stopped when freezing the checkpoint fails',async({page})=>{
  await page.evaluate(()=>{const f=window as any,stop=f.rift.terminalStop;f.rift.terminalStop=async()=>{await stop();return {checkpointError:'Checkpoint file limit: 1 MiB'};};});
  await page.getByRole('button',{name:'Start session',exact:true}).click();await page.getByRole('button',{name:'Stop session',exact:true}).click();
- await expect(page.locator('.terminal-status')).toHaveText('No active session');await expect(page.getByRole('alert')).toContainText('Checkpoint file limit');await expect(page.getByRole('button',{name:'Start session',exact:true})).toBeEnabled();
+ await expect(page.locator('rift-ai-terminal .terminal-status')).toHaveText('No active session');await expect(page.getByRole('alert')).toContainText('Checkpoint file limit');await expect(page.getByRole('button',{name:'Start session',exact:true})).toBeEnabled();
 });
 
 test('tracked draft survives Stop during capture and a failed submit without writing twice',async({page})=>{
@@ -69,11 +71,168 @@ test('tracked draft survives Stop during capture and a failed submit without wri
  expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.input))).toEqual([]);
 });
 
-async function prepareReview(page:Page) {
- const direct=page.locator('.review-prepare');
- if(await direct.isVisible())await direct.click();
- else { await page.locator('rift-ai-terminal summary').click();await page.locator('.terminal-context-actions').getByRole('button',{name:'Review changes',exact:true}).click();await page.keyboard.press('Escape'); }
+async function prepareContext(page:Page) {
+ // Real selection flow with a temporarily non-ready CLI: insertion must retain, never submit.
+ await page.evaluate(()=>(window as any).fixtureAppend('\x1b[?2004l'));
+ await page.waitForTimeout(150);
+ await page.getByRole('button',{name:'Back to code',exact:true}).click();
+ await page.locator('.file-row').first().click();
+ await page.locator('.diff-row.addition').first().click({button:'right'});
+ await page.getByRole('menuitem',{name:'Insert selection in AI terminal'}).click();
+ await page.evaluate(()=>(window as any).fixtureAppend('\x1b[?2004h'));
 }
+
+
+test('original upright rail and direct context actions remain available without opening Context',async({page})=>{
+ await expect(page.locator('.review-rail small').first()).toHaveCSS('writing-mode','vertical-rl');
+ await expect(page.locator('.review-rail small').first()).toHaveCSS('text-orientation','upright');
+ const actions=page.getByRole('region',{name:'Terminal context'});
+ await expect(actions).toBeVisible();
+ await expect(actions.getByRole('button',{name:'Insert selected notes (0)',exact:true})).toBeDisabled();
+ await expect(actions.getByRole('button',{name:'Copy notes',exact:true})).toBeDisabled();
+ await expect(actions.getByRole('button',{name:'Insert selection',exact:true})).toBeDisabled();
+ await expect(page.locator('rift-ai-terminal details')).not.toHaveAttribute('open','');
+});
+
+test('dedicated review workbench runs scoped review and follow-up without replacing the edit terminal',async({page})=>{
+ await page.evaluate(()=>{
+  const f=window as any,api=f.rift;let reviewState:any=null,reviewOutput='';
+  for(const name of ['terminalStart','terminalRead','terminalStop','terminalInput','terminalResize']){
+   const original=api[name];api[name]=async(...args:any[])=>{
+    const slot=args[name==='terminalStart'?5:name==='terminalRead'?2:name==='terminalStop'?0:name==='terminalInput'?3:3];
+    if(slot!=='review')return original(...args);
+    if(name==='terminalStart'){f.fixtureCalls.push({reviewStart:args[0],mode:args[1]});reviewState={id:'review-fixture',provider:args[0],mode:args[1],cwd:'/fixture/repo',status:'running'};reviewOutput='\x1b[?2004hReview fixture ready > ';return reviewState;}
+    if(name==='terminalRead')return {state:reviewState,data:reviewOutput.slice(args[1]),cursor:reviewOutput.length,truncated:false};
+    if(name==='terminalStop'){reviewState=null;reviewOutput='';f.fixtureCalls.push({reviewStop:true});}
+    if(name==='terminalInput')f.fixtureCalls.push({reviewInput:args[1],paste:args[2]});
+   };
+  }
+  api.terminalSubmitReview=async(id:string,text:string)=>{f.fixtureCalls.push({reviewSubmit:id,text});};
+ });
+ await page.getByRole('combobox',{name:'Session intent'}).selectOption('edit');
+ await page.getByRole('button',{name:'Start session',exact:true}).click();
+ await page.getByRole('button',{name:'Open code review',exact:true}).click();
+ const workbench=page.getByRole('region',{name:'Code review workbench'});
+ await expect(workbench).toBeVisible();
+ await expect(page.getByRole('textbox',{name:'Pending terminal context'})).toHaveCount(0);
+ expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.reviewStart||c.reviewSubmit||c.stop))).toEqual([]);
+ await workbench.getByRole('combobox',{name:'Review scope'}).selectOption('file');
+ await workbench.getByRole('textbox',{name:'Review instructions'}).fill('Check error handling');
+ await workbench.getByRole('button',{name:'Start review session',exact:true}).click();
+ const run=workbench.getByRole('button',{name:'Run review',exact:true});await expect(run).toBeEnabled();
+ await run.click();
+ const sends=await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.reviewSubmit));
+ expect(sends).toHaveLength(1);await expect(workbench.getByText('Last sent request', {exact:true})).toBeVisible();await workbench.getByText('Last sent request', {exact:true}).click();await expect(workbench.locator('.review-request-snapshot pre')).toContainText('Scope: current file');expect(sends[0].text).toContain('Scope: current file');expect(sends[0].text).toContain('src/changed.ts');expect(sends[0].text).toContain('Start revision: HEAD');expect(sends[0].text).toContain('Check error handling');
+ await workbench.getByRole('textbox',{name:'Review follow-up'}).fill('Explain the boundary case');
+ await workbench.getByRole('button',{name:'Send follow-up',exact:true}).click();
+ expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.reviewSubmit).map((c:any)=>c.text))).toEqual([sends[0].text,'Explain the boundary case']);
+ await workbench.getByRole('button',{name:'Stop session',exact:true}).click();
+ await page.getByRole('button',{name:'AI terminal',exact:true}).click();
+ await expect(page.locator('rift-ai-terminal .terminal-status')).toHaveText('running');
+ await expect(page.locator('rift-ai-terminal .terminal-identity')).toContainText('Edit');
+ expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.start))).toHaveLength(1);
+ expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.stop))).toEqual([]);
+});
+
+for(const width of [1024,1440])for(const theme of ['dark','light'])test(`review workbench evidence ${theme} ${width}: notes, run, follow-up and resume stay reachable`,async({page})=>{
+ await page.setViewportSize({width,height:900});if(theme==='light')await page.getByRole('button',{name:'Use light theme',exact:true}).click();
+ await page.evaluate(()=>{const label=document.createElement('div');label.textContent='SYNTHETIC BROWSER BRIDGE · TEST REPOSITORY · NO PROVIDER CALL';label.style.cssText='position:fixed;bottom:4px;left:20px;z-index:99999;font:10px sans-serif;color:#8995a1;pointer-events:none';document.body.append(label);});
+ const shot=(name:string)=>page.screenshot({path:`/opt/data/output/riftcode/review-workbench/${theme}-${width}-${name}.png`});
+ const reachable=async(button:any)=>{const result=await button.evaluate((el:HTMLElement)=>{const r=el.getBoundingClientRect(),pane=el.closest('rift-review-terminal,rift-ai-terminal')!.getBoundingClientRect();return {inViewport:r.top>=0&&r.left>=0&&r.right<=innerWidth&&r.bottom<=innerHeight,inPane:r.top>=pane.top&&r.bottom<=pane.bottom,hit:el.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2))};});expect(result).toEqual({inViewport:true,inPane:true,hit:true});};
+ await shot('terminal-closed');
+ await page.getByRole('button',{name:'Back to code',exact:true}).click();await page.locator('.diff-row.addition').first().click({button:'right'});await page.getByRole('menuitem',{name:'Add note'}).click();await page.getByRole('textbox',{name:'Review note',exact:true}).fill('Check the error boundary before merging.');await page.getByRole('button',{name:'Add note',exact:true}).click();await page.getByRole('checkbox',{name:'Select note',exact:true}).check();
+ await page.getByRole('button',{name:'AI terminal',exact:true}).click();
+ const strip=page.locator('rift-ai-terminal').getByRole('region',{name:'Terminal context'});await expect(strip.getByRole('button',{name:'Insert selected notes (1)',exact:true})).toBeEnabled();await reachable(strip.getByRole('button',{name:'Insert selected notes (1)',exact:true}));await shot('terminal-notes');
+ await strip.getByRole('button',{name:'Insert selected notes (1)',exact:true}).click();await expect(page.getByRole('textbox',{name:'Pending terminal context'})).toHaveValue(/src\/changed.ts/);await expect(page.getByRole('textbox',{name:'Pending terminal context'})).toHaveValue(/Check the error boundary/);
+ expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.input))).toEqual([]);
+ await page.getByRole('button',{name:'Start session',exact:true}).click();await page.getByRole('button',{name:'Insert pending context',exact:true}).click();
+ const paste=await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.input));expect(paste).toHaveLength(1);expect(paste[0].paste).toBe(true);expect(paste[0].input.endsWith('\r')).toBe(false);await shot('terminal-running-notes');
+ await page.getByRole('button',{name:'Open code review',exact:true}).click();const review=page.getByRole('region',{name:'Code review workbench'});
+ await review.getByRole('combobox',{name:'Review scope'}).selectOption('notes');await review.getByRole('textbox',{name:'Review instructions'}).fill('Prioritize regressions and missing tests.');await reachable(review.getByRole('button',{name:'Start review session',exact:true}));await shot('review-setup-notes');
+ await review.getByRole('button',{name:'Resume existing',exact:true}).click();await review.getByRole('listbox',{name:'Provider session',exact:true}).getByRole('option').first().click();await reachable(review.getByRole('button',{name:'Resume review session',exact:true}));await shot('review-resume-notes');
+ await review.getByRole('button',{name:'Resume review session',exact:true}).click();const run=review.getByRole('button',{name:'Run review',exact:true});await expect(run).toBeEnabled();await reachable(run);await shot('review-ready-notes');await run.click();
+ const submits=await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.reviewSubmit));expect(submits).toHaveLength(1);expect(submits[0].text).toContain('Scope: selected notes');expect(submits[0].text).toContain('Check the error boundary');expect(submits[0].text).toContain('Prioritize regressions');
+ await review.getByRole('textbox',{name:'Review follow-up'}).fill('Explain the highest priority finding.');await reachable(review.getByRole('button',{name:'Send follow-up',exact:true}));await shot('review-follow-up-notes');await review.getByRole('button',{name:'Send follow-up',exact:true}).click();
+ await page.getByRole('button',{name:'Open review notes',exact:true}).click();await shot('review-notes-closed');
+ expect(await page.locator('.review-rail small').first().evaluate(el=>({writing:getComputedStyle(el).writingMode,orientation:getComputedStyle(el).textOrientation}))).toEqual({writing:'vertical-rl',orientation:'upright'});
+ await page.getByRole('button',{name:'AI terminal',exact:true}).click();await expect(page.locator('rift-ai-terminal .terminal-status')).toHaveText('running');
+});
+
+test('narrow sidebar labels and actions have separate unclipped hit targets across views',async({page})=>{
+ await page.setViewportSize({width:1024,height:900});await page.getByRole('button',{name:'Open review notes',exact:true}).click();
+ for(const theme of ['dark','light']){
+  if(theme==='light')await page.getByRole('button',{name:'Use light theme',exact:true}).click();
+  for(const view of ['terminal','review','code']){
+   if(view==='code')await page.getByRole('button',{name:'AI terminal',exact:true}).click();
+   await page.getByRole('button',{name:view==='terminal'?'AI terminal':view==='review'?'Open code review':'Back to code',exact:true}).click();
+   const header=page.locator('.changes-panel > .panel-title');
+   const geometry=await header.evaluate(el=>Array.from(el.querySelectorAll('.sidebar-view-toggle button,.changes-heading-actions > button,.count')).map(button=>{const r=button.getBoundingClientRect(),p=el.getBoundingClientRect(),range=document.createRange();range.selectNodeContents(button);const text=range.getBoundingClientRect();return {label:button.textContent?.trim(),fits:text.left>=r.left&&text.right<=r.right&&r.left>=p.left&&r.right<=p.right,hit:button.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2))};}));
+   expect(geometry.every(g=>g.fits&&g.hit),JSON.stringify(geometry)).toBe(true);
+   await header.getByRole('button',{name:'File list options',exact:true}).click();await expect(page.getByRole('button',{name:'Hide reviewed files',exact:true})).toBeVisible();await page.keyboard.press('Escape');
+   await header.getByRole('button',{name:'Explorer',exact:true}).click();await expect(header.getByRole('button',{name:'Changes',exact:true})).toBeVisible();await header.getByRole('button',{name:'Changes',exact:true}).click();
+  }
+ }
+});
+
+test('accepted review brief collapses for output and reopens without submitting or rewriting its snapshot',async({page})=>{
+ await page.setViewportSize({width:1024,height:900});await page.getByRole('button',{name:'Open review notes',exact:true}).click();await page.getByRole('button',{name:'Open code review',exact:true}).click();
+ const review=page.getByRole('region',{name:'Code review workbench'});
+ await review.getByRole('combobox',{name:'Review scope'}).selectOption('file');await review.getByRole('combobox',{name:'Review tone'}).selectOption('honest');await review.getByRole('textbox',{name:'Review instructions'}).fill('Check the boundary');
+ await review.getByRole('button',{name:'Start review session',exact:true}).click();const run=review.getByRole('button',{name:'Run review',exact:true});await expect(run).toBeEnabled();
+ const before=(await review.locator('.terminal-surface').boundingBox())!.height;
+ await page.evaluate(()=>{const f=window as any,submit=f.rift.terminalSubmitReview;f.restoreSubmit=()=>f.rift.terminalSubmitReview=submit;f.rift.terminalSubmitReview=async()=>{throw new Error('uncertain write');};});
+ await run.click();await expect(review.getByRole('alert')).toContainText('uncertain');await expect(review.getByRole('textbox',{name:'Review instructions'})).toHaveValue('Check the boundary');
+ await page.evaluate(()=>(window as any).restoreSubmit());await run.click();
+ const edit=review.getByRole('button',{name:'Edit review brief',exact:true});await expect(edit).toHaveAttribute('aria-expanded','false');
+ await expect.poll(async()=>(await review.locator('.terminal-surface').boundingBox())!.height).toBeGreaterThanOrEqual(280);
+ expect((await review.locator('.terminal-surface').boundingBox())!.height-before).toBeGreaterThan(140);
+ await expect(review.locator('.review-brief')).toContainText('Current file');await expect(review.locator('.review-brief')).toContainText('Honest');
+ for(const button of [edit,review.getByRole('button',{name:'Rerun review',exact:true}),review.getByRole('button',{name:'Send follow-up',exact:true})])expect(await button.evaluate(el=>{const r=el.getBoundingClientRect();return r.bottom<=innerHeight&&el.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));})).toBe(true);
+ const snapshot=await review.locator('.review-request-snapshot pre').textContent();await edit.click();await expect(edit).toHaveAttribute('aria-expanded','true');await review.getByRole('textbox',{name:'Review instructions'}).fill('Changed draft');await expect(review.locator('.review-request-snapshot pre')).toHaveText(snapshot!);
+ await review.getByRole('button',{name:'Collapse review brief',exact:true}).click();expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.reviewSubmit))).toHaveLength(1);
+ await review.getByText('Last sent request',{exact:true}).click();await expect(review.locator('.review-request-snapshot pre')).toBeVisible();
+});
+
+test('actual harmless PTY receives the scoped review and follow-up bytes once while the edit PTY stays alive',async({page})=>{
+ const fixture=await reviewFixture();
+ try{
+  await page.exposeFunction('nativeFixtureStart',fixture.start);
+  await page.exposeFunction('nativeFixtureRead',(id:string|null,cursor:number,slot:'terminal'|'review')=>fixture.workspace.slot(slot).read(id,cursor));
+  await page.exposeFunction('nativeFixtureInput',(id:string,text:string,paste:boolean,slot:'terminal'|'review')=>fixture.workspace.slot(slot).input(id,text,paste));
+  await page.exposeFunction('nativeFixtureResize',(id:string,cols:number,rows:number,slot:'terminal'|'review')=>fixture.workspace.slot(slot).resize(id,cols,rows));
+  await page.exposeFunction('nativeFixtureStop',(slot:'terminal'|'review')=>fixture.workspace.slot(slot).reset());
+  await page.exposeFunction('nativeFixtureSubmit',(id:string,text:string)=>fixture.workspace.review.submit(id,text));
+  await page.evaluate(()=>{const f=window as any;Object.assign(f.rift,{terminalStart:f.nativeFixtureStart,terminalRead:f.nativeFixtureRead,terminalInput:f.nativeFixtureInput,terminalResize:f.nativeFixtureResize,terminalStop:f.nativeFixtureStop,terminalSubmitReview:f.nativeFixtureSubmit});});
+  await page.getByRole('combobox',{name:'Session intent'}).selectOption('edit');await page.getByRole('button',{name:'Start session',exact:true}).click();
+  await expect(page.locator('rift-ai-terminal .terminal-status')).toHaveText('running');const edit=fixture.workspace.terminal.read(null,0).state!;
+  await page.getByRole('button',{name:'Open code review',exact:true}).click();const review=page.getByRole('region',{name:'Code review workbench'});
+  await review.getByRole('combobox',{name:'Review scope'}).selectOption('file');await review.getByRole('textbox',{name:'Review instructions'}).fill('Check the boundary.');await review.getByRole('button',{name:'Start review session',exact:true}).click();
+  const run=review.getByRole('button',{name:'Run review',exact:true});await expect(run).toBeEnabled();expect((await fixture.bytes()).length).toBe(0);
+  await run.click();const request=await review.locator('.review-request-snapshot pre').textContent();expect(request).toContain('Comparison: Working tree');expect(request).toContain('src/changed.ts');expect(request).toContain('Check the boundary.');
+  await expect.poll(async()=>Buffer.from(await fixture.bytes()).toString('hex')).toBe(Buffer.from(contextPaste(request!)+'\r').toString('hex'));
+  await review.getByRole('textbox',{name:'Review follow-up'}).fill('Explain src/changed.ts:2');await review.getByRole('button',{name:'Send follow-up',exact:true}).click();
+  await expect.poll(async()=>Buffer.from(await fixture.bytes()).toString('hex')).toBe(Buffer.from(contextPaste(request!)+'\r'+contextPaste('Explain src/changed.ts:2')+'\r').toString('hex'));
+  expect(fixture.workspace.terminal.read(edit.id,0).state?.id).toBe(edit.id);expect(fixture.starts).toEqual([{slot:'terminal',mode:'edit'},{slot:'review',mode:'review'}]);
+  await page.screenshot({path:'/opt/data/output/riftcode/review-workbench/actual-posix-pty-browser.png'});
+  await review.getByRole('button',{name:'Stop session',exact:true}).click();expect(fixture.workspace.terminal.read(edit.id,0).state?.id).toBe(edit.id);
+ }finally{await fixture.cleanup();}
+});
+
+test('review waits for explicit CLI readiness and preserves follow-up on uncertain submit without automatic retry',async({page})=>{
+ await page.getByRole('button',{name:'Open code review',exact:true}).click();const review=page.getByRole('region',{name:'Code review workbench'});
+ await page.evaluate(()=>{const f=window as any,read=f.rift.terminalRead;f.reviewInputReady=false;f.rift.terminalRead=async(id:string|null,cursor:number,slot?:string)=>{const result=await read(id,cursor,slot);if(slot==='review'&&result.state){const text=f.reviewInputReady?'\x1b[?2004hReady > ':'Trust this repository? > ';return {...result,data:text.slice(cursor),cursor:text.length};}return result;};});
+ await review.getByRole('button',{name:'Start review session',exact:true}).click();await expect(review.locator('.terminal-status')).toHaveText('running');
+ await expect(review.getByRole('button',{name:'Run review',exact:true})).toBeDisabled();expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.reviewSubmit))).toEqual([]);
+ // The user resolves native trust/login themselves. Readiness only enables an explicit action.
+ await page.evaluate(()=>(window as any).reviewInputReady=true);
+ // A real CLI appends readiness; reset the synthetic cursor to send the complete sequence.
+ await page.evaluate(()=>{const f=window as any,read=f.rift.terminalRead;let delivered=false;f.rift.terminalRead=async(id:string|null,cursor:number,slot?:string)=>{const result=await read(id,cursor,slot);if(slot==='review'&&!delivered){delivered=true;return {...result,data:'\x1b[?2004hReady > '};}return result;};});
+ await expect(review.getByRole('button',{name:'Run review',exact:true})).toBeEnabled();
+ await review.getByRole('textbox',{name:'Review follow-up'}).fill('Keep this draft if writing fails');
+ await page.evaluate(()=>{const f=window as any;f.failedReviewSends=0;f.rift.terminalSubmitReview=async()=>{f.failedReviewSends++;throw new Error('PTY write failed; submission is uncertain. Inspect the CLI before retrying.');};});
+ await review.getByRole('button',{name:'Send follow-up',exact:true}).click();await expect(review.getByRole('alert')).toContainText('uncertain');await expect(review.getByRole('textbox',{name:'Review follow-up'})).toHaveValue('Keep this draft if writing fails');
+ await page.getByRole('button',{name:'AI terminal',exact:true}).click();await page.getByRole('button',{name:'Open code review',exact:true}).click();expect(await page.evaluate(()=>(window as any).failedReviewSends)).toBe(1);
+});
 
 test.beforeEach(async ({page}) => {
  await page.addInitScript(() => {
@@ -88,6 +247,19 @@ test.beforeEach(async ({page}) => {
   (window as any).fixtureRepository=repository;
   (window as any).fixtureAppend=(text:string)=>{output+=text;};
   (window as any).rift={platform:'linux',terminalSessions:async()=>[{id:'01953d6c-1234-7123-9123-123456789abc',title:'Fixture session in this repository',updatedAt:42}],selectComparison:async(id:string)=>{calls.push({comparison:id});repository.comparisonId=id;return {...repository};},selectTargetBranch:async(ref:string)=>{calls.push({target:ref});repository.targetBranch=ref as any;return {...repository};},setTheme:async()=>{},checkForUpdate:async()=>({currentVersion:'0.8.0',latestVersion:null,releaseNotes:[],updateAvailable:false,installSupported:false,error:null}),openRepository:async()=>repository,refreshRepository:async()=>repository,listRepositoryFiles:async()=>['src/changed.ts','src/my file.ts'],getFilePatch:async()=>({path:'src/changed.ts',binary:false,patch:'diff --git a/src/changed.ts b/src/changed.ts\n--- a/src/changed.ts\n+++ b/src/changed.ts\n@@ -1,2 +1,2 @@\n const unchanged = 1;\n-old\n+new\n'}),listAgents:async()=>[],onRepositoryChanged:()=>()=>{},onAgentEvent:()=>()=>{},copyText:async(text:string)=>{calls.push({copy:text});},readRepositoryViewFile:async(path:string)=>{calls.push({open:path});return{path,content:Array.from({length:30},(_,i)=>'const line'+(i+1)+' = true;').join('\n'),binary:false,truncated:false};},terminalRead:async(id:string|null,cursor:number)=>({state,data:output.slice(cursor),cursor:output.length,truncated:false}),terminalStart:async(provider:string,mode:string)=>{calls.push({start:provider,mode});state={id:'fixture-session',provider,mode,cwd:repository.root,status:'running'};output='\x1b[?2004h\x1b[32mLOCAL FIXTURE — not a provider run\x1b[0m\r\nReview src/my file.ts:12:3\r\nReady > ';return state;},terminalStop:async()=>{state=null;output='';calls.push({stop:true});},terminalInput:async(id:string,data:string,paste:boolean)=>{calls.push({input:data,paste});},terminalResize:async(_id:string,cols:number)=>{(window as any).fixtureCols=cols;}};
+  const api=(window as any).rift;let reviewState:any=null,reviewOutput='';
+  for(const name of ['terminalStart','terminalRead','terminalStop','terminalInput','terminalResize']){
+   const original=api[name];api[name]=async(...args:any[])=>{
+    const slot=args[name==='terminalStart'?5:name==='terminalRead'?2:name==='terminalStop'?0:3];
+    if(slot!=='review')return original(...args);
+    if(name==='terminalStart'){calls.push({reviewStart:args[0],mode:args[1]});reviewState={id:'review-fixture',provider:args[0],mode:args[1],cwd:repository.root,status:'running'};reviewOutput='\x1b[?2004hLOCAL REVIEW FIXTURE — no provider run\r\nReview src/my file.ts:12:3\r\nReady > ';return reviewState;}
+    if(name==='terminalRead')return {state:reviewState,data:reviewOutput.slice(args[1]),cursor:reviewOutput.length,truncated:false};
+    if(name==='terminalStop'){reviewState=null;reviewOutput='';calls.push({reviewStop:true});}
+    if(name==='terminalInput')calls.push({reviewInput:args[1],paste:args[2]});
+   };
+  }
+  api.terminalSubmitReview=async(id:string,text:string)=>{calls.push({reviewSubmit:id,text});};
+
  });
  page.on('console',msg=>{if(msg.type()==='error')console.error('BROWSER',msg.text());});
  await page.goto('/');
@@ -100,16 +272,16 @@ test('compact right rail preserves Notes Terminal Review and never relabels or s
  await expect(page.locator('.review-rail small')).toHaveText(['Notes','Terminal','Review']);
  await page.getByRole('combobox',{name:'Session intent'}).selectOption('edit');
  await page.getByRole('button',{name:'Start session',exact:true}).click();
- await expect(page.locator('.terminal-status')).toHaveText('running');
+ await expect(page.locator('rift-ai-terminal .terminal-status')).toHaveText('running');
  await page.locator('.review-rail').filter({hasText:'Review'}).click();
- await expect(page.getByRole('textbox',{name:'Pending terminal context'})).toHaveValue(/Review the complete comparison/);
- await expect(page.locator('.terminal-identity')).toContainText('Edit');
- await expect(page.getByRole('status',{name:'Review permission notice'})).toContainText('Edit');
- await page.getByRole('textbox',{name:'Pending terminal context'}).fill('Keep my unsent review draft');
+ await expect(page.getByRole('region',{name:'Code review workbench'})).toBeVisible();
+ await expect(page.locator('rift-ai-terminal .terminal-identity')).toContainText('Edit');
+ await expect(page.getByRole('status',{name:'Review permission notice'})).toHaveCount(0);
+ await page.getByRole('textbox',{name:'Review instructions'}).fill('Keep my unsent review draft');
  await page.getByRole('button',{name:'AI terminal',exact:true}).click();
  await page.getByRole('button',{name:'Open code review',exact:true}).click();
  await expect(page.locator('.review-mode-rail')).toHaveClass(/active/);
- await expect(page.getByRole('textbox',{name:'Pending terminal context'})).toHaveValue('Keep my unsent review draft');
+ await expect(page.getByRole('textbox',{name:'Review instructions'})).toHaveValue('Keep my unsent review draft');
  await page.getByRole('button',{name:'Open review notes',exact:true}).click();
  await expect(page.locator('.review-rails')).toBeVisible();
  await page.getByRole('button',{name:'AI terminal',exact:true}).click();
@@ -117,7 +289,7 @@ test('compact right rail preserves Notes Terminal Review and never relabels or s
  await expect(page.locator('.diff-panel')).toBeVisible();
  await expect(page.getByRole('button',{name:'Open review notes',exact:true})).toHaveCount(1);
  await page.getByRole('button',{name:'AI terminal',exact:true}).click();
- await expect(page.locator('.terminal-status')).toHaveText('running');
+ await expect(page.locator('rift-ai-terminal .terminal-status')).toHaveText('running');
  expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.start||c.stop||c.input))).toEqual([{start:'claude',mode:'edit'}]);
 });
 
@@ -138,14 +310,14 @@ test('native resume rows show full local dates and times with exact ISO tooltips
 test('command composition separates launcher from a single aligned running bar',async({page})=>{
  await expect(page.getByRole('region',{name:'Launch AI session'})).toBeVisible();
  await page.screenshot({path:'/opt/data/output/riftcode/compact-rail/after-dark-1440-launcher.png'});
- const baseline=await page.locator('.terminal-toolbar').evaluate(el=>({height:el.getBoundingClientRect().height,buttons:el.querySelectorAll('button,select,summary').length}));
+ const baseline=await page.locator('rift-ai-terminal .terminal-toolbar').evaluate(el=>({height:el.getBoundingClientRect().height,buttons:el.querySelectorAll('button,select,summary').length}));
  console.log('CURRENT COMPOSITION',JSON.stringify(baseline));
  await expect(page.getByRole('region',{name:'Launch AI session'})).toBeVisible();
  await page.getByRole('button',{name:/^(Start|Resume) session$/,exact:true}).click();
- await expect(page.locator('.terminal-status')).toHaveText('running');
+ await expect(page.locator('rift-ai-terminal .terminal-status')).toHaveText('running');
  await expect(page.getByRole('combobox',{name:'Terminal provider'})).toHaveCount(0);
  await expect(page.getByRole('region',{name:'Launch AI session'})).toHaveCount(0);
- const bar=page.locator('.terminal-toolbar');
+ const bar=page.locator('rift-ai-terminal .terminal-toolbar');
  const geometry=await bar.evaluate(el=>({height:el.getBoundingClientRect().height,controls:[...el.querySelectorAll('button,summary')].filter(c=>c.checkVisibility()).map(c=>({y:c.getBoundingClientRect().y,h:c.getBoundingClientRect().height}))}));
  expect(geometry.height).toBe(56);
  expect(geometry.controls.length).toBeLessThanOrEqual(3);
@@ -237,7 +409,7 @@ test('terminal context menu dismisses outside and with Escape returning focus',a
  await expect(trigger).toHaveAttribute('aria-expanded','false');
  await expect(trigger).toBeFocused();
  await trigger.click();
- await page.locator('.session-launcher h1').click();
+ await page.locator('rift-ai-terminal .session-launcher h1').click();
  await expect(trigger).toHaveAttribute('aria-expanded','false');
 });
 
@@ -245,7 +417,7 @@ test('chrome typography and pane baselines remain readable rather than micro con
  await expect(page.getByRole('button',{name:'Changes',exact:true})).toBeVisible();
  expect(await page.getByRole('button',{name:'Changes',exact:true}).evaluate(el=>parseFloat(getComputedStyle(el).fontSize))).toBeGreaterThanOrEqual(12);
  const sidebar=await page.locator('.changes-panel > .panel-title').boundingBox();
- const toolbar=await page.locator('.terminal-toolbar').boundingBox();
+ const toolbar=await page.locator('rift-ai-terminal .terminal-toolbar').boundingBox();
  expect(sidebar!.y+sidebar!.height).toBe(toolbar!.y+toolbar!.height);
  expect(await page.locator('.logo-letter').first().evaluate(el=>getComputedStyle(el).opacity)).toBe('1');
 });
@@ -270,21 +442,21 @@ test('running identity keeps the selected conversation title, provider and purpo
  await page.getByRole('button',{name:'Resume existing',exact:true}).click();
  await page.getByRole('listbox',{name:'Provider session',exact:true}).getByRole('option').first().click();
  await page.getByRole('button',{name:'Resume session',exact:true}).click();
- await expect(page.locator('.terminal-identity strong')).toHaveText('Fixture session in this repository');
- await expect(page.locator('.terminal-identity')).toContainText('OpenCode');
- await expect(page.locator('.terminal-identity')).toContainText('Edit');
+ await expect(page.locator('rift-ai-terminal .terminal-identity strong')).toHaveText('Fixture session in this repository');
+ await expect(page.locator('rift-ai-terminal .terminal-identity')).toContainText('OpenCode');
+ await expect(page.locator('rift-ai-terminal .terminal-identity')).toContainText('Edit');
  await expect(page.getByRole('combobox',{name:'Session intent'})).toHaveCount(0);
 });
 
 test('failed session launch keeps prepared context and retries only on explicit action',async({page})=>{
- await prepareReview(page);
+ await prepareContext(page);
  await page.evaluate(()=>{const f=window as any;const start=f.rift.terminalStart;f.rift.terminalStart=async(...args:any[])=>{f.rift.terminalStart=start;throw new Error('Claude Code is not installed');};});
  await page.getByRole('button',{name:'Start session',exact:true}).click();
  await expect(page.getByRole('alert')).toContainText('Claude Code is not installed');
- await expect(page.getByRole('textbox',{name:'Pending terminal context'})).toHaveValue(/Comparison/);
+ await expect(page.getByRole('textbox',{name:'Pending terminal context'})).toHaveValue(/src\/changed.ts/);
  await page.getByRole('button',{name:'Retry session',exact:true}).click();
- await expect(page.locator('.terminal-status')).toHaveText('running');
- await expect(page.getByRole('textbox',{name:'Pending terminal context'})).toHaveValue(/Comparison/);
+ await expect(page.locator('rift-ai-terminal .terminal-status')).toHaveText('running');
+ await expect(page.getByRole('textbox',{name:'Pending terminal context'})).toHaveValue(/src\/changed.ts/);
  expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.input))).toEqual([]);
 });
 
@@ -311,7 +483,7 @@ test('narrow retained session identity keeps provider status readable instead of
  await page.getByRole('button',{name:'Resume session',exact:true}).click();
  await page.getByRole('button',{name:'Open review notes',exact:true}).click();
  await expect.poll(()=>page.locator('rift-ai-terminal').evaluate(el=>el.getBoundingClientRect().width)).toBe(460);
- await expect.poll(()=>page.locator('.terminal-identity small').evaluate(el=>el.scrollWidth<=el.clientWidth)).toBe(true);
+ await expect.poll(()=>page.locator('rift-ai-terminal .terminal-identity small').evaluate(el=>el.scrollWidth<=el.clientWidth)).toBe(true);
 });
 
 test('narrow repository opening reserves the same two header regions as the ready workspace',async({page})=>{
@@ -368,7 +540,7 @@ test('new or resume uses provider sessions in the current repo and preserves per
  await expect(page.getByRole('listbox',{name:'Provider session',exact:true}).getByRole('option').first()).toHaveAttribute('aria-selected','true');
  await page.getByRole('combobox',{name:'Session intent'}).selectOption('edit');
  await page.getByRole('button',{name:/^(Start|Resume) session$/,exact:true}).click();
- await expect(page.locator('.terminal-status')).toHaveText('running');
+ await expect(page.locator('rift-ai-terminal .terminal-status')).toHaveText('running');
  expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.resume))).toEqual([{resume:'01953d6c-1234-7123-9123-123456789abc'}]);
  expect(await page.evaluate(()=>(window as any).fixtureCalls.find((c:any)=>c.start))).toEqual({start:'claude',mode:'edit'});
  await expect(page.getByRole('combobox',{name:'Terminal provider'})).toHaveCount(0);
@@ -379,18 +551,17 @@ test('new or resume uses provider sessions in the current repo and preserves per
 });
 
 test('Review changes prepares complete comparison context without starting or submitting',async({page})=>{
- await prepareReview(page);
- const pending=page.getByRole('textbox',{name:'Pending terminal context'});
- await expect(pending).toHaveValue(/Comparison: Working tree/);
- await expect(pending).toHaveValue(/Start revision: HEAD/);
- await expect(pending).toHaveValue(/End revision: working tree/);
- await expect(pending).toHaveValue(/src\/changed.ts/);
- expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.start||c.input))).toEqual([]);
+ await page.getByRole('button',{name:'Open code review',exact:true}).click();
+ const review=page.getByRole('region',{name:'Code review workbench'});
+ await expect(review.locator('.review-brief')).toContainText('Working tree');
+ await expect(review.locator('.review-scope-preview')).toContainText('HEAD → working tree');
+ expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.start||c.input||c.reviewStart||c.reviewSubmit))).toEqual([]);
  await page.screenshot({path:'test-results/terminal-review-context.png'});
- await page.getByRole('button',{name:/^(Start|Resume) session$/,exact:true}).click();
- await page.getByRole('button',{name:'Insert pending context',exact:true}).click();
- const calls=await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.input));
- expect(calls).toHaveLength(1);expect(calls[0].paste).toBe(true);expect(calls[0].input.endsWith('\r')).toBe(false);
+ await review.getByRole('button',{name:'Start review session',exact:true}).click();
+ expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.reviewSubmit))).toEqual([]);
+ await review.getByRole('button',{name:'Run review',exact:true}).click();
+ const calls=await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.reviewSubmit));
+ expect(calls).toHaveLength(1);expect(calls[0].text).toContain('Comparison: Working tree');expect(calls[0].text).toContain('Start revision: HEAD');expect(calls[0].text).toContain('src/changed.ts');
 });
 
 test('saved explanation opens as retained terminal context, preserving local history',async({page})=>{
@@ -406,9 +577,9 @@ test('saved explanation opens as retained terminal context, preserving local his
 
 for(const operation of ['Input','Resize'] as const)for(const replacement of ['repository','stop-start'] as const) {
  test(`obsolete terminal ${operation} rejection cannot disconnect ${replacement} replacement`,async({page})=>{
-  await prepareReview(page);
+  await prepareContext(page);
   await page.getByRole('button',{name:/^(Start|Resume) session$/,exact:true}).click();
-  await expect(page.locator('.terminal-status')).toHaveText('running');
+  await expect(page.locator('rift-ai-terminal .terminal-status')).toHaveText('running');
   await expect(page.getByRole('button',{name:'Insert pending context',exact:true})).toBeEnabled();
   await page.evaluate(operation=>{
    const f=window as any;
@@ -416,18 +587,18 @@ for(const operation of ['Input','Resize'] as const)for(const replacement of ['re
    f.rift['terminal'+operation]=()=>{f.rift['terminal'+operation]=original;return new Promise((_resolve,reject)=>{f.rejectObsolete=reject;});};
    f.rift.chooseRepository=async()=>{await f.rift.terminalStop();f.fixtureRepository.root='/fixture/other';return {...f.fixtureRepository};};
   },operation);
-  if(operation==='Input') {await page.locator('.xterm-helper-textarea').focus();await page.keyboard.type('x');}
+  if(operation==='Input') {await page.locator('rift-ai-terminal .xterm-helper-textarea').focus();await page.keyboard.type('x');}
   else await page.setViewportSize({width:1200,height:900});
   await expect.poll(()=>page.evaluate(()=>!!(window as any).rejectObsolete)).toBe(true);
   if(replacement==='repository')await page.getByRole('button',{name:'terminal-fixture',exact:true}).click();
   else await page.getByRole('button',{name:'Stop session',exact:true}).click();
-  await expect(page.locator('.terminal-status')).toHaveText('No active session');
+  await expect(page.locator('rift-ai-terminal .terminal-status')).toHaveText('No active session');
   // The substitute deliberately reuses its session ID: generation must also match.
   await page.getByRole('button',{name:/^(Start|Resume) session$/,exact:true}).click();
   await expect(page.getByRole('button',{name:'Insert pending context',exact:true})).toBeEnabled();
   await page.evaluate(()=>(window as any).rejectObsolete(new Error('Obsolete IPC')));
   await page.waitForTimeout(150);
-  await expect(page.locator('.terminal-status')).toHaveText('running');
+  await expect(page.locator('rift-ai-terminal .terminal-status')).toHaveText('running');
   await expect(page.getByRole('button',{name:'Insert pending context',exact:true})).toBeEnabled();
   await expect(page.locator('rift-ai-terminal [role="alert"]')).toHaveCount(0);
  });
@@ -435,7 +606,7 @@ for(const operation of ['Input','Resize'] as const)for(const replacement of ['re
 
 test('late stop cannot clear a replacement start in another repository',async({page})=>{
  await page.getByRole('button',{name:/^(Start|Resume) session$/,exact:true}).click();
- await expect(page.locator('.terminal-status')).toHaveText('running');
+ await expect(page.locator('rift-ai-terminal .terminal-status')).toHaveText('running');
  await page.evaluate(()=>{
   const f=window as any;
   f.rift.terminalStop=()=>new Promise<void>(resolve=>{f.finishStop=resolve;});
@@ -446,11 +617,11 @@ test('late stop cannot clear a replacement start in another repository',async({p
  await page.getByRole('button',{name:'Stop session',exact:true}).click();
  await page.getByRole('button',{name:'terminal-fixture',exact:true}).click();
  await page.getByRole('button',{name:/^(Start|Resume) session$/,exact:true}).click();
- await expect(page.locator('.terminal-status')).toHaveText('Starting');
+ await expect(page.locator('rift-ai-terminal .terminal-status')).toHaveText('Starting');
  await page.evaluate(()=>(window as any).finishStart());
- await expect(page.locator('.terminal-status')).toHaveText('running');
+ await expect(page.locator('rift-ai-terminal .terminal-status')).toHaveText('running');
  await page.evaluate(()=>(window as any).finishStop());
- await expect(page.locator('.terminal-status')).toHaveText('running');
+ await expect(page.locator('rift-ai-terminal .terminal-status')).toHaveText('running');
 });
 
 for(const outcome of ['resolve','reject'] as const) {
@@ -496,7 +667,7 @@ for(const width of [1024,1440])for(const theme of ['dark','light']) {
  test(`compact ${theme} workspace at ${width}px keeps notes and branch popovers usable`,async({page})=>{
   await page.setViewportSize({width,height:900});
   if(theme==='light')await page.getByRole('button',{name:'Use light theme'}).click();
-  const toolbar=page.locator('.terminal-toolbar');
+  const toolbar=page.locator('rift-ai-terminal .terminal-toolbar');
   expect((await toolbar.boundingBox())!.height).toBeLessThan(120);
   await expect(page.getByRole('button',{name:'Open review notes',exact:true})).toBeVisible();
   await expect(page.locator('.review-rails')).toBeVisible();
@@ -512,11 +683,11 @@ for(const width of [1024,1440])for(const theme of ['dark','light']) {
   await expect(page.getByRole('listbox',{name:'Provider session',exact:true})).toContainText('Fixture session');
   expect((await page.getByRole('listbox',{name:'Provider session',exact:true}).boundingBox())!.height).toBeGreaterThan(80);
   await page.screenshot({path:`test-results/unified-${theme}-${width}-resume.png`});
-  await prepareReview(page);
+  await prepareContext(page);
   if(theme==='light')expect(await page.getByRole('textbox',{name:'Pending terminal context'}).evaluate(el=>getComputedStyle(el).backgroundColor)).toBe('rgb(255, 255, 255)');
   await page.screenshot({path:`test-results/unified-${theme}-${width}-review.png`});
   await page.getByRole('button',{name:'Back to code',exact:true}).click();
-  expect(await page.locator('.review-rail small').first().evaluate(el=>getComputedStyle(el).writingMode)).toBe('horizontal-tb');
+  expect(await page.locator('.review-rail small').first().evaluate(el=>getComputedStyle(el).writingMode)).toBe('vertical-rl');
   await page.locator('.diff-row.addition').first().click({button:'right'});
   const label=page.getByRole('menuitem',{name:'Insert selection in AI terminal'}).locator('strong');
   expect((await label.boundingBox())!.height).toBeLessThan(20);
@@ -526,8 +697,8 @@ for(const width of [1024,1440])for(const theme of ['dark','light']) {
 
 test('retained native session shows its actual provider and intent without respawning',async({page})=>{
  await page.evaluate(()=>{(window as any).rift.terminalRead=async()=>({state:{id:'retained',provider:'codex',mode:'edit',cwd:'/fixture/repo',status:'running'},data:'',cursor:0,truncated:false});});
- await expect(page.locator('.terminal-status')).toHaveText('running');
- await expect(page.locator('.terminal-identity')).toContainText('Codex');
+ await expect(page.locator('rift-ai-terminal .terminal-status')).toHaveText('running');
+ await expect(page.locator('rift-ai-terminal .terminal-identity')).toContainText('Codex');
  await expect(page.getByRole('combobox',{name:'Session intent'})).toHaveCount(0);
  await expect(page.getByRole('button',{name:'Stop session',exact:true})).toBeEnabled();
  expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.start))).toEqual([]);
@@ -540,15 +711,14 @@ test('late context insertion cannot discard unsent context in a new repository',
   const f=window as any;f.rift.terminalInput=()=>new Promise<void>(resolve=>f.finishInput=resolve);
   f.rift.chooseRepository=async()=>{await f.rift.terminalStop();f.fixtureRepository.root='/fixture/other';return {...f.fixtureRepository};};
  });
- await prepareReview(page);
+ await prepareContext(page);
  await page.getByRole('button',{name:'Insert pending context',exact:true}).click();
  await expect.poll(()=>page.evaluate(()=>!!(window as any).finishInput)).toBe(true);
  await page.getByRole('button',{name:'terminal-fixture',exact:true}).click();
- await expect(page.locator('.terminal-status')).toHaveText('No active session');
- await prepareReview(page);
- await expect(page.getByRole('textbox',{name:'Pending terminal context'})).toBeVisible();
+ await expect(page.locator('rift-ai-terminal .terminal-status')).toHaveText('No active session');
+ await page.getByRole('textbox',{name:'Pending terminal context'}).fill('New repository unsent context');
  await page.evaluate(()=>(window as any).finishInput());
- await expect(page.getByRole('textbox',{name:'Pending terminal context'})).toBeVisible();
+ await expect(page.getByRole('textbox',{name:'Pending terminal context'})).toHaveValue('New repository unsent context');
 });
 
 test('branch search is inside each opened selection surface only',async({page})=>{
@@ -656,14 +826,14 @@ test('AI workspace replaces legacy navigation and selection action stays horizon
 for(const replacement of ['repository','newer-navigation'] as const) {
  test(`obsolete source navigation rejection cannot update ${replacement} context`,async({page})=>{
   await page.getByRole('button',{name:/^(Start|Resume) session$/,exact:true}).click();
-  await expect(page.locator('.terminal-status')).toHaveText('running');
+  await expect(page.locator('rift-ai-terminal .terminal-status')).toHaveText('running');
   await page.waitForTimeout(200);
   await page.evaluate(()=>{
    const f=window as any;const original=f.rift.readRepositoryViewFile;
    f.rift.readRepositoryViewFile=(path:string)=>{f.rift.readRepositoryViewFile=original;return new Promise((_resolve,reject)=>f.rejectNavigation=reject);};
    f.rift.chooseRepository=async()=>{await f.rift.terminalStop();f.fixtureRepository.root='/fixture/other';return {...f.fixtureRepository};};
   });
-  const box=(await page.locator('.xterm-screen').boundingBox())!;
+  const box=(await page.locator('rift-ai-terminal .xterm-screen').boundingBox())!;
   const dims=await page.locator('.xterm-char-measure-element').first().evaluate(el=>({w:el.getBoundingClientRect().width/(el.textContent?.length||1),h:el.getBoundingClientRect().height}));
   const navigate=async()=>{
    await page.mouse.move(box.x+dims.w*15,box.y+dims.h*1.5);
@@ -687,7 +857,7 @@ for(const replacement of ['repository','newer-navigation'] as const) {
 test('wrapped ANSI source links stay literal, require modifier and navigate unchanged files',async({page})=>{
  await page.getByRole('button',{name:/^(Start|Resume) session$/,exact:true}).click();
  await expect(page.getByText('running',{exact:true})).toBeVisible();
- const screen=page.locator('.xterm-screen');
+ const screen=page.locator('rift-ai-terminal .xterm-screen');
  const box=(await screen.boundingBox())!;
  const dims=await page.locator('.xterm-char-measure-element').first().evaluate(el=>({w:el.getBoundingClientRect().width/(el.textContent?.length||1),h:el.getBoundingClientRect().height}));
  const cols=Math.floor(box.width/dims.w);
@@ -720,27 +890,27 @@ for (const outcome of ['resolve', 'reject'] as const) {
    };
   });
   await page.getByRole('button',{name:/^(Start|Resume) session$/,exact:true}).click();
-  await expect(page.locator('.terminal-status')).toHaveText('Starting');
+  await expect(page.locator('rift-ai-terminal .terminal-status')).toHaveText('Starting');
   await page.getByRole('button',{name:'terminal-fixture',exact:true}).click();
-  await expect(page.locator('.terminal-cwd')).toContainText('/fixture/other');
-  await expect(page.locator('.terminal-status')).toHaveText('No active session');
+  await expect(page.locator('rift-ai-terminal .terminal-cwd')).toContainText('/fixture/other');
+  await expect(page.locator('rift-ai-terminal .terminal-status')).toHaveText('No active session');
   await expect(page.getByRole('button',{name:/^(Start|Resume) session$/,exact:true})).toBeEnabled();
   await expect(page.getByRole('button',{name:'Stop session',exact:true})).toHaveCount(0);
   expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.pendingStart).length)).toBe(1);
   await page.screenshot({path:`test-results/terminal-repository-switch-${outcome}.png`});
   await page.getByRole('button',{name:/^(Start|Resume) session$/,exact:true}).click();
-  await expect(page.locator('.terminal-status')).toHaveText('Starting');
+  await expect(page.locator('rift-ai-terminal .terminal-status')).toHaveText('Starting');
   await page.evaluate(outcome=>{
    const old=(window as any).pendingStarts[0];
    if(outcome==='reject')old.reject(new Error('Terminal start cancelled.'));
    else old.resolve({id:'obsolete-session',provider:'claude',mode:'review',cwd:'/fixture/repo',status:'running'});
   },outcome);
-  await expect(page.locator('.terminal-status')).toHaveText('Starting');
+  await expect(page.locator('rift-ai-terminal .terminal-status')).toHaveText('Starting');
   await expect(page.getByRole('button',{name:'Stop session',exact:true})).toBeEnabled();
   await expect(page.locator('rift-ai-terminal [role="alert"]')).toHaveCount(0);
   await page.evaluate(()=>(window as any).pendingStarts[1].finish());
-  await expect(page.locator('.terminal-status')).toHaveText('running');
-  await expect(page.locator('.terminal-cwd')).toContainText('/fixture/other');
+  await expect(page.locator('rift-ai-terminal .terminal-status')).toHaveText('running');
+  await expect(page.locator('rift-ai-terminal .terminal-cwd')).toContainText('/fixture/other');
   await expect(page.locator('rift-ai-terminal [role="alert"]')).toHaveCount(0);
   expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.pendingStart).length)).toBe(2);
  });
@@ -756,7 +926,7 @@ test('read rejection stops polling and requires explicit Stop and Start recovery
   (window as any).rift.terminalRead=async()=>{(window as any).fixtureFailedReads++;throw new Error('Synthetic connection loss');};
  });
  await expect(page.getByRole('alert')).toContainText('Terminal connection unavailable');
- await expect(page.locator('.terminal-status')).toHaveText('Connection unavailable');
+ await expect(page.locator('rift-ai-terminal .terminal-status')).toHaveText('Connection unavailable');
  await page.waitForTimeout(350);
  expect(await page.evaluate(()=>(window as any).fixtureFailedReads)).toBe(1);
  expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.start).length)).toBe(1);
@@ -786,7 +956,7 @@ test('context is retained when no session is available',async({page})=>{
 test('notes and selected diff insert as context only and CLI shortcuts are not stolen',async({page})=>{
  await page.getByRole('button',{name:/^(Start|Resume) session$/,exact:true}).click();
  await expect(page.getByText('running',{exact:true})).toBeVisible();
- await page.locator('.xterm-helper-textarea').focus();
+ await page.locator('rift-ai-terminal .xterm-helper-textarea').focus();
  await page.keyboard.press('Control+f');
  await expect(page.getByRole('dialog',{name:'Search repository'})).not.toBeVisible();
  await page.getByRole('button',{name:'Back to code',exact:true}).click();
@@ -821,10 +991,10 @@ test('terminal-first workspace retains session, inserts selection without Enter 
  await page.getByRole('combobox',{name:'Terminal provider'}).selectOption('codex');
  await page.getByRole('button',{name:/^(Start|Resume) session$/,exact:true}).click();
  await expect(page.getByText('running', {exact:true})).toBeVisible();
- await expect(page.locator('.xterm-screen')).toBeVisible();
+ await expect(page.locator('rift-ai-terminal .xterm-screen')).toBeVisible();
  await page.screenshot({path:'test-results/terminal-dark.png'});
  // Wrapped/rendered text link provider is exercised with real mouse hover + Ctrl click.
- const screen=page.locator('.xterm-screen');
+ const screen=page.locator('rift-ai-terminal .xterm-screen');
  const box=(await screen.boundingBox())!;
  const dims=await page.locator('.xterm-char-measure-element').first().evaluate(el=>({w:el.getBoundingClientRect().width/(el.textContent?.length||1),h:el.getBoundingClientRect().height}));
  await page.mouse.move(box.x+dims.w*15,box.y+dims.h*1.5);
@@ -851,52 +1021,56 @@ for(const width of [1024,1440])for(const theme of ['dark','light'])test(`native 
   const f=window as any;
   f.rift.terminalSessions=async(provider:keyof typeof sessions)=>sessions[provider];
   const start=f.rift.terminalStart;
-  f.rift.terminalStart=(provider:string,mode:string,cols:number,rows:number,resume?:string)=>{f.fixtureCalls.push({nativeResume:provider,resume});return start(provider,mode,cols,rows);};
+  f.rift.terminalStart=(provider:string,mode:string,cols:number,rows:number,resume?:string,slot?:string)=>{f.fixtureCalls.push({nativeResume:provider,resume});return start(provider,mode,cols,rows,resume,slot);};
   const label=document.createElement('div');label.textContent='BROWSER · SYNTHETIC BRIDGE / NATIVE-SCHEMA SCRATCH FIXTURES';label.style.cssText='position:fixed;bottom:7px;left:300px;z-index:99999;font:10px sans-serif;color:#919da9;pointer-events:none';document.body.append(label);
  },sessions);
  for(const provider of ['claude','opencode','codex'] as const){
-  await page.getByRole('combobox',{name:'Terminal provider'}).selectOption(provider);
-  await page.getByRole('button',{name:'New session',exact:true}).click();
+  const general=page.locator('rift-ai-terminal');
+  await general.getByRole('combobox',{name:'Terminal provider'}).selectOption(provider);
+  await general.getByRole('button',{name:'New session',exact:true}).click();
   await page.screenshot({path:`/opt/data/output/riftcode/compact-rail/native-${provider}-${theme}-${width}-new.png`});
-  await page.getByRole('button',{name:'Resume existing',exact:true}).click();
-  const row=page.getByRole('option').filter({hasText:sessions[provider][0].title});
+  await general.getByRole('button',{name:'Resume existing',exact:true}).click();
+  const row=general.getByRole('option').filter({hasText:sessions[provider][0].title});
   await expect(row).toBeVisible();await expect(row.locator('time')).toContainText('2026');
   await row.click();await expect(row).toHaveAttribute('aria-selected','true');
   await page.screenshot({path:`/opt/data/output/riftcode/compact-rail/native-${provider}-${theme}-${width}-resume.png`});
   await page.getByRole('button',{name:'Open code review',exact:true}).click();
-  await expect(page.getByRole('textbox',{name:'Pending terminal context'})).toHaveValue(/Comparison: Working tree/);
-  await expect(page.getByRole('combobox',{name:'Session intent'})).toHaveValue('review');
+  const review=page.getByRole('region',{name:'Code review workbench'});
+  await expect(review.locator('.review-brief')).toContainText('Working tree');
+  await review.getByRole('combobox',{name:'Terminal provider'}).selectOption(provider);
+  await review.getByRole('button',{name:'Resume existing',exact:true}).click();
+  const reviewRow=review.getByRole('option').filter({hasText:sessions[provider][0].title});await reviewRow.click();
   // CSS visibility and Playwright click() auto-scroll do not prove the action is reachable.
   const expectLaunchInView=async()=>{
-   const geometry=await page.locator('.session-launcher .primary-button').evaluate(el=>{
+   const geometry=await review.locator('.session-launcher .primary-button').evaluate(el=>{
     const r=el.getBoundingClientRect(), clip=el.closest('.launcher-space')!.getBoundingClientRect();
-    const pending=document.querySelector('.terminal-pending')!.getBoundingClientRect();
-    return {top:r.top,bottom:r.bottom,clipTop:clip.top,clipBottom:clip.bottom,pendingTop:pending.top,
+    return {top:r.top,bottom:r.bottom,clipTop:clip.top,clipBottom:clip.bottom,
      fullyInViewport:r.top>=0&&r.left>=0&&r.bottom<=innerHeight&&r.right<=innerWidth,
      fullyInLauncher:r.top>=clip.top&&r.bottom<=clip.bottom,
      unobstructed:el.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2))};
    });
    expect(geometry,`${provider} ${theme} ${width}: primary launch action without scrolling`).toMatchObject({fullyInViewport:true,fullyInLauncher:true,unobstructed:true});
-   expect(geometry.bottom).toBeLessThanOrEqual(geometry.pendingTop);
+
   };
   await expectLaunchInView();
-  await page.getByRole('button',{name:'New session',exact:true}).click();
+  await review.getByRole('button',{name:'New session',exact:true}).click();
   await expectLaunchInView();
-  await page.getByRole('button',{name:'Resume existing',exact:true}).click();
-  await expect(row).toBeVisible();await row.click();
+  await review.getByRole('button',{name:'Resume existing',exact:true}).click();
+  await expect(reviewRow).toBeVisible();await reviewRow.click();
   await expectLaunchInView();
   await page.screenshot({path:`/opt/data/output/riftcode/compact-rail/native-${provider}-${theme}-${width}-review.png`});
-  await page.getByRole('button',{name:'Resume session',exact:true}).click();
-  await expect(page.locator('.terminal-identity strong')).toHaveText(sessions[provider][0].title);
-  expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.input))).toEqual([]);
+  await review.getByRole('button',{name:'Resume review session',exact:true}).click();
+  await expect(review.locator('.terminal-identity strong')).toHaveText(sessions[provider][0].title);
+  expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.input||c.reviewInput||c.reviewSubmit))).toEqual([]);
   await page.getByRole('button',{name:'Back to code',exact:true}).click();
+  await page.getByRole('button',{name:'Open code review',exact:true}).click();
+  await expect(review.locator('.terminal-status')).toHaveText('running');
+  await review.getByRole('button',{name:'Stop session',exact:true}).click();
   await page.getByRole('button',{name:'AI terminal',exact:true}).click();
-  await expect(page.locator('.terminal-status')).toHaveText('running');
-  await page.getByRole('button',{name:'Stop session',exact:true}).click();
-  await page.getByRole('button',{name:'Discard',exact:true}).click();
  }
  const calls=await page.evaluate(()=>(window as any).fixtureCalls);
- expect(calls.filter((c:any)=>c.start)).toEqual(['claude','opencode','codex'].map(start=>({start,mode:'review'})));
+ expect(calls.filter((c:any)=>c.reviewStart)).toEqual(['claude','opencode','codex'].map(reviewStart=>({reviewStart,mode:'review'})));
+ expect(calls.filter((c:any)=>c.start)).toEqual([]);
  expect(calls.filter((c:any)=>c.nativeResume)).toEqual(['claude','opencode','codex'].map(provider=>({nativeResume:provider,resume:sessions[provider as keyof typeof sessions][0].id})));
 });
 
@@ -950,7 +1124,7 @@ for(const width of [1024,1280,1440])for(const theme of ['dark','light']) {
   await capture('selection-notes');
   await page.keyboard.press('Escape');
   await page.getByRole('button',{name:'AI terminal',exact:true}).click();
-  const geometry=await page.locator('.terminal-toolbar').evaluate(el=>{
+  const geometry=await page.locator('rift-ai-terminal .terminal-toolbar').evaluate(el=>{
    const r=el.getBoundingClientRect();const controls=[...el.querySelectorAll('button,summary')].filter(c=>c.checkVisibility()).map(c=>{const b=c.getBoundingClientRect();return {y:b.y,h:b.height,right:b.right};});return {width:r.width,height:r.height,right:r.right,controls};
   });
   expect(geometry.height).toBe(56);expect(geometry.controls).toHaveLength(3);
@@ -960,7 +1134,7 @@ for(const width of [1024,1280,1440])for(const theme of ['dark','light']) {
   await capture('running-notes');
   await page.getByRole('button',{name:'Stop session',exact:true}).click();
   await page.getByRole('button',{name:'Collapse sidebar'}).click();
-  await prepareReview(page);
+  await prepareContext(page);
   await expect(page.getByRole('textbox',{name:'Pending terminal context'})).toBeVisible();
   await capture('review-context');
   await page.addInitScript(theme=>{localStorage.setItem('rift:theme',theme);(window as any).rift.openRepository=()=>new Promise(()=>{});},theme);

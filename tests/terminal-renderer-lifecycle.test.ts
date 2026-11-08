@@ -6,7 +6,7 @@ import ts from 'typescript';
 
 // Execute the real renderer class with only its DOM/framework boundaries substituted.
 // Browser tests separately exercise real Angular, xterm and root/Stop-Start transitions.
-function harness() {
+function harness(slot:'terminal'|'review'='terminal') {
   const signal=(initial:unknown)=>{let value=initial;return Object.assign(()=>value,{set:(next:unknown)=>{value=next;}});};
   const decorator=()=>()=>{};
   class Terminal {
@@ -25,10 +25,11 @@ function harness() {
       if(id==='@angular/core')return {Component:decorator,Input:decorator,Output:decorator,ViewChild:decorator,HostListener:decorator,signal,effect:()=>{},EventEmitter:class {emit(){}}};
       if(id==='@xterm/xterm')return {Terminal};
       if(id==='@xterm/addon-fit')return {FitAddon:class {}};
+      if(id==='../../shared/review-request')return {buildTerminalReview:()=>{throw new Error('Not used by raw input lifecycle tests');}};
       if(id==='../../shared/source-links')return {sourceLinks:()=>[]};
       throw new Error('Unexpected import '+id);
     }});
-  const component=new exports.AiTerminalComponent();
+  const component=new exports.AiTerminalComponent();component.slot=slot;component.reviewWorkbench=slot==='review';
   component.surface={nativeElement:{}};
   component.ngAfterViewInit();
   component.state.set({id:'old',status:'running'});
@@ -36,10 +37,10 @@ function harness() {
   return {component,reject:()=>reject(new Error('Deferred IPC failure'))};
 }
 
-for(const operation of ['data','resize'] as const) {
+for(const slot of ['terminal','review'] as const)for(const operation of ['data','resize'] as const) {
   for(const transition of ['destroy','session-identity','current'] as const) {
-    test(`terminal ${operation} rejection respects ${transition}`,async()=>{
-      const {component,reject}=harness();
+    test(`${slot} ${operation} rejection respects ${transition}`,async()=>{
+      const {component,reject}=harness(slot);
       component.terminal[operation](operation==='data'?'x':{cols:80,rows:24});
       if(transition==='destroy')component.ngOnDestroy();
       if(transition==='session-identity')component.state.set({id:'new',status:'running'});

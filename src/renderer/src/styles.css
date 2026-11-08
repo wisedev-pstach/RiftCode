@@ -1,5 +1,6 @@
 @import '@xterm/xterm/css/xterm.css';
 @import './workspace.css';
+@import './review-workbench.css';
 
 /* Source navigation shares the code surface; terminal chrome lives in workspace.css. */
 .source-target { background:rgba(200,255,99,.15); outline:1px solid #799545; }
@@ -112,7 +113,7 @@ button { color: inherit; font: inherit; }
 .workspace.review-open { grid-template-columns: min(var(--changes-width, 255px), calc(100vw - 826px)) minmax(460px, 1fr) 366px; }
 .workspace.resizing-changes { cursor: col-resize; transition: none; user-select: none; }
 .changes-panel, .review-panel { min-width: 0; min-height: 0; background: #101318; }
-.changes-panel { position: relative; display: flex; flex-direction: column; }
+.changes-panel { position: relative; display: flex; flex-direction: column; container-type:inline-size; container-name:changes; }
 .changes-panel { border-right: 1px solid #252a31; }
 .review-panel { overflow: hidden; border-left: 1px solid #252a31; display:flex; flex-direction:row-reverse; }
 .notes-drawer { flex:1; min-width:0; min-height:0; }
@@ -131,6 +132,12 @@ button { color: inherit; font: inherit; }
 .hide-reviewed-button.active { color: #c8ff63; border-color: #607b3f; background: rgba(200, 255, 99, .07); }
 .hide-reviewed-button.active::after { position: absolute; width: 15px; height: 1px; background: currentColor; content: ""; transform: rotate(-45deg); }
 .changes-heading-actions { display: flex; align-items: center; gap: 5px; }
+@container changes (max-width:250px) {
+  .changes-panel > .panel-title { height:88px; flex-direction:column; align-items:stretch; justify-content:center; gap:4px; }
+  .sidebar-view-toggle { flex:none; }
+  .sidebar-view-toggle button { flex:none; }
+  .changes-heading-actions { justify-content:flex-end; }
+}
 .changes-heading-actions .clear-session-action { border: 0; padding: 3px 2px; color: #747e89; background: transparent; font: 650 8px ui-monospace, monospace; letter-spacing: 0; text-transform: none; cursor: pointer; }
 .changes-heading-actions .clear-session-action:hover { color: #d18a82; }
 .changes-heading-actions .clear-session-action.armed { color: #f09a91; }
@@ -321,14 +328,14 @@ button { color: inherit; font: inherit; }
 .syntax-bold { font-weight: 700; }
 .syntax-underline { text-decoration: underline; }
 
-.review-rails { display: flex; flex:none; width:55px; flex-direction: column; align-items: center; gap: 3px; padding: 5px 3px; border-left:1px solid var(--ws-line); }
-.review-rail { position: relative; width: 49px; min-height: 58px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; border: 0; border-radius: 5px; padding: 8px 2px; color: var(--ws-muted); background: transparent; text-align: center; cursor: pointer; }
+.review-rails { display: flex; flex:none; width:44px; flex-direction: column; align-items: center; gap: 3px; padding: 5px 3px; border-left:1px solid var(--ws-line); }
+.review-rail { position: relative; width: 38px; min-height: 96px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; border: 0; border-radius: 5px; padding: 8px 2px; color: var(--ws-muted); background: transparent; text-align: center; cursor: pointer; }
 .review-rail:hover { color: #c8d0d9; background: rgba(255, 255, 255, .025); }
 .review-rail.active { color: #c5d7ad; background: rgba(200, 255, 99, .045); box-shadow: inset 1px 0 rgba(200, 255, 99, .6); }
 .review-rail:focus-visible { outline: 1px solid rgba(129, 142, 156, .55); outline-offset: -2px; }
 .review-rail:disabled { cursor: not-allowed; opacity: .38; }
 .review-rail b { position: absolute; top: 5px; right: 4px; min-width: 12px; color: #8d99a6; font: 650 7px ui-monospace, monospace; text-align: right; }
-.review-rail small { display: block; color:currentColor; font: 500 10px/1.2 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; white-space:nowrap; }
+.review-rail small { display: block; color:currentColor; font: 650 10px/1.1 ui-monospace,monospace; letter-spacing:.08em; text-transform:uppercase; writing-mode:vertical-rl; text-orientation:upright; white-space:nowrap; }
 .review-rail .note-icon { width: 16px; height: 16px; border: 0; border-radius: 0; color: currentColor; }
 .conversation-rail .ai-mark { width: 16px; height: 16px; margin: 0; border: 0; border-radius: 0; background: transparent; }
 .conversation-rail .ai-mark svg { width: 13px; height: 13px; }

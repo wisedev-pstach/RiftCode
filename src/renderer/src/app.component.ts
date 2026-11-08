@@ -11,6 +11,8 @@ import {
   ViewChild
 } from "@angular/core";
 import { marked } from "marked";
+import {ReviewTerminalComponent} from './review-terminal.component';
+import type {ReviewContext} from '../../shared/review-request';
 import { AiTerminalComponent } from './ai-terminal.component';
 import { SearchableSelectComponent } from './searchable-select.component';
 import type { SourceLocation } from '../../shared/terminal';
@@ -534,7 +536,7 @@ function buildExplorerEntries(
 @Component({
   selector: "rift-root",
   standalone: true,
-  imports: [AiTerminalComponent, SearchableSelectComponent],
+  imports: [ReviewTerminalComponent, AiTerminalComponent, SearchableSelectComponent],
   templateUrl: "./app.component.html",
   changeDetection: ChangeDetectionStrategy.OnPush
 })
@@ -651,14 +653,18 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly terminalOpen = signal(true);
   readonly terminalReady = signal(false);
   readonly sourceTarget = signal<SourceLocation | null>(null);
-  @ViewChild(AiTerminalComponent) aiTerminal?: AiTerminalComponent;
-  openTerminal(): void { this.terminalOpen.set(true); this.chatPageOpen.set(false); this.reviewPageOpen.set(false); void this.loadRepositoryPaths(); }
-  insertTerminalNotes(): void { const notes=this.selectedNotes(); if(notes.length) { this.openTerminal(); void this.aiTerminal?.insert(this.formatNotes(notes)); } }
+  @ViewChild('aiTerminal') aiTerminal?: AiTerminalComponent;
+  @ViewChild('reviewTerminal') reviewTerminal?: ReviewTerminalComponent;
+  readonly reviewWorkbenchOpen=signal(false);readonly reviewVisited=signal(false);
+  readonly terminalReviewContext=computed<ReviewContext>(()=>{const repo=this.repository();return {repository:repo?.name??'',comparison:repo?.comparisonLabel??'',startRevision:repo?.startRevision??'',endRevision:repo?.endRevision??null,files:repo?.files.map(file=>file.path)??[],currentPath:this.selectedPath()??'',notes:this.formatNotes(this.selectedNotes()),projectContext:this.workspaceContextSection([]).join('\n')};});
+  private contextTerminal():AiTerminalComponent|undefined{return this.reviewWorkbenchOpen()?this.reviewTerminal:this.aiTerminal;}
+  openTerminal(): void { this.reviewWorkbenchOpen.set(false);this.terminalOpen.set(true); this.chatPageOpen.set(false); this.reviewPageOpen.set(false); void this.loadRepositoryPaths(); }
+  insertTerminalNotes(): void { const notes=this.selectedNotes(); if(notes.length) { if(!this.terminalOpen())this.openTerminal(); void this.contextTerminal()?.insert(this.formatNotes(notes)); } }
   insertTerminalSelection(): void {
     const context=this.selectedContext();
     if(!context)return;
-    this.openTerminal();
-    void this.aiTerminal?.insert(`Location: ${this.selectedPath()}:${context.startLine}-${context.endLine}\nSelected diff:\n\x60\x60\x60diff\n${context.diff}\n\x60\x60\x60`);
+    if(!this.terminalOpen())this.openTerminal();
+    void this.contextTerminal()?.insert(`Location: ${this.selectedPath()}:${context.startLine}-${context.endLine}\nSelected diff:\n\x60\x60\x60diff\n${context.diff}\n\x60\x60\x60`);
     this.toolsMenu.set(null);
   }
   async navigateTerminalSource(location: SourceLocation): Promise<void> {
@@ -1613,7 +1619,7 @@ export class AppComponent implements OnInit, OnDestroy {
 
   @HostListener("document:keydown", ["$event"])
   handleKeyboardShortcut(event: KeyboardEvent): void {
-    if (event.target instanceof Element && event.target.closest("rift-ai-terminal")) return;
+    if (event.target instanceof Element && event.target.closest("rift-ai-terminal,rift-review-terminal")) return;
     if (!(event.ctrlKey || event.metaKey)) return;
     if (event.key.toLowerCase() === "f") {
       event.preventDefault();
@@ -2268,8 +2274,7 @@ export class AppComponent implements OnInit, OnDestroy {
 
   prepareTerminalReview():void {
     if(!this.repository())return;
-    this.openTerminal();
-    this.aiTerminal?.prepareReview(this.buildReviewPrompt(this.reviewDraft().trim() || "Review the complete comparison and report the findings that matter."));
+    this.terminalOpen.set(true);this.chatPageOpen.set(false);this.reviewPageOpen.set(false);this.reviewVisited.set(true);this.reviewWorkbenchOpen.set(true);void this.loadRepositoryPaths();
   }
 
   async startReview(): Promise<void> {

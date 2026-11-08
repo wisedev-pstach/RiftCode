@@ -11,7 +11,8 @@ import { listRepositoryFiles, loadFilePatch, loadRepository, readRepositoryViewF
 import type { IpcMainInvokeEvent } from "electron";
 import type { AgentConversationHistory, AgentConversationMessage, AgentId, AgentMode, AgentOption, AgentRunResult, AgentSession, AgentStreamEvent, AgentToolEvent, GitHubAuthStatus, GitHubIssueResult, RepositorySnapshot, UpdateStatus } from "../shared/contracts";
 import versionManifest from "../../version.json";
-import { TerminalService, terminalLaunch, terminalEnvironment } from './terminal-service';
+import { TerminalWorkspace } from './terminal-workspace';
+import { terminalLaunch, terminalEnvironment } from './terminal-service';
 import type { TerminalProvider } from '../shared/terminal';
 import { assertTerminalProvider, providerArgs, openCodeInteractiveArgs } from '../shared/terminal';
 import { listTerminalSessions, listOpenCodeSessions } from './terminal-sessions';
@@ -39,10 +40,12 @@ async function providerSessions(root:string,provider:TerminalProvider):Promise<A
     return terminalMetadataCommand(command,['session','list','--format','json'],root);
   });
 }
-const terminal = new TerminalService(resolveTerminalCommand,providerSessions,async(provider,mode,id,command,root)=>{
+const terminals = new TerminalWorkspace(resolveTerminalCommand,providerSessions,async(provider,mode,id,command,root)=>{
   if(provider!=='opencode')return providerArgs(provider,mode,id);
   return openCodeInteractiveArgs(mode,id,await terminalMetadataCommand(command,['--help'],root));
 });
+
+const terminal=terminals.terminal;
 
 function agentSessionTitle(prompt: string): string {
   const line = prompt.split(/\r?\n/).map((part) => part.trim()).find((part) => part && !part.startsWith("#"));
@@ -824,7 +827,7 @@ function repositoryFilePath(path: unknown): string {
 }
 
 async function openRepository(path: string): Promise<RepositorySnapshot> {
-  terminal.reset();terminal.checkpoints.clear();
+  terminals.reset();terminal.checkpoints.clear();
   const previousPath = currentRepositoryPath;
   const previousComparisonId = activeComparisonId;
   const previousTargetBranch = activeTargetBranch;
@@ -859,30 +862,32 @@ function registerIpc(): void {
     if (generation!==repositoryGeneration || snapshot?.root!==root || currentRepositoryPath!==root) throw new Error('Repository changed.');
     return sessions;
   });
-  ipcMain.handle('terminal:start', (event, provider, mode, cols, rows, resumeSessionId) => {
+  ipcMain.handle('terminal:start', (event, provider, mode, cols, rows, resumeSessionId, slot) => {
     assertTrustedSender(event);
     if (!snapshot || snapshot.root !== currentRepositoryPath) throw new Error('Open a repository first.');
-    return terminal.start(snapshot.root, provider, mode, cols, rows, resumeSessionId);
+    return terminals.slot(slot).start(snapshot.root, provider, mode, cols, rows, resumeSessionId);
   });
-  ipcMain.handle('terminal:read', (event, id, cursor) => {
+  ipcMain.handle('terminal:read', (event, id, cursor, slot) => {
     assertTrustedSender(event);
     if (id !== null && (typeof id !== 'string' || id.length > 100)) throw new Error('Invalid session.');
-    return terminal.read(id, cursor);
+    return terminals.slot(slot).read(id, cursor);
   });
-  ipcMain.handle('terminal:input', (event, id, data, paste) => {
+  ipcMain.handle('terminal:input', (event, id, data, paste, slot) => {
     assertTrustedSender(event);
     if (typeof paste !== 'boolean') throw new Error('Invalid paste option.');
-    terminal.input(id, data, paste);
+    terminals.slot(slot).input(id, data, paste);
   });
-  ipcMain.handle('terminal:resize', (event, id, cols, rows) => {
-    assertTrustedSender(event); terminal.resize(id, cols, rows);
+  ipcMain.handle('terminal:resize', (event, id, cols, rows, slot) => {
+    assertTrustedSender(event); terminals.slot(slot).resize(id, cols, rows);
   });
   ipcMain.handle('terminal:send-tracked', (event,id,text)=>{assertTrustedSender(event);return terminal.sendTracked(id,text);});
   ipcMain.handle('prompt:summaries',event=>{assertTrustedSender(event);return terminal.checkpoints.list(currentRepositoryPath ?? '');});
   ipcMain.handle('prompt:patch',(event,id,path,viewId)=>{assertTrustedSender(event);if(typeof id!=='string'||typeof viewId!=='string'||viewId.length>100||typeof path!=='string'||id.length>200||path.length>4096)throw new Error('Invalid checkpoint.');return terminal.checkpoints.patch(currentRepositoryPath ?? '',id,path,viewId);});
   ipcMain.handle('prompt:finish',event=>{assertTrustedSender(event);return terminal.checkpoints.finish(currentRepositoryPath ?? '');});
-  ipcMain.handle('terminal:stop', async event => {
-    assertTrustedSender(event);terminal.reset();
+  ipcMain.handle('terminal:submit-review',(event,id,text)=>{assertTrustedSender(event);return terminals.review.submit(id,text);});
+  ipcMain.handle('terminal:stop', async (event,slot) => {
+    assertTrustedSender(event);terminals.slot(slot).reset();
+    if(slot==='review')return {checkpointError:null};
     try{await terminal.checkpoints.finish(currentRepositoryPath ?? '');return {checkpointError:null};}
     catch(error){return {checkpointError:error instanceof Error?error.message:String(error)};}
   });
@@ -1191,10 +1196,10 @@ function createWindow(): void {
       sandbox: true
     }
   });
-  mainWindow.webContents.on('render-process-gone', () => terminal.reset());
-  mainWindow.webContents.on('destroyed', () => terminal.reset());
-  mainWindow.webContents.on('did-start-navigation', (_event, _url, _inPlace, isMainFrame) => { if (isMainFrame) terminal.reset(); });
-  mainWindow.on('closed', () => terminal.reset());
+  mainWindow.webContents.on('render-process-gone', () => terminals.reset());
+  mainWindow.webContents.on('destroyed', () => terminals.reset());
+  mainWindow.webContents.on('did-start-navigation', (_event, _url, _inPlace, isMainFrame) => { if (isMainFrame) terminals.reset(); });
+  mainWindow.on('closed', () => terminals.reset());
   mainWindow.setMenuBarVisibility(false);
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   mainWindow.webContents.on("will-navigate", (event) => event.preventDefault());
@@ -1244,7 +1249,7 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
-  terminal.reset();
+  terminals.reset();
   watcher?.close();
   if (attachmentDirectory) void rm(attachmentDirectory, { recursive: true, force: true });
 });
