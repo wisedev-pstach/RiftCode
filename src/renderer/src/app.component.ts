@@ -15,6 +15,7 @@ import { AiTerminalComponent } from './ai-terminal.component';
 import { SearchableSelectComponent } from './searchable-select.component';
 import type { SourceLocation } from '../../shared/terminal';
 import type { AgentConversationHistory, AgentId, AgentMode, AgentOption, AgentRunResult, AgentSession, AgentStreamEvent, AgentToolEvent, ChangedFile, ContextResourcePath, FilePatch, GitHubAuthStatus, RepositoryFileView, RepositorySearchResult, RepositorySnapshot, UpdateStatus } from "../../shared/contracts";
+import type {PromptSummary} from '../../shared/contracts';
 import versionManifest from "../../../version.json";
 
 type DiffKind = "header" | "hunk" | "context" | "addition" | "deletion" | "meta";
@@ -615,6 +616,7 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly activeLinkedNoteId = signal<string | null>(null);
   readonly reviewedFiles = signal<string[]>([]);
   readonly reviewedFileCount = computed(() => {
+    if(this.promptReview())return 0;
     const paths = new Set(this.repository()?.files.map((file) => file.path) ?? []);
     return this.reviewedFiles().filter((path) => paths.has(path)).length;
   });
@@ -666,7 +668,7 @@ export class AppComponent implements OnInit, OnDestroy {
       // Main's known-file + realpath guard remains authoritative, including symlink rejection.
       const file=await window.rift.readRepositoryViewFile(location.path);
       if(this.repository()?.root!==root || request!==this.repositoryViewRequest)return;
-      this.showDiff(); this.editMode.set(false); this.patchRequest++;
+      this.promptReview.set(null);this.showDiff(); this.editMode.set(false); this.patchRequest++;
       this.selectedPath.set(location.path); this.patch.set(null); this.highlightedRows.set(null);
       this.repositoryFileError.set(null); this.repositoryFileLoading.set(false); this.repositoryFileView.set(file);
       this.selectedRange.set(null); this.sourceTarget.set(location);
@@ -702,10 +704,18 @@ export class AppComponent implements OnInit, OnDestroy {
     const context = this.workspaceContext();
     return (context.details.trim() ? 1 : 0) + context.links.length + context.resources.length;
   });
-  readonly selectedFile = computed(() => this.repository()?.files.find((file) => file.path === this.selectedPath()));
+  readonly promptReview=signal<PromptSummary|null>(null);
+  readonly comparisonFiles=computed(()=>this.promptReview()?.files??this.repository()?.files??[]);
+  openPromptReview(summary:PromptSummary):void{
+    this.promptReview.set(summary);this.sidebarView.set('changes');this.editMode.set(false);this.fileFilter.set('');this.hideReviewed.set(false);this.showDiff();this.selectedPath.set(null);
+    const path=summary.files[0]?.path;if(path)this.selectFile(path);else this.patch.set(null);
+  }
+  resetPromptReview():void{if(this.promptReview()){const terminal=this.terminalOpen();this.leavePromptReview();this.terminalOpen.set(terminal);}}
+  leavePromptReview():void{this.promptReview.set(null);this.selectedPath.set(null);const path=this.repository()?.files[0]?.path;if(path)this.selectFile(path);else this.patch.set(null);}
+  readonly selectedFile = computed(() => this.comparisonFiles().find((file) => file.path === this.selectedPath()));
   readonly filteredFiles = computed(() => {
     const patterns = this.fileFilter().split(",").map((pattern) => pattern.trim()).filter(Boolean).map(wildcardExpression);
-    const files = this.repository()?.files ?? [];
+    const files = this.comparisonFiles();
     const reviewed = new Set(this.reviewedFiles());
     return files.filter((file) => (
       (!this.hideReviewed() || !reviewed.has(file.path))
@@ -718,13 +728,13 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly expandedExplorerFolders = signal<ReadonlySet<string>>(new Set());
   readonly explorerEntries = computed(() => buildExplorerEntries(
     this.explorerShowAll() ? this.repositoryPaths() : [],
-    this.repository()?.files ?? [],
+    this.comparisonFiles(),
     this.expandedExplorerFolders(),
     this.explorerFilterPatterns()
   ));
   readonly explorerFolderPaths = computed(() => explorerFolderPaths(
     this.explorerShowAll() ? this.repositoryPaths() : [],
-    this.repository()?.files ?? []
+    this.comparisonFiles()
   ));
   readonly explorerAllCollapsed = computed(() => {
     const expanded = this.expandedExplorerFolders();
@@ -1513,7 +1523,9 @@ export class AppComponent implements OnInit, OnDestroy {
     void this.loadEditableFile(path);
   }
 
+  /* Checkpoint comparisons are read-only snapshots, never the current worktree. */
   toggleEditMode(): void {
+    if(this.promptReview())return;
     const active = !this.editMode();
     this.editMode.set(active);
     const path = this.selectedPath();
@@ -1736,6 +1748,8 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   private async openRepositoryPath(path: string): Promise<void> {
+    if(this.promptReview()?.files.some(file=>file.path===path)){this.selectFile(path);return;}
+    this.promptReview.set(null);
     this.terminalOpen.set(false); this.sourceTarget.set(null);
     if (this.sidebarView() === "explorer") this.revealExplorerPath(path);
     if (this.repository()?.files.some((file) => file.path === path)) {
@@ -1997,6 +2011,7 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   isFileReviewed(path: string): boolean {
+    if(this.promptReview())return false;
     return this.reviewedFiles().includes(path);
   }
 
@@ -2007,6 +2022,7 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   toggleFileReviewed(path: string): void {
+    if(this.promptReview())return;
     const reviewed = this.isFileReviewed(path);
     this.reviewedFiles.update((paths) => reviewed
       ? paths.filter((entry) => entry !== path)
@@ -3061,6 +3077,7 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   private acceptRepository(repository: RepositorySnapshot, preserveSelection = false): void {
+    if(this.promptReview() && (this.repository()?.root!==repository.root || this.repository()?.comparisonId!==repository.comparisonId || this.repository()?.targetBranch!==repository.targetBranch))this.promptReview.set(null);
     const previousPath = this.selectedPath();
     const previousComparison = this.repository()?.comparisonId;
     const previousRoot = this.repository()?.root;
@@ -3188,6 +3205,8 @@ export class AppComponent implements OnInit, OnDestroy {
 
   private async loadPatch(path: string, preserveSelection = false): Promise<void> {
     const request = ++this.patchRequest;
+    const root=this.repository()?.root,checkpoint=this.promptReview();
+    const current=()=>request===this.patchRequest && root===this.repository()?.root && path===this.selectedPath() && checkpoint?.viewId===this.promptReview()?.viewId;
     this.highlightRequest += 1;
     const previousPatch = this.patch();
     if (!preserveSelection) {
@@ -3196,8 +3215,8 @@ export class AppComponent implements OnInit, OnDestroy {
       this.resetHorizontalScroll();
     }
     try {
-      const patch = await window.rift.getFilePatch(path, this.fullFile());
-      if (request === this.patchRequest) {
+      const patch = checkpoint ? await window.rift.promptPatch(checkpoint.id,path,checkpoint.viewId) : await window.rift.getFilePatch(path, this.fullFile());
+      if (current()) {
         if (
           previousPatch?.path === patch.path
           && previousPatch.patch === patch.patch
@@ -3208,7 +3227,7 @@ export class AppComponent implements OnInit, OnDestroy {
         this.requestHighlighting();
       }
     } catch (reason) {
-      if (request === this.patchRequest) this.error.set(reason instanceof Error ? reason.message : String(reason));
+      if (current()) this.error.set(reason instanceof Error ? reason.message : String(reason));
     }
   }
 

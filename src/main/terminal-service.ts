@@ -1,4 +1,5 @@
 import * as pty from 'node-pty';
+import {PromptCheckpoints} from './prompt-checkpoints';
 import type { IPty } from 'node-pty';
 import { randomUUID } from 'node:crypto';
 import { realpath, stat } from 'node:fs/promises';
@@ -9,6 +10,23 @@ import type { TerminalMode, TerminalProvider, TerminalRead, TerminalState } from
 
 const OUTPUT_LIMIT = 256 * 1024;
 export class TerminalService {
+  readonly checkpoints=new PromptCheckpoints();
+  private trackedSending=false;
+  private pasteReady=false; private controlTail='';
+  async sendTracked(id:string,text:string):Promise<void>{
+    if(this.trackedSending)throw new Error('Checkpoint capture in progress.');
+    const child=this.active(id),generation=this.generation,root=this.state!.cwd;
+    if(typeof text!=='string'||!text.trim()||Buffer.byteLength(text,'utf8')>32768)throw new Error('Prompt must be between 1 byte and 32 KiB.');
+    if(!this.pasteReady)throw new Error('Wait for native CLI input readiness. Nothing sent.');
+    const data=contextPaste(text)+'\r';
+    this.trackedSending=true;
+    try{
+      await this.checkpoints.begin(root,id,text,()=>{
+        if(generation!==this.generation||this.active(id)!==child||!this.pasteReady)throw new Error('Session or input readiness changed. Nothing sent.');
+        try{child.write(data);}catch{throw new Error('PTY write failed; submission is uncertain. Check the CLI before retrying.');}
+      });
+    }finally{this.trackedSending=false;}
+  }
   private generation = 0;
   private starting = false;
   private process: IPty | null = null;
@@ -43,10 +61,13 @@ export class TerminalService {
       const child = pty.spawn(launch.file, launch.args, { name: 'xterm-256color', cwd, cols, rows, env: terminalEnvironment() });
       this.process = child;
       this.state = {id: randomUUID(), provider, mode, cwd, status: 'running'};
-      this.output = ''; this.offset = 0;
+      this.output = ''; this.offset = 0;this.pasteReady=false;this.controlTail='';this.checkpoints.clear();
       const id = this.state.id;
       child.onData(data => {
         if (this.state?.id !== id) return;
+        this.controlTail+=data;
+        for(const match of this.controlTail.matchAll(/\x1b\[\?2004([hl])/g))this.pasteReady=match[1]==='h';
+        this.controlTail=this.controlTail.slice(-16);
         this.output += data;
         if (this.output.length > OUTPUT_LIMIT) {
           const removed = this.output.length - OUTPUT_LIMIT;
@@ -70,6 +91,7 @@ export class TerminalService {
     return {state: this.state ? {...this.state} : null, data: this.output.slice(start-this.offset,end-this.offset),cursor:end,truncated: id !== null && cursor < this.offset};
   }
   input(id: string, data: string, paste = false): void {
+    if(this.trackedSending)throw new Error('Checkpoint capture in progress. Wait before typing.');
     const child = this.active(id);
     if (typeof data !== 'string' || data.length > 32768) throw new Error('Terminal input is too large.');
     const now = Date.now();

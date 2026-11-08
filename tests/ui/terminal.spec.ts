@@ -1,5 +1,73 @@
 import { test, expect, type Page } from '@playwright/test';
+import {promptFixture} from '../fixtures/prompt-checkpoints';
 import {nativeSessionMetadata} from '../fixtures/native-session-metadata';
+
+for(const width of [1024,1440])for(const theme of ['dark','light'])test(`tracked prompt summary ${theme} ${width} jumps to exact real-filesystem diff, not Git HEAD`,async({page})=>{
+ const fixture=await promptFixture();
+ await page.setViewportSize({width,height:900});if(theme==='light')await page.getByRole('button',{name:'Use light theme',exact:true}).click();
+ await page.evaluate(()=>{const label=document.createElement('div');label.textContent='Synthetic browser bridge · real scratch Git checkpoints · no provider run';label.style.cssText='position:fixed;bottom:38px;right:60px;z-index:1000;font:11px sans-serif;padding:6px 10px;background:#252d38;color:#fff;border:1px solid #66717c;border-radius:4px;pointer-events:none';document.body.append(label);});
+ const shot=(state:string)=>page.screenshot({path:`/opt/data/output/riftcode/prompt-changes/${theme}-${width}-${state}.png`});
+ try{
+  await page.exposeFunction('realCheckpointSend',(id:string,text:string)=>fixture.send(id,text));
+  await page.exposeFunction('realCheckpointList',()=>fixture.service.list(fixture.root));
+  await page.exposeFunction('realCheckpointPatch',(id:string,path:string,viewId:string)=>fixture.service.patch(fixture.root,id,path,viewId));
+  await page.evaluate(()=>{const f=window as any;f.rift.terminalSendTracked=f.realCheckpointSend;f.rift.promptSummaries=f.realCheckpointList;f.rift.promptPatch=f.realCheckpointPatch;});
+  await page.getByRole('button',{name:'Start session',exact:true}).click();
+  await page.locator('rift-ai-terminal summary').click();await page.getByRole('button',{name:'Track a prompt',exact:true}).click();
+  await expect(page.getByRole('textbox',{name:'Tracked prompt'})).toBeFocused();
+  await page.getByRole('textbox',{name:'Tracked prompt'}).fill('Restore value and update fixtures');
+  const send=page.getByRole('button',{name:'Send & track',exact:true});await expect(send).toBeEnabled();
+  const button=await send.boundingBox(),pane=await page.locator('rift-ai-terminal').boundingBox();expect(button!.x+button!.width).toBeLessThanOrEqual(pane!.x+pane!.width);expect(button!.y+button!.height).toBeLessThanOrEqual(pane!.y+pane!.height);
+  await shot('composer');await send.click();
+  await expect(page.locator('.prompt-summary')).toContainText('3 files · +3 −2');await shot('summary');
+  expect(fixture.sends).toBe(1);
+  await page.locator('.prompt-summary').getByRole('button',{name:'Review changes',exact:true}).click();
+  await expect(page.getByRole('status',{name:'Prompt comparison'})).toContainText('Changes since prompt');
+  await page.locator('.file-row').filter({hasText:'reverted.ts'}).click();
+  await expect(page.locator('.diff-panel')).toContainText('dirty before prompt');await expect(page.locator('.diff-panel')).toContainText('HEAD');await shot('review-exact-diff');
+  await page.locator('.file-row').filter({hasText:'added.ts'}).click();await expect(page.locator('.diff-panel')).toContainText('new second line');
+  await page.locator('.file-row').filter({hasText:'deleted.ts'}).click();await expect(page.locator('.diff-panel')).toContainText('delete this line');
+  await page.getByRole('button',{name:'AI terminal',exact:true}).click();await expect(page.locator('.terminal-status')).toHaveText('running');
+  await page.locator('rift-ai-terminal summary').click();await page.getByRole('button',{name:'Track a prompt',exact:true}).click();
+  await page.getByRole('textbox',{name:'Tracked prompt'}).fill('Second prompt: replace added lines');await page.getByRole('button',{name:'Send & track',exact:true}).click();
+  await expect(page.locator('.prompt-summary')).toHaveCount(2);await expect(page.locator('.prompt-summary').first()).toContainText('Frozen checkpoint · 3 files · +3 −2');await expect(page.locator('.prompt-summary').last()).toContainText('1 file · +1 −2');await shot('two-prompts');
+  await page.locator('.prompt-summary').first().getByRole('button',{name:'Review changes',exact:true}).click();await page.locator('.file-row').filter({hasText:'added.ts'}).click();await expect(page.locator('.diff-panel')).toContainText('new second line');await expect(page.locator('.diff-panel')).not.toContainText('second prompt line');
+  await page.getByRole('button',{name:'Repository comparison',exact:true}).click();await expect(page.locator('.file-row')).toHaveCount(1);await expect(page.locator('.diff-panel')).toContainText('src/changed.ts');
+  expect(fixture.sends).toBe(2);
+ }finally{await fixture.cleanup();}
+});
+
+test('late checkpoint patch cannot enter an empty replacement repository',async({page})=>{
+ const fixture=await promptFixture();
+ try{
+  await page.exposeFunction('scopeSend',(id:string,text:string)=>fixture.send(id,text));await page.exposeFunction('scopeList',()=>fixture.service.list(fixture.root));
+  await page.evaluate(()=>{const f=window as any;f.rift.terminalSendTracked=f.scopeSend;f.rift.promptSummaries=f.scopeList;f.rift.promptPatch=()=>new Promise(resolve=>f.finishOldPatch=resolve);f.rift.chooseRepository=async()=>{await f.rift.terminalStop();return {...f.fixtureRepository,root:'/fixture/empty',files:[]};};});
+  await page.getByRole('button',{name:'Start session',exact:true}).click();await page.locator('rift-ai-terminal summary').click();await page.getByRole('button',{name:'Track a prompt',exact:true}).click();await page.getByRole('textbox',{name:'Tracked prompt'}).fill('fixture edits');await page.getByRole('button',{name:'Send & track',exact:true}).click();await expect(page.locator('.prompt-summary')).toContainText('3 files');await page.locator('.prompt-summary').getByRole('button',{name:'Review changes',exact:true}).click();await expect.poll(()=>page.evaluate(()=>!!(window as any).finishOldPatch)).toBe(true);
+  const [summary]=await fixture.service.list(fixture.root);const oldPatch=await fixture.service.patch(fixture.root,summary.id,'deleted.ts',summary.viewId);
+  await page.getByRole('button',{name:'terminal-fixture',exact:true}).click();await expect(page.locator('.file-row')).toHaveCount(0);
+  await page.evaluate(patch=>(window as any).finishOldPatch(patch),oldPatch);await page.waitForTimeout(150);await expect(page.locator('.diff-panel')).not.toContainText('delete this line');await expect(page.getByRole('status',{name:'Prompt comparison'})).toHaveCount(0);
+ }finally{await fixture.cleanup();}
+});
+
+test('Stop remains stopped when freezing the checkpoint fails',async({page})=>{
+ await page.evaluate(()=>{const f=window as any,stop=f.rift.terminalStop;f.rift.terminalStop=async()=>{await stop();return {checkpointError:'Checkpoint file limit: 1 MiB'};};});
+ await page.getByRole('button',{name:'Start session',exact:true}).click();await page.getByRole('button',{name:'Stop session',exact:true}).click();
+ await expect(page.locator('.terminal-status')).toHaveText('No active session');await expect(page.getByRole('alert')).toContainText('Checkpoint file limit');await expect(page.getByRole('button',{name:'Start session',exact:true})).toBeEnabled();
+});
+
+test('tracked draft survives Stop during capture and a failed submit without writing twice',async({page})=>{
+ await page.evaluate(()=>{const f=window as any;f.rift.terminalSendTracked=()=>new Promise((_resolve,reject)=>f.rejectTracked=reject);f.rift.promptSummaries=async()=>[];});
+ await page.getByRole('button',{name:'Start session',exact:true}).click();await page.locator('rift-ai-terminal summary').click();await page.getByRole('button',{name:'Track a prompt',exact:true}).click();
+ await page.getByRole('textbox',{name:'Tracked prompt'}).fill('retain this draft');await page.getByRole('button',{name:'Send & track',exact:true}).click();
+ await expect(page.getByRole('button',{name:'Capturing…',exact:true})).toBeDisabled();
+ await page.getByRole('button',{name:'Stop session',exact:true}).click();await page.evaluate(()=>(window as any).rejectTracked(new Error('old capture cancelled')));
+ await expect(page.getByRole('textbox',{name:'Tracked prompt'})).toHaveValue('retain this draft');
+ await page.getByRole('button',{name:'Start session',exact:true}).click();
+ await expect(page.getByRole('button',{name:'Send & track',exact:true})).toBeEnabled();
+ await page.getByRole('button',{name:'Send & track',exact:true}).click();await page.evaluate(()=>(window as any).rejectTracked(new Error('Checkpoint too large. Nothing sent.')));
+ await expect(page.getByRole('alert')).toContainText('Checkpoint too large');await expect(page.getByRole('textbox',{name:'Tracked prompt'})).toHaveValue('retain this draft');
+ expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.input))).toEqual([]);
+});
 
 async function prepareReview(page:Page) {
  const direct=page.locator('.review-prepare');

@@ -3,6 +3,10 @@ import type { RiftApi } from "../shared/contracts";
 
 const api: RiftApi = {
   platform: process.platform as RiftApi["platform"],
+  terminalSendTracked:(id,text)=>ipcRenderer.invoke('terminal:send-tracked',id,text),
+  promptSummaries:()=>ipcRenderer.invoke('prompt:summaries'),
+  promptPatch:(id,path,viewId)=>ipcRenderer.invoke('prompt:patch',id,path,viewId),
+  promptFinish:()=>ipcRenderer.invoke('prompt:finish'),
   terminalSessions: provider => ipcRenderer.invoke('terminal:sessions', provider),
   terminalStart: (provider, mode, cols, rows, resumeSessionId) => ipcRenderer.invoke('terminal:start', provider, mode, cols, rows, resumeSessionId),
   terminalRead: (id, cursor) => ipcRenderer.invoke('terminal:read', id, cursor),

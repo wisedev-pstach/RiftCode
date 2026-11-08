@@ -7,6 +7,34 @@ function requireStatus(pid:number):boolean { return process.platform==='linux' &
 import { tmpdir } from 'node:os';
 import { TerminalService } from '../src/main/terminal-service.js';
 
+test('Send & track captures before one explicit Enter and rejects a PTY without bracketed paste',async()=>{
+ const {execFileSync}=await import('node:child_process');
+ const root=await mkdtemp(join(tmpdir(),'rift-tracked-'));const fixture=join(root,'fixture');
+ await writeFile(fixture,'#!/usr/bin/env node\nprocess.stdin.setRawMode(true);console.log("READY");process.stdin.on("data",d=>console.log("INPUT="+d.toString("hex")));setTimeout(()=>process.stdout.write("\\x1b[?2004h"),250);\n',{mode:0o755});
+ execFileSync('git',['init','-q'],{cwd:root});const service=new TerminalService(async()=>fixture);
+ try{
+  const state=await service.start(root,'codex','edit',80,24);await until(()=>service.read(state.id,0).data.includes('READY'));
+  await assert.rejects(service.sendTracked(state.id,'hello'),/input|ready/i);
+  await until(()=>service.read(state.id,0).data.includes('2004h'));
+  await service.sendTracked(state.id,'hello\x03');
+  await until(()=>service.read(state.id,0).data.includes('1b5b3230307e68656c6c6f1b5b3230317e0d'));
+  assert.equal((await service.checkpoints.list(root)).length,1);
+  const cancelled=service.sendTracked(state.id,'must not send');let interleavingRejected=false;try{service.input(state.id,'interleaved\r');}catch(error){interleavingRejected=/Checkpoint capture/.test(String(error));}service.reset();await assert.rejects(cancelled,/running|changed|cancelled/);assert.equal(interleavingRejected,true);
+  assert.equal((await service.checkpoints.list(root)).length,1);
+ }finally{service.reset();await rm(root,{recursive:true,force:true});}
+});
+
+test('real PTY fixture edits only after checkpoint capture; summary excludes pre-existing dirty bytes',async()=>{
+ const {execFileSync}=await import('node:child_process');const root=await mkdtemp(join(tmpdir(),'rift-native-checkpoint-'));const fixture=join(root,'fixture');
+ await writeFile(fixture,'#!/usr/bin/env node\nconst fs=require("node:fs");process.stdin.setRawMode(true);process.stdout.write("READY\\x1b[?2004h");process.stdin.on("data",d=>{if(d.includes(13)){fs.writeFileSync("a.txt","after prompt\\n");console.log("EDITED");}});\n',{mode:0o755});
+ execFileSync('git',['init','-q'],{cwd:root});await writeFile(join(root,'a.txt'),'dirty before prompt\n');
+ const service=new TerminalService(async()=>fixture);
+ try{const state=await service.start(root,'claude','edit',80,24);await until(()=>service.read(state.id,0).data.includes('READY'));await service.sendTracked(state.id,'update a.txt');await until(()=>service.read(state.id,0).data.includes('EDITED'));
+ const [summary]=await service.checkpoints.list(root);assert.equal(summary.additions,1);assert.equal(summary.deletions,1);assert.equal(summary.files.length,1);
+ const patch=await service.checkpoints.patch(root,summary.id,'a.txt',summary.viewId);assert.match(patch.patch,/-dirty before prompt\n\+after prompt/);
+ }finally{service.reset();await rm(root,{recursive:true,force:true});}
+});
+
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 async function until(fn: () => boolean) { for (let i=0;i<100;i++) { if(fn()) return; await sleep(30); } assert.fail('Timed out'); }
 

@@ -11,6 +11,10 @@
 
 **Review** in the compact rail prepares current comparison/revision/file context in the same retained terminal; it does not open the old JSON review cards, start a provider or append Enter. If no session is active, it selects Review / plan for an explicit New/Resume launch. An active Edit session keeps its actual permissions and shows a notice: review context does not turn it into a read-only session. Stop and explicitly start/resume in Review / plan if that is the desired permission policy. **← Code** returns to the source view without stopping the process. Existing notes and Rift history are not cleared or destructively migrated; saved source explanation annotations open as retained terminal context, not transcript replay masquerading as provider resume. Codex uses this same terminal workflow, not the old JSON protocol.
 
+### Per-prompt change review
+
+Use **Context → Track a prompt → Send & track** at an empty native CLI prompt to checkpoint the actual dirty/untracked working tree before one explicit submission. **Refresh changes** updates that prompt's workspace file/text-line summary; its **Review changes** opens the exact captured diff, not a Git HEAD approximation. Each subsequent tracked prompt freezes the preceding interval separately. Context → Finish checkpoint freezes without stopping the CLI; Stop preserves the final summary while ending the session. Direct CLI prompts remain untracked, and notes/selection Insert still never appends Enter. Checkpoints are local, bounded, in-memory and not proof of agent authorship/completion. See [PROMPT-CHANGES.md](PROMPT-CHANGES.md) for limits, lifecycle, review-token semantics and verification boundaries.
+
 ### Native resume metadata
 
 - Claude: bounded head/tail reads of `~/.claude/projects/<encoded-current-root>/<UUID>.jsonl`, requiring matching session ID and canonical cwd. Native custom titles take precedence over generated titles/summaries; a bounded first-user-prompt preview is the fallback, excluding assistant/tool/system boilerplate.

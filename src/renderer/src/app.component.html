@@ -89,7 +89,7 @@
                 (click)="toggleAllChanges($event)"
                 title="Select the complete comparison"
               >All</button>
-              <span class="count" [title]="reviewedFileCount() + ' files reviewed'">{{ reviewedFileCount() }}/{{ repository()!.files.length }}</span>
+              <span class="count" [title]="reviewedFileCount() + ' files reviewed'">{{ reviewedFileCount() }}/{{ comparisonFiles().length }}</span>
             } @else {
               <button
                 class="explorer-scope-button"
@@ -121,7 +121,7 @@
                 <span class="file-name"><strong>{{ shortName(file.path) }}</strong><small>{{ directory(file.path) }}</small></span>
                 <span class="file-stat">
                   @if (isFileReviewed(file.path)) { <em title="Reviewed" aria-label="Reviewed">✓</em> }
-                  <i>+{{ file.additions }}</i><b>-{{ file.deletions }}</b>
+                  @if (file.binary) { <small>binary</small> } @else { <i>+{{ file.additions }}</i><b>-{{ file.deletions }}</b> }
                 </span>
               </button>
             } @empty {
@@ -224,9 +224,10 @@
         ></button>
       </aside>
 
-      <rift-ai-terminal [hidden]="!terminalOpen()" [root]="repository()!.root" [paths]="repositoryPaths()" [dark]="darkTheme()" [noteCount]="notes().length" [selectedNoteCount]="selectedNotes().length" [hasSelection]="selectedLineCount() > 0" (review)="prepareTerminalReview()" (notes)="reviewSidebarOpen.set(!reviewSidebarOpen())" (back)="showDiff()" (copyNotes)="copyNotes()" (insertNotes)="insertTerminalNotes()" (insertSelection)="insertTerminalSelection()" (navigate)="navigateTerminalSource($event)" (readyChange)="terminalReady.set($event)" />
+      <rift-ai-terminal [hidden]="!terminalOpen()" [root]="repository()!.root" [paths]="repositoryPaths()" [dark]="darkTheme()" [noteCount]="notes().length" [selectedNoteCount]="selectedNotes().length" [hasSelection]="selectedLineCount() > 0" (review)="prepareTerminalReview()" (notes)="reviewSidebarOpen.set(!reviewSidebarOpen())" (back)="showDiff()" (copyNotes)="copyNotes()" (insertNotes)="insertTerminalNotes()" (insertSelection)="insertTerminalSelection()" (navigate)="navigateTerminalSource($event)" (checkpointReset)="resetPromptReview()" (checkpointReview)="openPromptReview($event)" (readyChange)="terminalReady.set($event)" />
       @if (!terminalOpen()) {
       <section class="diff-panel">
+        @if (promptReview(); as prompt) { <div class="prompt-comparison" role="status" aria-label="Prompt comparison"><span>Changes since prompt {{ prompt.number }}: {{ prompt.label }} · {{ prompt.live ? 'captured live view' : 'frozen' }} · {{ prompt.files.length }} {{ prompt.files.length === 1 ? 'file' : 'files' }} · +{{ prompt.additions }} −{{ prompt.deletions }}</span><button (click)="leavePromptReview()">Repository comparison</button></div> }
         <div class="diff-toolbar">
           <div>
             <strong>{{ selectedPath() ? shortName(selectedPath()!) : "No file selected" }}</strong>
@@ -234,14 +235,14 @@
             <button class="search-shortcut-hint" (click)="openRepositorySearch()" title="Search all repository files and contents"><kbd>{{ platform === "darwin" ? "Cmd+F" : "Ctrl+F" }}</kbd><span>Search repo</span></button>
           </div>
           <div class="diff-options">
-            <button class="edit-file-button" [class.active]="editMode()" [disabled]="!selectedFile() || selectedFile()?.status === 'deleted' || patch()?.binary" (click)="toggleEditMode()" [title]="editMode() ? 'Exit edit mode (Escape)' : 'Enter edit mode (Ctrl+E)'">{{ editMode() ? "Editing" : "Edit" }}</button>
+            <button class="edit-file-button" [class.active]="editMode()" [disabled]="!!promptReview() || !selectedFile() || selectedFile()?.status === 'deleted' || patch()?.binary" (click)="toggleEditMode()" [title]="editMode() ? 'Exit edit mode (Escape)' : 'Enter edit mode (Ctrl+E)'">{{ editMode() ? "Editing" : "Edit" }}</button>
             @if (editMode()) {
               <button class="save-file-button" [class.dirty]="selectedFileHasEdits()" [disabled]="!selectedFileHasEdits() || fileSaving()" (click)="saveCurrentFile()">{{ fileSaving() ? "Saving..." : "Save" }} <kbd>Ctrl+S</kbd></button>
             }
             <button
               class="review-file-button"
               [class.reviewed]="selectedPath() && isFileReviewed(selectedPath()!)"
-              [disabled]="!selectedFile()"
+              [disabled]="!!promptReview() || !selectedFile()"
               (click)="toggleSelectedFileReviewed()"
             >{{ selectedPath() && isFileReviewed(selectedPath()!) ? "Reviewed" : "Mark reviewed" }}</button>
             <button class="view-options-trigger" popovertarget="code-view-options">View</button>
@@ -255,7 +256,7 @@
               </select>
             </label>
             <label class="full-file-toggle" title="Show unchanged lines across the full file">
-              <input type="checkbox" [checked]="fullFile()" [disabled]="!selectedFile() || patch()?.binary" (change)="toggleFullFile($event)">
+              <input type="checkbox" [checked]="fullFile()" [disabled]="!!promptReview() || !selectedFile() || patch()?.binary" (change)="toggleFullFile($event)">
               <span>Full file</span>
             </label>
             </div>
@@ -731,12 +732,12 @@
     }
 
     <footer class="statusbar">
-      <span>{{ repository()!.files.length }} files changed</span>
+      <span>{{ comparisonFiles().length }} files changed</span>
       <button class="report-bug-button" (click)="openGitHubIssueReporter()" title="Report a bug" aria-label="Report a bug">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8.5 9.5 6 7m9.5 2.5L18 7M7 14H4m13 0h3M8 18l-2 2m10-2 2 2M9 7.5V6a3 3 0 0 1 6 0v1.5M7.5 12a4.5 4.5 0 0 1 9 0v3.5a4.5 4.5 0 0 1-9 0Z"/></svg>
       </button>
-      <span class="positive">+{{ repository()!.additions }}</span>
-      <span class="negative">-{{ repository()!.deletions }}</span>
+      <span class="positive">+{{ promptReview()?.additions ?? repository()!.additions }}</span>
+      <span class="negative">-{{ promptReview()?.deletions ?? repository()!.deletions }}</span>
       @if (notes().length > 0) { <span>{{ notes().length }} review notes</span> }
       @if (error()) { <span class="status-error" [title]="error()!">{{ error() }}</span> }
       <span class="status-spacer"></span>

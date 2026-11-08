@@ -824,7 +824,7 @@ function repositoryFilePath(path: unknown): string {
 }
 
 async function openRepository(path: string): Promise<RepositorySnapshot> {
-  terminal.reset();
+  terminal.reset();terminal.checkpoints.clear();
   const previousPath = currentRepositoryPath;
   const previousComparisonId = activeComparisonId;
   const previousTargetBranch = activeTargetBranch;
@@ -877,7 +877,15 @@ function registerIpc(): void {
   ipcMain.handle('terminal:resize', (event, id, cols, rows) => {
     assertTrustedSender(event); terminal.resize(id, cols, rows);
   });
-  ipcMain.handle('terminal:stop', event => { assertTrustedSender(event); terminal.reset(); });
+  ipcMain.handle('terminal:send-tracked', (event,id,text)=>{assertTrustedSender(event);return terminal.sendTracked(id,text);});
+  ipcMain.handle('prompt:summaries',event=>{assertTrustedSender(event);return terminal.checkpoints.list(currentRepositoryPath ?? '');});
+  ipcMain.handle('prompt:patch',(event,id,path,viewId)=>{assertTrustedSender(event);if(typeof id!=='string'||typeof viewId!=='string'||viewId.length>100||typeof path!=='string'||id.length>200||path.length>4096)throw new Error('Invalid checkpoint.');return terminal.checkpoints.patch(currentRepositoryPath ?? '',id,path,viewId);});
+  ipcMain.handle('prompt:finish',event=>{assertTrustedSender(event);return terminal.checkpoints.finish(currentRepositoryPath ?? '');});
+  ipcMain.handle('terminal:stop', async event => {
+    assertTrustedSender(event);terminal.reset();
+    try{await terminal.checkpoints.finish(currentRepositoryPath ?? '');return {checkpointError:null};}
+    catch(error){return {checkpointError:error instanceof Error?error.message:String(error)};}
+  });
   ipcMain.handle("window:set-theme", (event, theme: unknown) => {
     assertTrustedSender(event);
     if (theme !== "dark" && theme !== "light") throw new Error("Invalid window theme.");

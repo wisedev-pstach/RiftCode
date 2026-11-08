@@ -1,7 +1,7 @@
 import { Component, ElementRef, ViewChild, AfterViewInit, OnDestroy, Input, Output, EventEmitter, signal, effect, HostListener } from '@angular/core';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
-import type { AgentSession } from '../../shared/contracts';
+import type { AgentSession,PromptSummary } from '../../shared/contracts';
 import type { ILink } from '@xterm/xterm';
 import { sourceLinks } from '../../shared/source-links';
 import type { TerminalMode, TerminalProvider, TerminalState, SourceLocation } from '../../shared/terminal';
@@ -20,7 +20,27 @@ export class AiTerminalComponent implements AfterViewInit, OnDestroy {
   @Output() readonly navigate=new EventEmitter<SourceLocation>(); @Output() readonly back=new EventEmitter<void>(); @Output() readonly legacy=new EventEmitter<void>();
   @Output() readonly copyNotes=new EventEmitter<void>(); @Output() readonly insertNotes=new EventEmitter<void>(); @Output() readonly insertSelection=new EventEmitter<void>(); @Output() readonly readyChange=new EventEmitter<boolean>();
   @ViewChild('surface') surface!: ElementRef<HTMLDivElement>;
+  @ViewChild('trackedInput') set trackedInput(ref:ElementRef<HTMLTextAreaElement>|undefined){ref?.nativeElement.focus();}
   @ViewChild('contextMenu') contextMenu?: ElementRef<HTMLDetailsElement>;
+  @Output() readonly checkpointReset=new EventEmitter<void>();
+  @Output() readonly checkpointReview=new EventEmitter<PromptSummary>();
+  readonly trackOpen=signal(false);readonly trackDraft=signal('');readonly tracking=signal(false);readonly summaries=signal<PromptSummary[]>([]);readonly summaryError=signal('');readonly summaryLoading=signal(false);private summaryRequest=0;
+  async refreshCheckpoints():Promise<void>{
+    if(!window.rift.promptSummaries)return;
+    const request=++this.summaryRequest,root=this.root(),generation=this.generation;this.summaryLoading.set(true);
+    try{const result=await window.rift.promptSummaries();if(!this.destroyed&&request===this.summaryRequest&&root===this.root()&&generation===this.generation){this.summaries.set(result);this.summaryError.set('');}}
+    catch(e){if(request===this.summaryRequest&&generation===this.generation)this.summaryError.set(`${message(e)}. Previous summary may be stale; refresh changes to retry.`);}
+    finally{if(request===this.summaryRequest)this.summaryLoading.set(false);}
+  }
+  async sendTracked():Promise<void>{
+    const id=this.state()?.id,text=this.trackDraft(),generation=this.generation;
+    if(this.tracking()||!id||!this.ready()||!text.trim())return;
+    this.tracking.set(true);this.error.set('');
+    try{await window.rift.terminalSendTracked(id,text);if(this.destroyed||generation!==this.generation||id!==this.state()?.id)return;if(this.trackDraft()===text)this.trackDraft.set('');this.trackOpen.set(false);this.terminal?.focus();await this.refreshCheckpoints();}
+    catch(e){if(!this.destroyed&&generation===this.generation)this.error.set(message(e));}
+    finally{if(generation===this.generation)this.tracking.set(false);}
+  }
+  async finishCheckpoint():Promise<void>{const generation=this.generation;try{await window.rift.promptFinish();if(generation===this.generation)await this.refreshCheckpoints();}catch(e){if(generation===this.generation)this.summaryError.set(`${message(e)}. Previous summary may be stale; refresh changes to retry.`);}}
   readonly menuOpen=signal(false);
   @HostListener('document:pointerdown',['$event']) outsideContext(event:PointerEvent):void {
     if(this.contextMenu?.nativeElement.open && !this.contextMenu.nativeElement.contains(event.target as Node))this.closeContext();
@@ -48,14 +68,15 @@ export class AiTerminalComponent implements AfterViewInit, OnDestroy {
   private timer?: ReturnType<typeof setTimeout>; private cursor=0; private destroyed=false; private generation=0;
   private previousRoot=''; readonly disconnected=signal(false); private polling=false;
   constructor() {
+    effect(()=>{const tracking=this.tracking()&&this.trackOpen();if(this.terminal)this.terminal.options.disableStdin=tracking;});
     effect(()=>{this.root();this.provider();const choice=this.choice();this.resumeId.set('');this.sessions.set([]);this.sessionError.set('');this.listGeneration++;this.loadingSessions.set(false);if(choice==='resume')void this.loadSessions();});
     effect(() => { const dark=this.dark(); if(this.terminal) this.terminal.options.theme=dark?{background:'#0b0d10',foreground:'#d9dde5',cursor:'#c8ff63'}:{background:'#fafbfc',foreground:'#25313e',cursor:'#476a1c'}; });
-    effect(() => { const root=this.root(); if(this.previousRoot && root!==this.previousRoot) { this.preparedReview=''; this.reviewRequested.set(false); this.generation++; this.starting.set(false); this.state.set(null); this.error.set(''); this.disconnected.set(false); this.cursor=0; this.hasOutput.set(false); this.activeTitle.set(''); this.terminal?.reset(); this.setReady(false); } this.previousRoot=root; });
+    effect(() => { const root=this.root(); if(this.previousRoot && root!==this.previousRoot) { this.preparedReview=''; this.reviewRequested.set(false); this.generation++;this.tracking.set(false);this.summaries.set([]);this.summaryRequest++;this.summaryLoading.set(false);this.summaryError.set(''); this.starting.set(false); this.state.set(null); this.error.set(''); this.disconnected.set(false); this.cursor=0; this.hasOutput.set(false); this.activeTitle.set(''); this.terminal?.reset(); this.setReady(false); } this.previousRoot=root; });
   }
   ngAfterViewInit(): void {
     this.terminal=new Terminal({fontSize:13,fontFamily:'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',scrollback:3000,convertEol:false,allowProposedApi:false,linkHandler:{activate:()=>{}},theme:this.dark()?{background:'#0b0d10',foreground:'#d9dde5',cursor:'#c8ff63'}:{background:'#fafbfc',foreground:'#25313e',cursor:'#476a1c'}});
     this.terminal.loadAddon(this.fit); this.terminal.open(this.surface.nativeElement);
-    this.terminal.onData(data => { const id=this.state()?.id, generation=this.generation; if(!this.disconnected()&&id&&this.state()?.status==='running') void window.rift.terminalInput(id,data,false).catch(e=>{if(!this.destroyed&&generation===this.generation&&this.state()?.id===id)this.fail(e);}); });
+    this.terminal.onData(data => { if(this.tracking()&&this.trackOpen())return;const id=this.state()?.id, generation=this.generation; if(!this.disconnected()&&id&&this.state()?.status==='running') void window.rift.terminalInput(id,data,false).catch(e=>{if(!this.destroyed&&generation===this.generation&&this.state()?.id===id)this.fail(e);}); });
     this.terminal.onResize(({cols,rows}) => { const id=this.state()?.id, generation=this.generation; if(id&&this.state()?.status==='running') void window.rift.terminalResize(id,cols,rows).catch(e=>{if(!this.destroyed&&generation===this.generation&&this.state()?.id===id)this.fail(e);}); });
     this.terminal.registerLinkProvider({provideLinks:(line,callback)=>callback(this.links(line))});
     this.observer=new ResizeObserver(()=>{if(this.surface.nativeElement.clientWidth>0) this.fit.fit();}); this.observer.observe(this.surface.nativeElement);
@@ -91,14 +112,14 @@ export class AiTerminalComponent implements AfterViewInit, OnDestroy {
       this.fit.fit();
       const state=await window.rift.terminalStart(this.provider(),this.mode(),this.terminal.cols,this.terminal.rows,this.choice()==='resume'?this.resumeId():undefined);
       if(this.destroyed||generation!==this.generation)return;
-      this.terminal.reset(); this.cursor=0; this.state.set(state); if(this.surface.nativeElement.checkVisibility())this.terminal.focus();
+      this.terminal.reset(); this.cursor=0; this.state.set(state);this.summaries.set([]);this.summaryError.set('');this.checkpointReset.emit(); if(this.surface.nativeElement.checkVisibility())this.terminal.focus();
       if(!this.timer) void this.poll();
     } catch(e) { if(generation===this.generation)this.error.set(message(e)); }
     finally { if(generation===this.generation)this.starting.set(false); }
   }
   async stop(): Promise<void> {
-    const generation=++this.generation; this.starting.set(false); this.setReady(false);
-    try { await window.rift.terminalStop(); if(this.destroyed||generation!==this.generation)return; this.state.set(null); this.cursor=0; this.hasOutput.set(false); this.terminal?.reset(); this.error.set(''); this.disconnected.set(false); if(!this.timer) void this.poll(); }
+    const generation=++this.generation; this.starting.set(false);this.tracking.set(false);this.summaryRequest++;this.summaryLoading.set(false); this.setReady(false);
+    try { const stopped=await window.rift.terminalStop(); if(this.destroyed||generation!==this.generation)return; this.state.set(null); this.cursor=0; this.hasOutput.set(false); this.terminal?.reset(); this.error.set(''); this.disconnected.set(false);if(stopped?.checkpointError)this.summaryError.set(`Session stopped, but checkpoint freeze failed: ${stopped.checkpointError}. Previous summary may be stale; retry Finish checkpoint.`);else await this.refreshCheckpoints(); if(!this.timer) void this.poll(); }
     catch(e) {if(!this.destroyed&&generation===this.generation)this.fail(e);}
   }
   retain(text:string):void { this.pending.set(text.slice(0,32768));this.error.set(text.length>32768?'Context preview truncated to 32 KiB; saved history is unchanged.':''); }
