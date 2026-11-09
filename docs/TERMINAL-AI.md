@@ -2,11 +2,11 @@
 
 ## Dock beside file review
 
-Use **Dock ↓** in Terminal or Review to keep it below the file/diff viewer. Drag the divider or focus it and use Arrow Up/Down, Home or End. Switch Terminal/Review in the dock header; both sessions remain independent. **Unpin ×** (Close dock) returns the selected pane to its original rail placement without Stop, restart or submission. File links, Explorer and checkpoint changes open above the dock. The same terminal/xterm, scrollback, draft and process are retained. See [TERMINAL-DOCKING.md](TERMINAL-DOCKING.md).
+Use **Dock ↓** in Agent or Review to keep it below the file/diff viewer. Drag the divider or focus it and use Arrow Up/Down, Home or End. Switch Terminal/Review in the dock header; both sessions remain independent. **Unpin ×** (Close dock) returns the selected pane to its original rail placement without Stop, restart or submission. File links, Explorer and checkpoint changes open above the dock. The same terminal/xterm, scrollback, draft and process are retained. See [TERMINAL-DOCKING.md](TERMINAL-DOCKING.md).
 
 ## Use
 
-New ordinary Terminal sessions default to **Edit**; the independent Review workbench stays **Review / plan**. Run review submits the prepared scoped/default/custom request and collapses the brief immediately while dispatch is pending; it does not wait for model completion. See [WINDOWS-TERMINAL-FIX.md](WINDOWS-TERMINAL-FIX.md) for the Windows redraw investigation, transport workaround and remaining native acceptance checks.
+New Agent sessions default to **Edit**; the independent Review workbench stays **Review / plan**. Run review submits the prepared scoped/default/custom request and collapses the brief immediately while dispatch is pending; it does not wait for model completion. See [WINDOWS-TERMINAL-FIX.md](WINDOWS-TERMINAL-FIX.md) for the Windows redraw investigation, transport workaround and remaining native acceptance checks.
 
 1. Install and authenticate Claude Code (`claude`), OpenCode (`opencode`) or Codex (`codex`) yourself in a system terminal. Rift discovers the executable on PATH; it does not install providers, sign in, or purchase inference. A missing executable produces an actionable error when Start is pressed.
 2. Use the compact **Notes / Terminal / Review** rail on the right. **Terminal** opens the retained AI session workspace; choose Claude Code, OpenCode or Codex, **New session** or **Resume existing**, and **Review / plan** or **Edit · confirmations kept**, then Start/Resume. Resume lists named provider conversations in the current repository with local dates/times and an exact ISO update-time tooltip. Provider and intent stay fixed for that session. Use Stop before changing them; restarting is always explicit.

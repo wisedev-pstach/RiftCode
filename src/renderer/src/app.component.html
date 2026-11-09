@@ -440,7 +440,7 @@
       <aside class="review-panel">
         <nav class="review-rails" aria-label="Workspace tools">
           <button class="review-rail" [class.active]="reviewSidebarOpen()" [attr.aria-expanded]="reviewSidebarOpen()" (click)="reviewSidebarOpen.set(!reviewSidebarOpen())" title="Review notes" aria-label="Open review notes"><span class="note-icon" aria-hidden="true">N</span><small>Notes</small>@if (notes().length) { <b>{{ notes().length }}</b> }</button>
-          <button class="review-rail conversation-rail" [class.active]="terminalOpen() && !reviewWorkbenchOpen()" (click)="openTerminal()" title="New or resume a Claude Code, OpenCode or Codex session" aria-label="AI terminal"><span aria-hidden="true">&gt;_</span><small>Terminal</small></button>
+          <button class="review-rail conversation-rail" [class.active]="terminalOpen() && !reviewWorkbenchOpen()" (click)="openTerminal()" title="New or resume a Claude Code, OpenCode or Codex session" aria-label="Agent"><span aria-hidden="true">&gt;_</span><small>Agent</small></button>
           <button class="review-rail review-mode-rail" [class.active]="terminalOpen() && reviewWorkbenchOpen()" (click)="prepareTerminalReview()" title="Review comparison, current file or selected notes" aria-label="Open code review"><span class="review-mark" aria-hidden="true">R</span><small>Review</small></button>
         </nav>
         <div class="notes-drawer" [hidden]="!reviewSidebarOpen()">
@@ -494,7 +494,7 @@
                 (click)="sendNotesToAgent()"
                 [disabled]="selectedNotes().length === 0"
               >
-                {{ "Insert " + selectedNotes().length + " in terminal" }}
+                {{ "Insert " + selectedNotes().length + " in " + (terminalOpen() && reviewWorkbenchOpen() ? "Review" : "Agent") }}
               </button>
             </div>
 
@@ -568,7 +568,7 @@
           @if (!allChangesSelected()) {
             <button role="menuitem" (click)="startNote()"><span class="tool-mark">+</span><span><strong>Add note</strong><small>Attach review feedback</small></span><kbd class="tool-shortcut">{{ platform === "darwin" ? "Cmd+N" : "Ctrl+N" }}</kbd></button>
           }
-          <button role="menuitem" (click)="insertTerminalSelection()"><span class="tool-mark" aria-hidden="true">&gt;_</span><span><strong>Insert selection in AI terminal</strong><small>Context only — no Enter</small></span><kbd class="tool-shortcut">{{ platform === 'darwin' ? 'Cmd+K' : 'Ctrl+K' }}</kbd></button>
+          <button role="menuitem" (click)="insertTerminalSelection()"><span class="tool-mark" aria-hidden="true">&gt;_</span><span><strong>Insert selection in {{ terminalOpen() && reviewWorkbenchOpen() ? 'Review' : 'Agent' }}</strong><small>Context only — no Enter</small></span><kbd class="tool-shortcut">{{ platform === 'darwin' ? 'Cmd+K' : 'Ctrl+K' }}</kbd></button>
         }
       </section>
     }
