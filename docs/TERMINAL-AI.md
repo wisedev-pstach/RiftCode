@@ -2,6 +2,8 @@
 
 ## Use
 
+New ordinary Terminal sessions default to **Edit**; the independent Review workbench stays **Review / plan**. Run review submits the prepared scoped/default/custom request and collapses the brief immediately while dispatch is pending; it does not wait for model completion. See [WINDOWS-TERMINAL-FIX.md](WINDOWS-TERMINAL-FIX.md) for the Windows redraw investigation, transport workaround and remaining native acceptance checks.
+
 1. Install and authenticate Claude Code (`claude`), OpenCode (`opencode`) or Codex (`codex`) yourself in a system terminal. Rift discovers the executable on PATH; it does not install providers, sign in, or purchase inference. A missing executable produces an actionable error when Start is pressed.
 2. Use the compact **Notes / Terminal / Review** rail on the right. **Terminal** opens the retained AI session workspace; choose Claude Code, OpenCode or Codex, **New session** or **Resume existing**, and **Review / plan** or **Edit · confirmations kept**, then Start/Resume. Resume lists named provider conversations in the current repository with local dates/times and an exact ISO update-time tooltip. Provider and intent stay fixed for that session. Use Stop before changing them; restarting is always explicit.
 3. Type directly into the genuine xterm.js terminal. Native node-pty lives in Electron main; no shell is substituted after a CLI exits. Native provider trust/permission dialogs remain yours to answer.

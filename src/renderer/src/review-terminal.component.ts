@@ -5,4 +5,5 @@ import {AiTerminalComponent} from './ai-terminal.component';
 export class ReviewTerminalComponent extends AiTerminalComponent {
  override readonly reviewWorkbench=true;
  override readonly slot='review' as const;
+ constructor(){super();this.mode.set('review');}
 }

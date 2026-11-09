@@ -20,7 +20,7 @@ const config=['-c','core.fsmonitor=false','-c','core.hooksPath=/dev/null','-c','
 export class PromptCheckpoints {
  private root='';private entries:Entry[]=[];private busy=false;private generation=0;private revision=0;private refreshing=false;private finishing=false;private nextNumber=1;
  clear():void {this.generation++;this.revision++;this.root='';this.entries=[];this.nextNumber=1;}
- async begin(root:string,session:string,label:string,submit:()=>void):Promise<void> {
+ async begin(root:string,session:string,label:string,submit:()=>void|Promise<void>):Promise<void> {
   if(this.busy)throw new Error('Checkpoint operation in progress.');
   this.busy=true;const generation=this.generation;
   try{
@@ -30,8 +30,9 @@ export class PromptCheckpoints {
    const image=await capture(canonical);
    if(generation!==this.generation)throw new Error('Checkpoint cancelled.');
    if(this.root && this.root!==canonical)throw new Error('Checkpoint repository changed.');
-   // The synchronous trusted callback rechecks native session/readiness and writes once.
-   submit();
+   // The trusted callback rechecks native identity before paste and the separate Enter.
+   await submit();
+   if(generation!==this.generation)throw new Error('Checkpoint cancelled. Inspect the CLI before retrying.');
    this.revision++;this.root=canonical;
    const last=this.entries.at(-1);if(last&&!last.after)last.after=image;
    this.entries.push({number:this.nextNumber++,id:session+':'+randomUUID(),label:label.split(/[\r\n]/)[0].replace(/[\x00-\x1f\x7f]/g,'').slice(0,80),before:image});

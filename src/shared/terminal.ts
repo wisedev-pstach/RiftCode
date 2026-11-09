@@ -3,6 +3,7 @@ export type TerminalMode = 'review' | 'edit';
 export interface TerminalState {
   id: string; provider: TerminalProvider; mode: TerminalMode; cwd: string;
   status: 'running' | 'exited'; exitCode?: number;
+  windowsPty?: {backend:'conpty'|'winpty';buildNumber?:number};
 }
 export interface TerminalRead { state: TerminalState | null; data: string; cursor: number; truncated: boolean }
 export interface SourceLocation { path: string; line: number; column: number; endLine?: number }

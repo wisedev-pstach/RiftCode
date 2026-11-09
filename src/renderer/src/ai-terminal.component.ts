@@ -19,10 +19,10 @@ export class AiTerminalComponent implements AfterViewInit, OnDestroy {
     if(!this.reviewWorkbench||!id||!this.ready()||this.reviewSending())return;
     let text:string;
     try{text=followUp?this.followUp():buildTerminalReview(this.reviewContext!,this.reviewScope(),this.instructions(),this.reviewTone());if(!text.trim())return;}catch(e){this.error.set(message(e));return;}
-    this.reviewSending.set(true);this.error.set('');
-    try{await window.rift.terminalSubmitReview(id,text);if(this.destroyed||generation!==this.generation||id!==this.state()?.id)return;if(followUp){if(this.followUp()===text)this.followUp.set('');}else{this.reviewRuns.update(n=>n+1);this.lastReview.set(text);this.briefCollapsed.set(true);}this.terminal?.focus();}
-    catch(e){if(!this.destroyed&&generation===this.generation&&id===this.state()?.id)this.error.set(message(e));}
-    finally{if(generation===this.generation)this.reviewSending.set(false);}
+    this.reviewSending.set(true);this.error.set('');if(!followUp)this.briefCollapsed.set(true);
+    try{await window.rift.terminalSubmitReview(id,text);if(this.destroyed||generation!==this.generation||id!==this.state()?.id)return;if(followUp){if(this.followUp()===text)this.followUp.set('');}else{this.reviewRuns.update(n=>n+1);this.lastReview.set(text);}this.terminal?.focus();}
+    catch(e){if(!this.destroyed&&generation===this.generation&&id===this.state()?.id){if(!followUp)this.briefCollapsed.set(false);this.error.set(message(e));}}
+    finally{if(!this.destroyed&&generation===this.generation&&id===this.state()?.id)this.reviewSending.set(false);}
   }
   readonly root=signal(''); readonly paths=signal<string[]>([]); readonly dark=signal(true);
   readonly noteCount=signal(0); readonly selectedNoteCount=signal(0); readonly hasSelection=signal(false);
@@ -65,16 +65,16 @@ export class AiTerminalComponent implements AfterViewInit, OnDestroy {
     if(event.key==='Escape' && this.contextMenu?.nativeElement.open) { event.preventDefault();this.closeContext();this.contextMenu.nativeElement.querySelector('summary')?.focus(); }
   }
   closeContext():void { if(this.contextMenu)this.contextMenu.nativeElement.open=false;this.menuOpen.set(false); }
-  readonly provider=signal<TerminalProvider>('claude'); readonly mode=signal<TerminalMode>('review');
+  readonly provider=signal<TerminalProvider>('claude'); readonly mode=signal<TerminalMode>('edit');
   readonly choice=signal<'new'|'resume'>('new'); readonly resumeId=signal(''); readonly sessions=signal<AgentSession[]>([]); readonly loadingSessions=signal(false); readonly sessionError=signal(''); private listGeneration=0;
   readonly state=signal<TerminalState|null>(null); readonly starting=signal(false); readonly ready=signal(false);
   readonly error=signal(''); readonly pending=signal(''); readonly hasOutput=signal(false); readonly activeTitle=signal('');
   readonly available=!!window.rift?.terminalStart;
-  private terminal?: Terminal; private fit=new FitAddon(); private observer?: ResizeObserver;
+  private terminal?: Terminal; private fit=new FitAddon(); private observer?: ResizeObserver; private fitFrame?:number;
   private timer?: ReturnType<typeof setTimeout>; private cursor=0; private destroyed=false; private generation=0;
   private previousRoot=''; readonly disconnected=signal(false); private polling=false;
   constructor() {
-    effect(()=>{const tracking=this.tracking()&&this.trackOpen();if(this.terminal)this.terminal.options.disableStdin=tracking;});
+    effect(()=>{const tracking=(this.tracking()&&this.trackOpen())||this.reviewSending();if(this.terminal)this.terminal.options.disableStdin=tracking;});
     effect(()=>{this.root();this.provider();const choice=this.choice();this.resumeId.set('');this.sessions.set([]);this.sessionError.set('');this.listGeneration++;this.loadingSessions.set(false);if(choice==='resume')void this.loadSessions();});
     effect(() => { const dark=this.dark(); if(this.terminal) this.terminal.options.theme=dark?{background:'#0b0d10',foreground:'#d9dde5',cursor:'#c8ff63'}:{background:'#fafbfc',foreground:'#25313e',cursor:'#476a1c'}; });
     effect(() => { const root=this.root(); if(this.previousRoot && root!==this.previousRoot) { this.reviewSending.set(false);this.reviewRuns.set(0);this.lastReview.set('');this.briefCollapsed.set(false);this.followUp.set(''); this.generation++;this.tracking.set(false);this.summaries.set([]);this.summaryRequest++;this.summaryLoading.set(false);this.summaryError.set(''); this.starting.set(false); this.state.set(null); this.error.set(''); this.disconnected.set(false); this.cursor=0; this.hasOutput.set(false); this.activeTitle.set(''); this.terminal?.reset(); this.setReady(false); } this.previousRoot=root; });
@@ -82,11 +82,19 @@ export class AiTerminalComponent implements AfterViewInit, OnDestroy {
   ngAfterViewInit(): void {
     this.terminal=new Terminal({fontSize:13,fontFamily:'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',scrollback:3000,convertEol:false,allowProposedApi:false,linkHandler:{activate:()=>{}},theme:this.dark()?{background:'#0b0d10',foreground:'#d9dde5',cursor:'#c8ff63'}:{background:'#fafbfc',foreground:'#25313e',cursor:'#476a1c'}});
     this.terminal.loadAddon(this.fit); this.terminal.open(this.surface.nativeElement);
-    this.terminal.onData(data => { if(this.tracking()&&this.trackOpen())return;const id=this.state()?.id, generation=this.generation; if(!this.disconnected()&&id&&this.state()?.status==='running') void window.rift.terminalInput(id,data,false,this.slot).catch(e=>{if(!this.destroyed&&generation===this.generation&&this.state()?.id===id)this.fail(e);}); });
+    this.terminal.onData(data => { if(this.reviewSending()||(this.tracking()&&this.trackOpen()))return;const id=this.state()?.id, generation=this.generation; if(!this.disconnected()&&id&&this.state()?.status==='running') void window.rift.terminalInput(id,data,false,this.slot).catch(e=>{if(!this.destroyed&&generation===this.generation&&this.state()?.id===id)this.fail(e);}); });
     this.terminal.onResize(({cols,rows}) => { const id=this.state()?.id, generation=this.generation; if(id&&this.state()?.status==='running') void window.rift.terminalResize(id,cols,rows,this.slot).catch(e=>{if(!this.destroyed&&generation===this.generation&&this.state()?.id===id)this.fail(e);}); });
     this.terminal.registerLinkProvider({provideLinks:(line,callback)=>callback(this.links(line))});
-    this.observer=new ResizeObserver(()=>{if(this.surface.nativeElement.clientWidth>0) this.fit.fit();}); this.observer.observe(this.surface.nativeElement);
+    this.observer=new ResizeObserver(()=>this.scheduleFit()); this.observer.observe(this.surface.nativeElement);
     if(this.available) void this.poll();
+  }
+  private fitVisible():void {
+    const surface=this.surface.nativeElement;
+    if(surface.clientWidth>0&&surface.clientHeight>0&&surface.checkVisibility())this.fit.fit();
+  }
+  private scheduleFit():void {
+    if(this.destroyed||this.fitFrame!==undefined)return;
+    this.fitFrame=requestAnimationFrame(()=>{this.fitFrame=undefined;if(!this.destroyed)this.fitVisible();});
   }
   providerLabel():string { return {claude:'Claude Code',opencode:'OpenCode',codex:'Codex'}[this.provider()]; }
   sessionIso(value:number):string { return new Date(value).toISOString(); }
@@ -115,7 +123,11 @@ export class AiTerminalComponent implements AfterViewInit, OnDestroy {
     if(this.state()||this.starting()||!this.terminal || (this.choice()==='resume' && (!this.resumeId()||this.loadingSessions())))return;
     const generation=++this.generation; this.starting.set(true); this.activeTitle.set(this.choice()==='resume'?this.selectedSessionTitle():''); this.hasOutput.set(false); this.error.set(''); this.disconnected.set(false);
     try {
-      this.fit.fit();
+      // Starting removes the launcher; let Angular commit the running-size surface
+      // (including footer/composers) before spawning a provider that redraws on resize.
+      await new Promise<void>(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve())));
+      if(this.destroyed||generation!==this.generation)return;
+      this.fitVisible();
       const state=await window.rift.terminalStart(this.provider(),this.mode(),this.terminal.cols,this.terminal.rows,this.choice()==='resume'?this.resumeId():undefined,this.slot);
       if(this.destroyed||generation!==this.generation)return;
       this.terminal.reset(); this.cursor=0; this.state.set(state);this.reviewRuns.set(0);this.lastReview.set('');this.briefCollapsed.set(false);this.summaries.set([]);this.summaryError.set('');if(!this.reviewWorkbench)this.checkpointReset.emit(); if(this.surface.nativeElement.checkVisibility())this.terminal.focus();
@@ -148,6 +160,7 @@ export class AiTerminalComponent implements AfterViewInit, OnDestroy {
       const result=await window.rift.terminalRead(this.state()?.id??null,this.cursor,this.slot);
       if(this.destroyed||generation!==this.generation)return;
       this.state.set(result.state); this.cursor=result.cursor;
+      if(this.terminal){const previous=this.terminal.options.windowsPty;const next:{backend?:'conpty'|'winpty';buildNumber?:number}=result.state?.windowsPty??{};if(previous?.backend!==next.backend||previous?.buildNumber!==next.buildNumber)this.terminal.options.windowsPty=next;}
       if(result.state){this.provider.set(result.state.provider);this.mode.set(result.state.mode);}
       if(result.data) await new Promise<void>(resolve=>this.terminal!.write((result.truncated?'\r\n[Earlier output truncated]\r\n':'')+result.data,resolve));
       if(this.destroyed||generation!==this.generation)return;
@@ -182,6 +195,6 @@ export class AiTerminalComponent implements AfterViewInit, OnDestroy {
   }
   private setReady(value:boolean):void {this.ready.set(value);this.readyChange.emit(value);}
   private fail(e:unknown):void {this.disconnected.set(true);this.setReady(false);this.error.set(`Terminal connection unavailable: ${message(e)}. Use Stop, then Start to recover.`);}
-  ngOnDestroy():void {this.destroyed=true;this.generation++;this.listGeneration++;if(this.timer)clearTimeout(this.timer);this.observer?.disconnect();this.terminal?.dispose();}
+  ngOnDestroy():void {this.destroyed=true;this.generation++;this.listGeneration++;if(this.timer)clearTimeout(this.timer);if(this.fitFrame!==undefined)cancelAnimationFrame(this.fitFrame);this.observer?.disconnect();this.terminal?.dispose();}
 }
 function message(e:unknown):string{return e instanceof Error?e.message:String(e);}

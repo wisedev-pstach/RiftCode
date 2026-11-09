@@ -1,4 +1,5 @@
 import * as pty from 'node-pty';
+import {release} from 'node:os';
 import {PromptCheckpoints} from './prompt-checkpoints';
 import type { IPty } from 'node-pty';
 import { randomUUID } from 'node:crypto';
@@ -11,19 +12,18 @@ import type { TerminalMode, TerminalProvider, TerminalRead, TerminalState } from
 const OUTPUT_LIMIT = 256 * 1024;
 export class TerminalService {
   readonly checkpoints=new PromptCheckpoints();
-  private trackedSending=false;
+  private trackedSending=false; private submitting=false;
   private pasteReady=false; private controlTail='';
   async sendTracked(id:string,text:string):Promise<void>{
     if(this.trackedSending)throw new Error('Checkpoint capture in progress.');
     const child=this.active(id),generation=this.generation,root=this.state!.cwd;
     if(typeof text!=='string'||!text.trim()||Buffer.byteLength(text,'utf8')>32768)throw new Error('Prompt must be between 1 byte and 32 KiB.');
     if(!this.pasteReady)throw new Error('Wait for native CLI input readiness. Nothing sent.');
-    const data=contextPaste(text)+'\r';
     this.trackedSending=true;
     try{
-      await this.checkpoints.begin(root,id,text,()=>{
+      await this.checkpoints.begin(root,id,text,async()=>{
         if(generation!==this.generation||this.active(id)!==child||!this.pasteReady)throw new Error('Session or input readiness changed. Nothing sent.');
-        try{child.write(data);}catch{throw new Error('PTY write failed; submission is uncertain. Check the CLI before retrying.');}
+        await this.deliver(id,text,child,generation);
       });
     }finally{this.trackedSending=false;}
   }
@@ -32,7 +32,21 @@ export class TerminalService {
     const child=this.active(id);
     if(typeof text!=='string'||!text.trim()||Buffer.byteLength(text,'utf8')>32768)throw new Error('Request must be between 1 byte and 32 KiB.');
     if(!this.pasteReady)throw new Error('Wait for native CLI input readiness. Nothing sent.');
-    try{child.write(contextPaste(text)+'\r');}catch{throw new Error('PTY write failed; submission is uncertain. Inspect the CLI before retrying.');}
+    if(this.trackedSending)throw new Error('Checkpoint capture in progress.');
+    await this.deliver(id,text,child,this.generation);
+  }
+  private async deliver(id:string,text:string,child:IPty,generation:number):Promise<void>{
+    if(this.submitting)throw new Error('Request delivery in progress. Nothing sent.');
+    this.submitting=true;
+    try{
+      child.write(contextPaste(text));
+      // A paste and Enter in one stdin event can be consumed as one paste by TUIs.
+      // Separate the keypress from the paste burst; never add a second Enter/retry.
+      await this.settleInput();
+      if(generation!==this.generation||this.active(id)!==child||!this.pasteReady)throw new Error('Session or readiness changed after paste.');
+      child.write('\r');
+    }catch{throw new Error('PTY submission is uncertain. Inspect the CLI before retrying.');}
+    finally{this.submitting=false;}
   }
   private generation = 0;
   private starting = false;
@@ -42,7 +56,7 @@ export class TerminalService {
   private offset = 0;
   private inputWindow = 0;
   private inputCount = 0;
-  constructor(private readonly resolveCommand: (provider: TerminalProvider) => Promise<string | null>, private readonly sessions: (root:string, provider:TerminalProvider)=>Promise<AgentSession[]> = listTerminalSessions, private readonly resolveArguments:(provider:TerminalProvider,mode:TerminalMode,resumeSessionId:string|undefined,command:string,root:string)=>Promise<string[]> = async(provider,mode,id)=>providerArgs(provider,mode,id)) {}
+  constructor(private readonly resolveCommand: (provider: TerminalProvider) => Promise<string | null>, private readonly sessions: (root:string, provider:TerminalProvider)=>Promise<AgentSession[]> = listTerminalSessions, private readonly resolveArguments:(provider:TerminalProvider,mode:TerminalMode,resumeSessionId:string|undefined,command:string,root:string)=>Promise<string[]> = async(provider,mode,id)=>providerArgs(provider,mode,id), private readonly settleInput:()=>Promise<void> = ()=>new Promise(resolve=>setTimeout(resolve,100))) {}
 
   async start(root: string, provider: TerminalProvider, mode: TerminalMode, cols: number, rows: number, resumeSessionId?:string): Promise<TerminalState> {
     providerArgs(provider, mode, resumeSessionId); // Validate renderer values before any asynchronous work.
@@ -67,7 +81,7 @@ export class TerminalService {
       const launch = terminalLaunch(command, args);
       const child = pty.spawn(launch.file, launch.args, { name: 'xterm-256color', cwd, cols, rows, env: terminalEnvironment() });
       this.process = child;
-      this.state = {id: randomUUID(), provider, mode, cwd, status: 'running'};
+      this.state = {id: randomUUID(), provider, mode, cwd, status: 'running', ...(process.platform==='win32'?{windowsPty:terminalWindowsPty(process.platform,release())}:{})};
       this.output = ''; this.offset = 0;this.pasteReady=false;this.controlTail='';this.checkpoints.clear();
       const id = this.state.id;
       child.onData(data => {
@@ -99,6 +113,7 @@ export class TerminalService {
   }
   input(id: string, data: string, paste = false): void {
     if(this.trackedSending)throw new Error('Checkpoint capture in progress. Wait before typing.');
+    if(this.submitting)throw new Error('Request delivery in progress. Wait before typing.');
     const child = this.active(id);
     if (typeof data !== 'string' || data.length > 32768) throw new Error('Terminal input is too large.');
     const now = Date.now();
@@ -122,6 +137,15 @@ export class TerminalService {
     if (this.state?.id !== id || !this.process || this.state.status !== 'running') throw new Error('No running terminal session.');
     return this.process;
   }
+}
+/** Metadata is derived in trusted main, never from the renderer's OS/user agent. */
+export function terminalWindowsPty(platform:string,osRelease:string):TerminalState['windowsPty'] {
+  if(platform!=='win32')return undefined;
+  const match=/^\d+\.\d+\.(\d+)(?:\.\d+)?$/.exec(osRelease);
+  const buildNumber=match?Number(match[1]):NaN;
+  if(!Number.isSafeInteger(buildNumber)||buildNumber<=0)return undefined;
+  // Match pinned node-pty's default backend selection (system ConPTY from 18309).
+  return {backend:buildNumber>=18309?'conpty':'winpty',buildNumber};
 }
 function dimensions(cols: number, rows: number): void {
   if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols<2 || cols>500 || rows<1 || rows>200) throw new Error('Invalid terminal dimensions.');

@@ -174,6 +174,39 @@ test('narrow sidebar labels and actions have separate unclipped hit targets acro
  }
 });
 
+test('review dispatch collapses immediately while IPC is pending and restores instructions on rejection',async({page})=>{
+ await page.getByRole('button',{name:'Open code review',exact:true}).click();
+ const review=page.getByRole('region',{name:'Code review workbench'});
+ await review.getByRole('textbox',{name:'Review instructions'}).fill('Synthetic pending instructions');
+ await review.getByRole('button',{name:'Start review session',exact:true}).click();
+ await expect(review.getByRole('button',{name:'Run review',exact:true})).toBeEnabled();
+ const before=(await review.locator('.terminal-surface').boundingBox())!.height;
+ await page.evaluate(()=>{const f=window as any;f.rift.terminalSubmitReview=()=>new Promise((resolve,reject)=>{f.resolveReview=resolve;f.rejectReview=reject;});});
+ await review.getByRole('button',{name:'Run review',exact:true}).click();
+ await expect(review.getByRole('button',{name:'Sending…',exact:true})).toBeDisabled();
+ await expect(review.getByRole('button',{name:'Edit review brief',exact:true})).toHaveAttribute('aria-expanded','false');
+ expect((await review.locator('.terminal-surface').boundingBox())!.height-before).toBeGreaterThan(100);
+ await expect(review.getByText('Sending request…',{exact:true})).toBeVisible();
+ await page.screenshot({path:'/opt/data/output/riftcode/terminal-scroll-fix/review-dispatch-pending.png'});
+ await expect(review.locator('.review-request-snapshot')).toHaveCount(0);
+ await page.evaluate(()=>(window as any).rejectReview(new Error('Uncertain; inspect CLI before retrying')));
+ await expect(review.getByRole('alert')).toContainText('Uncertain');
+ await expect(review.getByRole('textbox',{name:'Review instructions'})).toHaveValue('Synthetic pending instructions');
+});
+
+for(const provider of ['claude','opencode','codex'])test(`new ${provider} ordinary session defaults Edit; dedicated review stays plan`,async({page})=>{
+ await page.getByRole('combobox',{name:'Terminal provider'}).selectOption(provider);
+ await expect(page.getByRole('combobox',{name:'Session intent'})).toHaveValue('edit');
+ await page.getByRole('button',{name:'Start session',exact:true}).click();
+ await expect(page.locator('rift-ai-terminal .terminal-identity')).toContainText('Edit');
+ await page.getByRole('button',{name:'Open code review',exact:true}).click();
+ const review=page.getByRole('region',{name:'Code review workbench'});
+ await review.getByRole('combobox',{name:'Terminal provider'}).selectOption(provider);
+ await review.getByRole('button',{name:'Start review session',exact:true}).click();
+ await expect(review.locator('.terminal-identity')).toContainText('Review');await expect(review.locator('.terminal-status')).toHaveText('running');
+ expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.start||c.reviewStart))).toEqual([{start:provider,mode:'edit'},{reviewStart:provider,mode:'review'}]);
+});
+
 test('accepted review brief collapses for output and reopens without submitting or rewriting its snapshot',async({page})=>{
  await page.setViewportSize({width:1024,height:900});await page.getByRole('button',{name:'Open review notes',exact:true}).click();await page.getByRole('button',{name:'Open code review',exact:true}).click();
  const review=page.getByRole('region',{name:'Code review workbench'});
@@ -193,7 +226,7 @@ test('accepted review brief collapses for output and reopens without submitting 
  await review.getByText('Last sent request',{exact:true}).click();await expect(review.locator('.review-request-snapshot pre')).toBeVisible();
 });
 
-test('actual harmless PTY receives the scoped review and follow-up bytes once while the edit PTY stays alive',async({page})=>{
+for(const provider of ['claude','opencode','codex'])test(`actual harmless PTY parses ${provider} scoped review and follow-up once while the edit PTY stays alive`,async({page})=>{
  const fixture=await reviewFixture();
  try{
   await page.exposeFunction('nativeFixtureStart',fixture.start);
@@ -203,15 +236,19 @@ test('actual harmless PTY receives the scoped review and follow-up bytes once wh
   await page.exposeFunction('nativeFixtureStop',(slot:'terminal'|'review')=>fixture.workspace.slot(slot).reset());
   await page.exposeFunction('nativeFixtureSubmit',(id:string,text:string)=>fixture.workspace.review.submit(id,text));
   await page.evaluate(()=>{const f=window as any;Object.assign(f.rift,{terminalStart:f.nativeFixtureStart,terminalRead:f.nativeFixtureRead,terminalInput:f.nativeFixtureInput,terminalResize:f.nativeFixtureResize,terminalStop:f.nativeFixtureStop,terminalSubmitReview:f.nativeFixtureSubmit});});
-  await page.getByRole('combobox',{name:'Session intent'}).selectOption('edit');await page.getByRole('button',{name:'Start session',exact:true}).click();
+  await page.getByRole('combobox',{name:'Terminal provider'}).selectOption(provider);await page.getByRole('combobox',{name:'Session intent'}).selectOption('edit');await page.getByRole('button',{name:'Start session',exact:true}).click();
   await expect(page.locator('rift-ai-terminal .terminal-status')).toHaveText('running');const edit=fixture.workspace.terminal.read(null,0).state!;
   await page.getByRole('button',{name:'Open code review',exact:true}).click();const review=page.getByRole('region',{name:'Code review workbench'});
-  await review.getByRole('combobox',{name:'Review scope'}).selectOption('file');await review.getByRole('textbox',{name:'Review instructions'}).fill('Check the boundary.');await review.getByRole('button',{name:'Start review session',exact:true}).click();
+  await review.getByRole('combobox',{name:'Terminal provider'}).selectOption(provider);await review.getByRole('combobox',{name:'Review scope'}).selectOption('file');await review.getByRole('textbox',{name:'Review instructions'}).fill('Check the boundary.');await review.getByRole('button',{name:'Start review session',exact:true}).click();
   const run=review.getByRole('button',{name:'Run review',exact:true});await expect(run).toBeEnabled();expect((await fixture.bytes()).length).toBe(0);
+  expect(fixture.workspace.terminal.read(edit.id,0).data).toMatch(/INITIAL_SIZE=\d+x\d+/);expect(fixture.workspace.terminal.read(edit.id,0).data).not.toContain('RESIZED=');
+  expect(fixture.workspace.review.read(null,0).data).toMatch(/INITIAL_SIZE=\d+x\d+/);expect(fixture.workspace.review.read(null,0).data).not.toContain('RESIZED=');
   await run.click();const request=await review.locator('.review-request-snapshot pre').textContent();expect(request).toContain('Comparison: Working tree');expect(request).toContain('src/changed.ts');expect(request).toContain('Check the boundary.');
   await expect.poll(async()=>Buffer.from(await fixture.bytes()).toString('hex')).toBe(Buffer.from(contextPaste(request!)+'\r').toString('hex'));
   await review.getByRole('textbox',{name:'Review follow-up'}).fill('Explain src/changed.ts:2');await review.getByRole('button',{name:'Send follow-up',exact:true}).click();
   await expect.poll(async()=>Buffer.from(await fixture.bytes()).toString('hex')).toBe(Buffer.from(contextPaste(request!)+'\r'+contextPaste('Explain src/changed.ts:2')+'\r').toString('hex'));
+  await expect.poll(()=>fixture.requests()).toEqual([request,'Explain src/changed.ts:2']);
+  await expect(review.locator('.terminal-surface')).toContainText('REQUEST_ACCEPTED=2');
   expect(fixture.workspace.terminal.read(edit.id,0).state?.id).toBe(edit.id);expect(fixture.starts).toEqual([{slot:'terminal',mode:'edit'},{slot:'review',mode:'review'}]);
   await page.screenshot({path:'/opt/data/output/riftcode/review-workbench/actual-posix-pty-browser.png'});
   await review.getByRole('button',{name:'Stop session',exact:true}).click();expect(fixture.workspace.terminal.read(edit.id,0).state?.id).toBe(edit.id);
@@ -285,7 +322,8 @@ test('compact right rail preserves Notes Terminal Review and never relabels or s
  await page.getByRole('button',{name:'Open review notes',exact:true}).click();
  await expect(page.locator('.review-rails')).toBeVisible();
  await page.getByRole('button',{name:'AI terminal',exact:true}).click();
- await page.getByRole('button',{name:'Back to code',exact:true}).click();
+ await expect(page.locator('rift-ai-terminal')).toBeVisible();
+ await page.locator('rift-ai-terminal').getByRole('button',{name:'Back to code',exact:true}).click();
  await expect(page.locator('.diff-panel')).toBeVisible();
  await expect(page.getByRole('button',{name:'Open review notes',exact:true})).toHaveCount(1);
  await page.getByRole('button',{name:'AI terminal',exact:true}).click();
@@ -506,9 +544,52 @@ test('refresh discovery does not expose stale selectable conversations while awa
  await expect(page.getByText('No sessions found in this repository.',{exact:true})).toBeVisible();
 });
 
+for(const reviewSlot of [false,true])for(const notes of [false,true])test(`startup geometry already matches settled running surface before first provider output: review=${reviewSlot} notes=${notes}`,async({page})=>{
+ if(notes)await page.getByRole('button',{name:'Open review notes',exact:true}).click();
+ if(reviewSlot)await page.getByRole('button',{name:'Open code review',exact:true}).click();
+ await page.evaluate(()=>{const f=window as any,start=f.rift.terminalStart;f.sizes=[];f.rift.terminalStart=(p:string,m:string,c:number,r:number,...rest:any[])=>{f.sizes.push({start:true,c,r});return start(p,m,c,r,...rest);};f.rift.terminalResize=async(_id:string,c:number,r:number)=>{f.sizes.push({start:false,c,r});};});
+ await page.getByRole('button',{name:reviewSlot?'Start review session':'Start session',exact:true}).click();
+ await expect(page.locator((reviewSlot?'rift-review-terminal':'rift-ai-terminal')+' .terminal-status')).toHaveText('running');await page.waitForTimeout(250);
+ const sizes=await page.evaluate(()=>(window as any).sizes);
+ expect(sizes.length).toBeGreaterThan(0);
+ expect(sizes.map(({c,r}:any)=>({c,r}))).toEqual(sizes.map(()=>({c:sizes[0].c,r:sizes[0].r})));
+});
+
+for(const width of [1024,1440])for(const theme of ['dark','light'])test(`synthetic Windows redraw and scroll anchoring ${theme} ${width}`,async({page})=>{
+ await page.setViewportSize({width,height:900});if(theme==='light')await page.getByRole('button',{name:'Use light theme',exact:true}).click();
+ await page.evaluate(()=>{const f=window as any,read=f.rift.terminalRead;f.rift.terminalRead=async(...args:any[])=>{const result=await read(...args);(f.syntheticReads??=[]).push({cursor:args[1],data:result.data});if(result.state)result.state={...result.state,windowsPty:{backend:'conpty',buildNumber:26200}};return result;};const label=document.createElement('div');label.textContent='SYNTHETIC WINDOWS METADATA + VT STREAM · CHROMIUM ON LINUX · NO PROVIDER CALL';label.style.cssText='position:fixed;bottom:2px;left:12px;z-index:99999;font:10px sans-serif;color:#8995a1;pointer-events:none';document.body.append(label);});
+ await page.getByRole('button',{name:'Start session',exact:true}).click();
+ await expect(page.locator('rift-ai-terminal .terminal-status')).toHaveText('running');
+ const rows=page.locator('rift-ai-terminal .xterm-rows');
+ const frame='SYNTHETIC CLI HEADER\r\n  [o_o]\r\n  /|_|\\\r\nReady > ';
+ await page.evaluate(text=>(window as any).fixtureAppend('\x1b[2J\x1b[H'+text),frame);
+ await expect(rows).toContainText('SYNTHETIC CLI HEADER');
+ // Split cursor-up/erase frames across separate production poll cycles.
+ for(const text of ['\x1b[','3A\r\x1b[J'+frame]){await page.evaluate(text=>(window as any).fixtureAppend(text),text);await page.waitForTimeout(150);}
+ expect((await rows.textContent())!.match(/SYNTHETIC CLI HEADER/g)).toHaveLength(1);
+ await page.screenshot({path:`/opt/data/output/riftcode/terminal-scroll-fix/${theme}-${width}-redraw.png`});
+ await page.evaluate(()=>(window as any).fixtureAppend('\r\n'+Array.from({length:100},(_,i)=>'Synthetic history '+String(i).padStart(3,'0')).join('\r\n')+'\r\nBOTTOM_MARKER'));
+ await expect(rows).toContainText('BOTTOM_MARKER');
+ const box=(await rows.boundingBox())!;await page.mouse.move(box.x+box.width/2,box.y+box.height/2);await page.mouse.wheel(0,-500);await page.waitForTimeout(200);
+ await expect(rows).not.toContainText('BOTTOM_MARKER');const anchor=await rows.textContent();
+ await page.evaluate(()=>(window as any).fixtureAppend('\r\nNEW_OUTPUT_WHILE_SCROLLED'));await expect.poll(()=>page.evaluate(()=>(window as any).syntheticReads.some((r:any)=>r.data.includes('NEW_OUTPUT_WHILE_SCROLLED')))).toBe(true);await page.waitForTimeout(200);
+ expect(await rows.textContent()).toBe(anchor);
+ await page.screenshot({path:`/opt/data/output/riftcode/terminal-scroll-fix/${theme}-${width}-scrolled.png`});
+ await expect.poll(async()=>{await page.mouse.wheel(0,100000);return (await rows.textContent())!.includes('NEW_OUTPUT_WHILE_SCROLLED');}).toBe(true);
+ await page.setViewportSize({width:width===1024?1440:1024,height:900});await page.waitForTimeout(150);await page.setViewportSize({width,height:900});await page.waitForTimeout(150);
+ await page.evaluate(text=>(window as any).fixtureAppend('\x1b[2J\x1b[H'+text),frame);await expect(rows).toContainText('Ready >');
+ expect((await rows.textContent())!.match(/SYNTHETIC CLI HEADER/g)).toHaveLength(1);
+ await page.screenshot({path:`/opt/data/output/riftcode/terminal-scroll-fix/${theme}-${width}-resized.png`});
+ // A hidden retained terminal never sends a one-column/zero-area resize.
+ await page.evaluate(()=>{const f=window as any;f.hiddenResizes=[];f.rift.terminalResize=async(...args:any[])=>f.hiddenResizes.push(args);});
+ await page.getByRole('button',{name:'Back to code',exact:true}).click();await page.waitForTimeout(150);await page.setViewportSize({width:width===1024?1440:1024,height:850});await page.waitForTimeout(150);
+ expect(await page.evaluate(()=>(window as any).hiddenResizes)).toEqual([]);
+});
+
 test('launcher starts the real terminal with usable pane geometry, never a hidden one-pixel PTY',async({page})=>{
  await page.evaluate(()=>{const f=window as any;const start=f.rift.terminalStart;f.rift.terminalStart=(provider:string,mode:string,cols:number,rows:number,...rest:any[])=>{f.startDimensions={cols,rows};return start(provider,mode,cols,rows,...rest);};});
  await page.getByRole('button',{name:'Start session',exact:true}).click();
+ await expect(page.locator('rift-ai-terminal .terminal-status')).toHaveText('running');
  const dimensions=await page.evaluate(()=>(window as any).startDimensions);
  expect(dimensions.cols).toBeGreaterThan(80);expect(dimensions.rows).toBeGreaterThan(20);
 });

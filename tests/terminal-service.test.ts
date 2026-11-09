@@ -17,7 +17,7 @@ test('Send & track captures before one explicit Enter and rejects a PTY without 
   await assert.rejects(service.sendTracked(state.id,'hello'),/input|ready/i);
   await until(()=>service.read(state.id,0).data.includes('2004h'));
   await service.sendTracked(state.id,'hello\x03');
-  await until(()=>service.read(state.id,0).data.includes('1b5b3230307e68656c6c6f1b5b3230317e0d'));
+  await until(()=>[...service.read(state.id,0).data.matchAll(/INPUT=([0-9a-f]+)/g)].map(m=>m[1]).join('')==='1b5b3230307e68656c6c6f1b5b3230317e0d');
   assert.equal((await service.checkpoints.list(root)).length,1);
   const cancelled=service.sendTracked(state.id,'must not send');let interleavingRejected=false;try{service.input(state.id,'interleaved\r');}catch(error){interleavingRejected=/Checkpoint capture/.test(String(error));}service.reset();await assert.rejects(cancelled,/running|changed|cancelled/);assert.equal(interleavingRejected,true);
   assert.equal((await service.checkpoints.list(root)).length,1);

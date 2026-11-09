@@ -25,10 +25,11 @@ test('bounded review PTY preserves edit terminal, submits literal request and fo
   const request=buildTerminalReview({repository:'scratch',comparison:'Working tree',startRevision:'HEAD',endRevision:null,files:['src/a.ts'],currentPath:'src/a.ts',notes:'src/a.ts:12 — test failures',projectContext:''},'file','security\x03','professional');
   await review.submit(state.id,request);
   const {contextPaste}=await import('../src/shared/terminal');
-  await until(()=>review.read(state.id,0).data.includes(Buffer.from(contextPaste(request)+'\r').toString('hex')));
+  const bytes=()=>[...review.read(state.id,0).data.matchAll(/INPUT=([0-9a-f]+)/g)].map(m=>m[1]).join('');
+  await until(()=>bytes()===Buffer.from(contextPaste(request)+'\r').toString('hex'));
   await review.submit(state.id,'Explain src/a.ts:12');
-  await until(()=>review.read(state.id,0).data.includes(Buffer.from(contextPaste('Explain src/a.ts:12')+'\r').toString('hex')));
-  assert.equal(review.read(state.id,0).data.match(/INPUT=/g)?.length,2);
+  await until(()=>bytes()===Buffer.from(contextPaste(request)+'\r'+contextPaste('Explain src/a.ts:12')+'\r').toString('hex'));
+  assert.equal(Buffer.from(bytes(),'hex').toString().split('\r').length-1,2);
   review.resize(state.id,100,30);await until(()=>review.read(state.id,0).data.includes('SIZE=100'));
   review.reset();await until(()=>{try{process.kill(reviewPid,0);return false;}catch{return true;}});assert.equal(terminal.read(edit.id,0).state?.id,edit.id);
   terminal.input(edit.id,'still here',true);await until(()=>terminal.read(edit.id,0).data.includes(Buffer.from('still here').toString('hex')));
