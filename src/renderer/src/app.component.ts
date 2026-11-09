@@ -650,7 +650,42 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly chatPageOpen = signal(false);
   readonly targetBranchChoices = computed(() => this.repository()?.targetBranches.map(branch => ({value: branch.ref, label: branch.label})) ?? []);
   readonly comparisonChoices = computed(() => this.repository()?.comparisons.map(option => ({value: option.id, label: option.label, detail: option.detail, pinned: option.id === 'working-tree' || option.id === 'current-branch'})) ?? []);
+  // Renderer-lifetime preference only; neither layout transition touches session ownership.
+  readonly terminalDocked = signal(false);
+  readonly dockHeight = signal(480);
+  private readonly dockAreaHeight = signal(806);
+  readonly dockMinimum = computed(() => Math.min(280, Math.floor(this.dockAreaHeight() * .45)));
+  readonly dockMaximum = computed(() => Math.max(this.dockMinimum(), this.dockAreaHeight() - Math.min(180, Math.floor(this.dockAreaHeight() * .30)) - 6));
+  readonly effectiveDockHeight = computed(() => Math.max(this.dockMinimum(), Math.min(this.dockMaximum(), this.dockHeight())));
+  private dockObserver?: ResizeObserver;
+  private dockDrag?: {pointer:number;y:number;height:number};
+  @ViewChild('workspace') set workspaceElement(ref:ElementRef<HTMLElement>|undefined) {
+    this.dockObserver?.disconnect();
+    if(ref) {
+      this.dockAreaHeight.set(ref.nativeElement.getBoundingClientRect().height);
+      this.dockObserver=new ResizeObserver(entries=>this.dockAreaHeight.set(entries[0].contentRect.height));
+      this.dockObserver.observe(ref.nativeElement);
+    }
+  }
+  beginDockResize(event:PointerEvent):void {
+    if(event.button!==0)return;
+    event.preventDefault();
+    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+    this.dockDrag={pointer:event.pointerId,y:event.clientY,height:this.effectiveDockHeight()};
+  }
+  moveDockResize(event:PointerEvent):void {
+    if(this.dockDrag?.pointer===event.pointerId)this.setDockHeight(this.dockDrag.height+this.dockDrag.y-event.clientY);
+  }
+  endDockResize():void {this.dockDrag=undefined;}
+  private setDockHeight(height:number):void {this.dockHeight.set(Math.max(this.dockMinimum(),Math.min(this.dockMaximum(),height)));}
+  resizeDockWithKeyboard(event:KeyboardEvent):void {
+    if(!['ArrowUp','ArrowDown','Home','End'].includes(event.key))return;
+    event.preventDefault();
+    this.setDockHeight(event.key==='Home'?this.dockMinimum():event.key==='End'?this.dockMaximum():this.effectiveDockHeight()+(event.key==='ArrowUp'?20:-20));
+  }
   readonly terminalOpen = signal(true);
+  dockTerminal():void { this.terminalDocked.set(true);this.terminalOpen.set(true); }
+  closeTerminalDock():void { this.terminalDocked.set(false);this.terminalOpen.set(true); }
   readonly terminalReady = signal(false);
   readonly sourceTarget = signal<SourceLocation | null>(null);
   @ViewChild('aiTerminal') aiTerminal?: AiTerminalComponent;
@@ -1057,6 +1092,7 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   ngOnDestroy(): void {
+    this.dockObserver?.disconnect();
     this.removeRepositoryListener?.();
     this.removeAgentListener?.();
     if (this.chatFollowTimer) clearTimeout(this.chatFollowTimer);
@@ -1511,7 +1547,7 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   selectFile(path: string): void {
-    this.terminalOpen.set(false); this.sourceTarget.set(null);
+    this.terminalOpen.set(this.terminalDocked()); this.sourceTarget.set(null);
     this.fileToolsMenu.set(null);
     this.chatPageOpen.set(false);
     this.reviewPageOpen.set(false);
@@ -1756,7 +1792,7 @@ export class AppComponent implements OnInit, OnDestroy {
   private async openRepositoryPath(path: string): Promise<void> {
     if(this.promptReview()?.files.some(file=>file.path===path)){this.selectFile(path);return;}
     this.promptReview.set(null);
-    this.terminalOpen.set(false); this.sourceTarget.set(null);
+    this.terminalOpen.set(this.terminalDocked()); this.sourceTarget.set(null);
     if (this.sidebarView() === "explorer") this.revealExplorerPath(path);
     if (this.repository()?.files.some((file) => file.path === path)) {
       this.selectFile(path);
@@ -2400,7 +2436,7 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   showDiff(): void {
-    this.terminalOpen.set(false);
+    this.terminalOpen.set(this.terminalDocked());
     this.chatPageOpen.set(false);
     this.reviewPageOpen.set(false);
     this.activeConversationId.set(null);

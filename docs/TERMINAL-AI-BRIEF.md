@@ -1,5 +1,8 @@
 # Terminal-first AI workspace
 
+## Latest request — retained bottom docking
+User messages `1569411478988001395` and `1569411777433960542` authorize implementation plus updates to the actual RiftTask account. Keep delivery in existing PR #4, no main merge/release/schedules. Add a compact Dock to bottom action for both ordinary Terminal and dedicated Review. The file review remains above a resizable bottom pane; preserve original upright rail and direct notes/selection features. Close dock / Unpin returns the same terminal to its original rail placement, never stops/restarts/submits or duplicates a session. Keep Stop separate. Preserve component/xterm identity, PTY, output/history, scroll position, drafts, checkpoints and pending review requests across layout changes. Terminal file references navigate the file above without undocking. Allow one docked pane at a time with explicit, non-destructive Terminal/Review switching; keep both independent sessions alive. Test settled geometry, minimum useful file/terminal heights, dragging/keyboard resizing, small viewports, themes and pending async operations. No broad redesign. Update real RiftTask progress with implementation versus verification versus owner acceptance distinguished.
+
 ## Authorization
 User message `1568349860841656424` requests immediate work on RiftCode, delivered as a PR only. No schedules, no direct push or merge to main/master, no auto-merge, no release/update publication. Repository default branch is `main`; baseline `ec48372d2c1d2aeaa3e82bdb1b49413687a22cbb`. Work branch: `feat/terminal-ai-workspace`.
 

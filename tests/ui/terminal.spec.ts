@@ -22,6 +22,7 @@ for(const width of [1024,1440])for(const theme of ['dark','light'])test(`tracked
   const button=await send.boundingBox(),pane=await page.locator('rift-ai-terminal').boundingBox();expect(button!.x+button!.width).toBeLessThanOrEqual(pane!.x+pane!.width);expect(button!.y+button!.height).toBeLessThanOrEqual(pane!.y+pane!.height);
   await shot('composer');await send.click();
   await expect(page.locator('.prompt-summary')).toContainText('3 files · +3 −2');await shot('summary');
+  await page.getByRole('button',{name:'Dock to bottom',exact:true}).click();await expect(page.locator('.prompt-summary')).toContainText('3 files · +3 −2');await page.getByRole('button',{name:'Close dock',exact:true}).click();await expect(page.locator('.prompt-summary')).toContainText('3 files · +3 −2');
   expect(fixture.sends).toBe(1);
   await page.locator('.prompt-summary').getByRole('button',{name:'Review changes',exact:true}).click();
   await expect(page.getByRole('status',{name:'Prompt comparison'})).toContainText('Changes since prompt');
@@ -69,6 +70,97 @@ test('tracked draft survives Stop during capture and a failed submit without wri
  await page.getByRole('button',{name:'Send & track',exact:true}).click();await page.evaluate(()=>(window as any).rejectTracked(new Error('Checkpoint too large. Nothing sent.')));
  await expect(page.getByRole('alert')).toContainText('Checkpoint too large');await expect(page.getByRole('textbox',{name:'Tracked prompt'})).toHaveValue('retain this draft');
  expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.input))).toEqual([]);
+});
+
+test('bottom docking retains the live terminal and closing returns original placement',async({page})=>{
+ await page.getByRole('button',{name:'Start session',exact:true}).click();
+ await expect(page.locator('rift-ai-terminal .xterm-screen')).toBeVisible();
+ await page.evaluate(()=>{const f=window as any;f.savedTerminal=document.querySelector('rift-ai-terminal');f.savedXterm=document.querySelector('rift-ai-terminal .xterm');});
+ await page.getByRole('button',{name:'Dock to bottom',exact:true}).click();
+ await expect(page.locator('.diff-panel')).toBeVisible();
+ const file=await page.locator('.diff-panel').boundingBox(),terminal=await page.locator('rift-ai-terminal').boundingBox();
+ expect(file!.height).toBeGreaterThanOrEqual(180);expect(terminal!.height).toBeGreaterThanOrEqual(240);expect(terminal!.y).toBeGreaterThanOrEqual(file!.y+file!.height);
+ await page.getByRole('button',{name:'Close dock',exact:true}).click();
+ await expect(page.locator('.diff-panel')).toHaveCount(0);await expect(page.locator('rift-ai-terminal .terminal-status')).toHaveText('running');
+ expect(await page.evaluate(()=>{const f=window as any;return f.savedTerminal===document.querySelector('rift-ai-terminal')&&f.savedXterm===document.querySelector('rift-ai-terminal .xterm');})).toBe(true);
+ expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.start||c.stop||c.input))).toEqual([{start:'claude',mode:'edit'}]);
+});
+
+test('docked Review switches independent retained surfaces while a request is pending and references open above',async({page})=>{
+ await page.getByRole('button',{name:'Start session',exact:true}).click();
+ await page.getByRole('button',{name:'Open code review',exact:true}).click();
+ const review=page.locator('rift-review-terminal');
+ await review.getByRole('textbox',{name:'Review instructions'}).fill('Keep this review draft');
+ await review.getByRole('button',{name:'Start review session',exact:true}).click();
+ await expect(review.getByRole('button',{name:'Run review',exact:true})).toBeEnabled();
+ await page.evaluate(()=>{const f=window as any;f.reviewHost=document.querySelector('rift-review-terminal');f.reviewXterm=document.querySelector('rift-review-terminal .xterm');f.rift.terminalSubmitReview=()=>new Promise(resolve=>f.finishDockedReview=resolve);});
+ await review.getByRole('button',{name:'Run review',exact:true}).click();
+ await review.getByRole('button',{name:'Dock to bottom',exact:true}).click();
+ await review.getByRole('button',{name:'Show Terminal in dock',exact:true}).click();
+ await expect(page.locator('rift-ai-terminal .terminal-status')).toHaveText('running');
+ await page.locator('rift-ai-terminal').getByRole('button',{name:'Show Review in dock',exact:true}).click();
+ await expect(review.getByRole('button',{name:'Sending…',exact:true})).toBeDisabled();
+ await page.evaluate(()=>(window as any).finishDockedReview());
+ await expect(review.getByText('Request sent',{exact:true})).toBeVisible();
+ const reference=review.locator('.xterm-screen');await reference.click({position:{x:95,y:22},modifiers:['Control']});
+ await expect(page.locator('.source-target')).toContainText('line12');
+ await expect(review).toBeVisible();await expect(page.locator('.workspace')).toHaveClass(/terminal-docked/);await expect(page.locator('.workspace')).not.toHaveClass(/review-open/);
+ await review.getByRole('button',{name:'Close dock',exact:true}).click();
+ await review.getByRole('button',{name:'Edit review brief',exact:true}).click();
+ await expect(review.getByRole('textbox',{name:'Review instructions'})).toHaveValue('Keep this review draft');
+ expect(await page.evaluate(()=>{const f=window as any;return f.reviewHost===document.querySelector('rift-review-terminal')&&f.reviewXterm===document.querySelector('rift-review-terminal .xterm');})).toBe(true);
+ expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.start||c.reviewStart||c.stop||c.reviewStop||c.input||c.reviewInput))).toEqual([{start:'claude',mode:'edit'},{reviewStart:'claude',mode:'review'}]);
+});
+
+for(const width of [1024,1440])for(const theme of ['dark','light'])test(`docked split resizes with pointer and keyboard ${theme} ${width}`,async({page})=>{
+ await page.setViewportSize({width,height:900});if(theme==='light')await page.getByRole('button',{name:'Use light theme',exact:true}).click();
+ await page.getByRole('button',{name:'Start session',exact:true}).click();
+ await page.evaluate(()=>{const label=document.createElement('div');label.textContent='Synthetic browser bridge · harmless fixtures · no provider run';label.style.cssText='position:fixed;bottom:4px;right:65px;z-index:1000;font:11px sans-serif;padding:4px;background:#252d38;color:#fff;pointer-events:none';document.body.append(label);});
+ const shot=async(state:string)=>{await page.waitForTimeout(180);await page.screenshot({path:`/opt/data/output/riftcode/terminal-docking/${theme}-${width}-${state}.png`});};
+ await shot('normal');await page.getByRole('button',{name:'Dock to bottom',exact:true}).click();await shot('docked');
+ const separator=page.getByRole('separator',{name:'Resize bottom terminal'});await expect(separator).toHaveAttribute('aria-orientation','horizontal');
+ const terminal=page.locator('rift-ai-terminal');const before=(await terminal.boundingBox())!.height;
+ await separator.focus();await separator.press('ArrowUp');await expect.poll(async()=>(await terminal.boundingBox())!.height).toBe(before+20);
+ const bar=(await separator.boundingBox())!;await page.mouse.move(bar.x+bar.width/2,bar.y+3);await page.mouse.down();await page.mouse.move(bar.x+bar.width/2,bar.y-57,{steps:5});await page.mouse.up();
+ await expect.poll(async()=>(await terminal.boundingBox())!.height).toBe(before+80);await shot('resized');
+ await separator.press('End');await expect.poll(async()=>(await terminal.boundingBox())!.height).toBe(Number(await separator.getAttribute('aria-valuemax')));const max=(await terminal.boundingBox())!.height;expect((await page.locator('.diff-panel').boundingBox())!.height).toBeGreaterThanOrEqual(180);
+ await separator.press('Home');await expect.poll(async()=>(await terminal.boundingBox())!.height).toBe(280);expect((await terminal.boundingBox())!.height).toBeLessThan(max);expect((await terminal.boundingBox())!.height).toBeGreaterThanOrEqual(240);
+ await page.setViewportSize({width,height:600});await expect.poll(async()=>{const f=(await page.locator('.diff-panel').boundingBox())!,t=(await terminal.boundingBox())!;return f.height>=145&&t.height>=220&&t.y+t.height<=570;}).toBe(true);
+ await page.setViewportSize({width,height:900});await expect(separator).toHaveAttribute('aria-valuenow','280');await separator.press('ArrowUp');await expect.poll(async()=>(await terminal.boundingBox())!.height).toBe(300);
+ const remembered=(await terminal.boundingBox())!.height;await page.getByRole('button',{name:'Close dock',exact:true}).click();await shot('closed');await page.getByRole('button',{name:'Dock to bottom',exact:true}).click();await expect.poll(async()=>(await terminal.boundingBox())!.height).toBe(remembered);
+ await page.getByRole('button',{name:'Open code review',exact:true}).click();const review=page.locator('rift-review-terminal');await review.getByRole('button',{name:'Start review session',exact:true}).click();await review.getByRole('button',{name:'Run review',exact:true}).click();await expect(review.getByText('Request sent',{exact:true})).toBeVisible();await separator.press('End');await shot('review');
+ expect((await review.locator('.terminal-surface').boundingBox())!.height).toBeGreaterThanOrEqual(120);
+ await page.getByRole('button',{name:'Open review notes',exact:true}).click();await shot('review-notes');
+ const file=(await page.locator('.diff-panel').boundingBox())!,pane=(await review.boundingBox())!;expect(file.y+file.height).toBeLessThanOrEqual(pane.y);expect(file.height).toBeGreaterThanOrEqual(180);
+});
+
+test('docked Review launcher and expanded brief keep controls reachable inside the lower pane',async({page})=>{
+ await page.setViewportSize({width:1024,height:900});await page.getByRole('button',{name:'Open code review',exact:true}).click();const review=page.locator('rift-review-terminal');await review.getByRole('button',{name:'Dock to bottom',exact:true}).click();
+ const start=review.getByRole('button',{name:'Start review session',exact:true});await expect(start).toBeVisible();
+ expect(await start.evaluate(el=>{const b=el.getBoundingClientRect();return el.contains(document.elementFromPoint(b.x+b.width/2,b.y+b.height/2));})).toBe(true);
+ await start.click();await expect(review.getByRole('button',{name:'Run review',exact:true})).toBeEnabled();
+ const pane=(await review.boundingBox())!,surface=(await review.locator('.terminal-surface').boundingBox())!;expect(surface.height).toBeGreaterThanOrEqual(120);expect(surface.y+surface.height).toBeLessThanOrEqual(pane.y+pane.height);
+});
+
+test('docking preserves scrolled terminal output and a pending tracked draft without submitting',async({page})=>{
+ await page.getByRole('button',{name:'Start session',exact:true}).click();await expect(page.locator('rift-ai-terminal .terminal-surface')).toContainText('Ready >');
+ await page.evaluate(()=>(window as any).fixtureAppend(Array.from({length:300},(_,i)=>`\r\nSCROLL-LINE-${String(i).padStart(3,'0')}`).join('')));
+ const screen=page.locator('rift-ai-terminal .xterm-screen');await expect(screen).toContainText('SCROLL-LINE-299');await screen.hover();await page.mouse.wheel(0,-2400);await page.waitForTimeout(200);await expect(screen).not.toContainText('SCROLL-LINE-299');const anchor=(await screen.textContent())!.match(/SCROLL-LINE-\d+/)![0];
+ await page.getByRole('button',{name:'Dock to bottom',exact:true}).click();await page.waitForTimeout(150);await expect(screen).not.toContainText('SCROLL-LINE-299');expect((await screen.textContent())!.match(/SCROLL-LINE-\d+/)![0]).toBe(anchor);
+ await page.evaluate(()=>(window as any).fixtureAppend('\r\nNEW-OUTPUT-WHILE-SCROLLED'));await page.waitForTimeout(200);await expect(screen).not.toContainText('NEW-OUTPUT-WHILE-SCROLLED');
+ await page.getByRole('separator',{name:'Resize bottom terminal'}).press('ArrowUp');await page.waitForTimeout(100);expect((await screen.textContent())!.match(/SCROLL-LINE-\d+/)![0]).toBe(anchor);
+ await page.getByRole('button',{name:'Open review notes',exact:true}).click();await page.waitForTimeout(220);await expect(screen).toContainText(anchor);await expect(screen).not.toContainText('NEW-OUTPUT-WHILE-SCROLLED');await page.getByRole('button',{name:'Open review notes',exact:true}).click();await page.waitForTimeout(220);
+ await page.getByRole('button',{name:'Close dock',exact:true}).click();await page.waitForTimeout(150);expect((await screen.textContent())!.match(/SCROLL-LINE-\d+/)![0]).toBe(anchor);await page.getByRole('button',{name:'Dock to bottom',exact:true}).click();
+ await page.locator('rift-ai-terminal summary').click();await page.getByRole('button',{name:'Track a prompt',exact:true}).click();await page.getByRole('textbox',{name:'Tracked prompt'}).fill('Keep draft during layout changes');
+ await page.evaluate(()=>{const f=window as any;f.rift.terminalSendTracked=()=>new Promise((_resolve,reject)=>f.rejectDockedTrack=reject);});
+ await page.getByRole('button',{name:'Send & track',exact:true}).click();await page.getByRole('button',{name:'Close dock',exact:true}).click();await page.getByRole('button',{name:'Dock to bottom',exact:true}).click();await expect(page.getByRole('button',{name:'Capturing…',exact:true})).toBeDisabled();
+ await page.evaluate(()=>(window as any).rejectDockedTrack(new Error('Fixture checkpoint rejected; nothing sent')));await expect(page.getByRole('textbox',{name:'Tracked prompt'})).toHaveValue('Keep draft during layout changes');
+ expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.start||c.stop||c.input))).toEqual([{start:'claude',mode:'edit'}]);
+});
+
+test('choosing changed and explorer files keeps the docked session visible',async({page})=>{
+ await page.getByRole('button',{name:'Start session',exact:true}).click();await page.getByRole('button',{name:'Dock to bottom',exact:true}).click();await page.locator('.file-row').first().click();await expect(page.locator('rift-ai-terminal')).toBeVisible();
+ await page.getByRole('button',{name:'Explorer',exact:true}).click();await page.locator('[data-explorer-kind="file"]').first().click();await expect(page.locator('rift-ai-terminal')).toBeVisible();await expect(page.locator('.diff-panel')).toBeVisible();
 });
 
 async function prepareContext(page:Page) {
@@ -245,6 +337,14 @@ for(const provider of ['claude','opencode','codex'])test(`actual harmless PTY pa
   expect(fixture.workspace.review.read(null,0).data).toMatch(/INITIAL_SIZE=\d+x\d+/);expect(fixture.workspace.review.read(null,0).data).not.toContain('RESIZED=');
   await run.click();const request=await review.locator('.review-request-snapshot pre').textContent();expect(request).toContain('Comparison: Working tree');expect(request).toContain('src/changed.ts');expect(request).toContain('Check the boundary.');
   await expect.poll(async()=>Buffer.from(await fixture.bytes()).toString('hex')).toBe(Buffer.from(contextPaste(request!)+'\r').toString('hex'));
+  const reviewer=fixture.workspace.review.read(null,0).state!;
+  const editPid=Number(fixture.workspace.terminal.read(edit.id,0).data.match(/PID=(\d+)/)![1]),reviewPid=Number(fixture.workspace.review.read(reviewer.id,0).data.match(/PID=(\d+)/)![1]);expect(editPid).not.toBe(reviewPid);
+  await review.getByRole('button',{name:'Dock to bottom',exact:true}).click();
+  await review.getByRole('button',{name:'Show Terminal in dock',exact:true}).click();
+  await page.locator('rift-ai-terminal').getByRole('button',{name:'Show Review in dock',exact:true}).click();
+  await review.getByRole('button',{name:'Close dock',exact:true}).click();
+  expect(fixture.workspace.terminal.read(edit.id,0).state).toEqual(edit);expect(fixture.workspace.review.read(reviewer.id,0).state).toEqual(reviewer);process.kill(editPid,0);process.kill(reviewPid,0);
+  expect(Buffer.from(await fixture.bytes()).toString('hex')).toBe(Buffer.from(contextPaste(request!)+'\r').toString('hex'));
   await review.getByRole('textbox',{name:'Review follow-up'}).fill('Explain src/changed.ts:2');await review.getByRole('button',{name:'Send follow-up',exact:true}).click();
   await expect.poll(async()=>Buffer.from(await fixture.bytes()).toString('hex')).toBe(Buffer.from(contextPaste(request!)+'\r'+contextPaste('Explain src/changed.ts:2')+'\r').toString('hex'));
   await expect.poll(()=>fixture.requests()).toEqual([request,'Explain src/changed.ts:2']);
@@ -358,7 +458,7 @@ test('command composition separates launcher from a single aligned running bar',
  const bar=page.locator('rift-ai-terminal .terminal-toolbar');
  const geometry=await bar.evaluate(el=>({height:el.getBoundingClientRect().height,controls:[...el.querySelectorAll('button,summary')].filter(c=>c.checkVisibility()).map(c=>({y:c.getBoundingClientRect().y,h:c.getBoundingClientRect().height}))}));
  expect(geometry.height).toBe(56);
- expect(geometry.controls.length).toBeLessThanOrEqual(3);
+ expect(geometry.controls.length).toBe(4);await expect(bar.getByRole('button',{name:'Dock to bottom',exact:true})).toBeVisible();
  expect(new Set(geometry.controls.map(c=>c.y)).size).toBe(1);
  expect(geometry.controls.every(c=>c.h===32)).toBe(true);
 });
@@ -1208,7 +1308,7 @@ for(const width of [1024,1280,1440])for(const theme of ['dark','light']) {
   const geometry=await page.locator('rift-ai-terminal .terminal-toolbar').evaluate(el=>{
    const r=el.getBoundingClientRect();const controls=[...el.querySelectorAll('button,summary')].filter(c=>c.checkVisibility()).map(c=>{const b=c.getBoundingClientRect();return {y:b.y,h:b.height,right:b.right};});return {width:r.width,height:r.height,right:r.right,controls};
   });
-  expect(geometry.height).toBe(56);expect(geometry.controls).toHaveLength(3);
+  expect(geometry.height).toBe(56);expect(geometry.controls).toHaveLength(4);await expect(page.getByRole('button',{name:'Dock to bottom',exact:true})).toBeVisible();
   expect(new Set(geometry.controls.map(c=>c.y)).size).toBe(1);
   expect(geometry.controls.every(c=>c.h===32&&c.right<=geometry.right)).toBe(true);
   console.log('VERIFIED GEOMETRY',theme,width,JSON.stringify(geometry));

@@ -69,7 +69,7 @@
       </div>
     </header>
 
-    <section class="workspace" [class.review-open]="reviewSidebarOpen()" [class.resizing-changes]="changesPanelResizing()" [style.--changes-width]="effectiveChangesPanelWidth() + 'px'">
+    <section #workspace class="workspace" [style.--dock-height]="effectiveDockHeight() + 'px'" [class.terminal-docked]="terminalDocked()" [class.review-open]="reviewSidebarOpen()" [class.resizing-changes]="changesPanelResizing()" [style.--changes-width]="effectiveChangesPanelWidth() + 'px'">
       <aside class="changes-panel">
         <div class="panel-title">
           <span class="sidebar-view-toggle" aria-label="Sidebar view">
@@ -224,9 +224,12 @@
         ></button>
       </aside>
 
-      <rift-ai-terminal #aiTerminal [hidden]="!terminalOpen() || reviewWorkbenchOpen()" [root]="repository()!.root" [paths]="repositoryPaths()" [dark]="darkTheme()" [noteCount]="notes().length" [selectedNoteCount]="selectedNotes().length" [hasSelection]="selectedLineCount() > 0" (review)="prepareTerminalReview()" (notes)="reviewSidebarOpen.set(!reviewSidebarOpen())" (back)="showDiff()" (copyNotes)="copyNotes()" (insertNotes)="insertTerminalNotes()" (insertSelection)="insertTerminalSelection()" (navigate)="navigateTerminalSource($event)" (checkpointReset)="resetPromptReview()" (checkpointReview)="openPromptReview($event)" (readyChange)="terminalReady.set($event)" />
-      @if(reviewVisited()) {<rift-review-terminal #reviewTerminal [hidden]="!terminalOpen() || !reviewWorkbenchOpen()" [reviewContext]="terminalReviewContext()" [root]="repository()!.root" [paths]="repositoryPaths()" [dark]="darkTheme()" [noteCount]="notes().length" [selectedNoteCount]="selectedNotes().length" [hasSelection]="selectedLineCount() > 0" (notes)="reviewSidebarOpen.set(!reviewSidebarOpen())" (back)="showDiff()" (copyNotes)="copyNotes()" (insertNotes)="insertTerminalNotes()" (insertSelection)="insertTerminalSelection()" (navigate)="navigateTerminalSource($event)" />}
-      @if (!terminalOpen()) {
+      <rift-ai-terminal (switchDock)="prepareTerminalReview()" [docked]="terminalDocked()" (dock)="dockTerminal()" (closeDock)="closeTerminalDock()" #aiTerminal [hidden]="!terminalOpen() || reviewWorkbenchOpen()" [root]="repository()!.root" [paths]="repositoryPaths()" [dark]="darkTheme()" [noteCount]="notes().length" [selectedNoteCount]="selectedNotes().length" [hasSelection]="selectedLineCount() > 0" (review)="prepareTerminalReview()" (notes)="reviewSidebarOpen.set(!reviewSidebarOpen())" (back)="showDiff()" (copyNotes)="copyNotes()" (insertNotes)="insertTerminalNotes()" (insertSelection)="insertTerminalSelection()" (navigate)="navigateTerminalSource($event)" (checkpointReset)="resetPromptReview()" (checkpointReview)="openPromptReview($event)" (readyChange)="terminalReady.set($event)" />
+      @if(reviewVisited()) {<rift-review-terminal (switchDock)="openTerminal()" [docked]="terminalDocked()" (dock)="dockTerminal()" (closeDock)="closeTerminalDock()" #reviewTerminal [hidden]="!terminalOpen() || !reviewWorkbenchOpen()" [reviewContext]="terminalReviewContext()" [root]="repository()!.root" [paths]="repositoryPaths()" [dark]="darkTheme()" [noteCount]="notes().length" [selectedNoteCount]="selectedNotes().length" [hasSelection]="selectedLineCount() > 0" (notes)="reviewSidebarOpen.set(!reviewSidebarOpen())" (back)="showDiff()" (copyNotes)="copyNotes()" (insertNotes)="insertTerminalNotes()" (insertSelection)="insertTerminalSelection()" (navigate)="navigateTerminalSource($event)" />}
+      @if (terminalDocked()) {
+        <button class="dock-resizer" role="separator" aria-label="Resize bottom terminal" aria-orientation="horizontal" [attr.aria-valuenow]="effectiveDockHeight()" [attr.aria-valuemin]="dockMinimum()" [attr.aria-valuemax]="dockMaximum()" aria-valuetext="Bottom terminal height in pixels" (pointerdown)="beginDockResize($event)" (pointermove)="moveDockResize($event)" (pointerup)="endDockResize()" (pointercancel)="endDockResize()" (lostpointercapture)="endDockResize()" (keydown)="resizeDockWithKeyboard($event)"></button>
+      }
+      @if (!terminalOpen() || terminalDocked()) {
       <section class="diff-panel">
         @if (promptReview(); as prompt) { <div class="prompt-comparison" role="status" aria-label="Prompt comparison"><span>Changes since prompt {{ prompt.number }}: {{ prompt.label }} · {{ prompt.live ? 'captured live view' : 'frozen' }} · {{ prompt.files.length }} {{ prompt.files.length === 1 ? 'file' : 'files' }} · +{{ prompt.additions }} −{{ prompt.deletions }}</span><button (click)="leavePromptReview()">Repository comparison</button></div> }
         <div class="diff-toolbar">

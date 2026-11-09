@@ -12,6 +12,10 @@ export class AiTerminalComponent implements AfterViewInit, OnDestroy {
   readonly reviewWorkbench:boolean=false;
   readonly slot:'terminal'|'review'='terminal';
   @Input() reviewContext:ReviewContext|null=null;
+  @Input() docked=false;
+  @Output() readonly dock=new EventEmitter<void>();
+  @Output() readonly closeDock=new EventEmitter<void>();
+  @Output() readonly switchDock=new EventEmitter<void>();
   readonly briefCollapsed=signal(false);
   readonly reviewScope=signal<ReviewScope>('comparison');readonly instructions=signal('');readonly reviewTone=signal<'professional'|'honest'>('professional');readonly followUp=signal('');readonly reviewSending=signal(false);readonly reviewRuns=signal(0);readonly lastReview=signal('');
   async runReviewRequest(followUp=false):Promise<void>{
@@ -90,7 +94,25 @@ export class AiTerminalComponent implements AfterViewInit, OnDestroy {
   }
   private fitVisible():void {
     const surface=this.surface.nativeElement;
-    if(surface.clientWidth>0&&surface.clientHeight>0&&surface.checkVisibility())this.fit.fit();
+    if(surface.clientWidth>0&&surface.clientHeight>0&&surface.checkVisibility()) {
+      const terminal=this.terminal,buffer=terminal?.buffer.active;
+      // xterm's row shrink otherwise shifts the viewport even when reading history.
+      // A buffer marker follows wrapped-line reflow; never pin users who were at bottom.
+      const viewport=buffer?.viewportY,cols=terminal?.cols;
+      const anchor=terminal&&buffer&&buffer.viewportY<buffer.baseY
+        ? terminal.registerMarker(buffer.viewportY-buffer.baseY-buffer.cursorY) : undefined;
+      try {
+        this.fit.fit();
+        if(anchor&&!anchor.isDisposed) {
+          const target=terminal!.cols===cols?viewport!:anchor.line;
+          terminal!.scrollToLine(target);
+          // xterm 6's resize can leave DOM scroll and buffer ydisp out of sync.
+          // Its public scrollToLine applies a delta against DOM scroll, not an
+          // absolute position; one bounded correction reconciles them pre-paint.
+          if(buffer!.viewportY!==target)terminal!.scrollToLine(target);
+        }
+      } finally {anchor?.dispose();}
+    }
   }
   private scheduleFit():void {
     if(this.destroyed||this.fitFrame!==undefined)return;

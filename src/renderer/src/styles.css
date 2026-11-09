@@ -2,6 +2,24 @@
 @import './workspace.css';
 @import './review-workbench.css';
 
+/* Stable sibling grid placement: never reparent a live Angular/xterm host. */
+.workspace.terminal-docked { grid-template-rows:minmax(0,1fr) 6px var(--dock-height,480px); }
+.workspace.terminal-docked > .changes-panel { grid-column:1; grid-row:1 / -1; }
+.workspace.terminal-docked > .review-panel { grid-column:3; grid-row:1 / -1; }
+.workspace.terminal-docked > .diff-panel { grid-column:2; grid-row:1; }
+.workspace.terminal-docked > :is(rift-ai-terminal,rift-review-terminal) { grid-column:2; grid-row:3; }
+.dock-resizer { grid-column:2; grid-row:2; border:0; padding:0; cursor:row-resize; touch-action:none; background:var(--ws-line); z-index:2; }
+.dock-resizer:hover,.dock-resizer:focus-visible { background:var(--ws-accent); outline:2px solid var(--ws-accent); outline-offset:-2px; }
+/* A compact split must not let the expanded brief consume the native output. */
+.terminal-docked > rift-review-terminal .review-brief { flex:0 1 auto; min-height:76px; max-height:180px; overflow:auto; padding:10px 16px; }
+.terminal-docked > rift-review-terminal .terminal-stage { flex:1 0 136px; min-height:136px; padding:8px 16px; }
+.terminal-docked > rift-review-terminal .review-follow-up { padding:6px 16px; }
+.terminal-docked > rift-review-terminal .review-follow-up textarea { height:38px; min-height:38px; }
+.terminal-docked > rift-review-terminal .terminal-footer { padding:6px 16px; }
+.terminal-docked > rift-review-terminal .launcher-space { flex:1 0 216px; padding:10px 16px; }
+.terminal-docked > :is(rift-ai-terminal,rift-review-terminal) { overflow:auto; }
+/* The extra dock action must not squeeze away the actual provider/mode/status. */
+@container (max-width:600px) { .terminal-identity small { white-space:normal; overflow:visible; } }
 /* Source navigation shares the code surface; terminal chrome lives in workspace.css. */
 .source-target { background:rgba(200,255,99,.15); outline:1px solid #799545; }
 .source-location { color:#b5dc7c; font:12px ui-monospace,monospace; padding:10px; }
