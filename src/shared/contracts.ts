@@ -15,6 +15,7 @@ export interface ComparisonBranch {
 
 export interface ChangedFile {
   path: string;
+  binary?: boolean;
   previousPath?: string;
   status: ChangeStatus;
   additions: number;
@@ -141,7 +142,19 @@ export interface GitHubIssueResult {
   url: string;
 }
 
+export interface PromptSummary {number:number;id:string;viewId:string;label:string;live:boolean;files:ChangedFile[];additions:number;deletions:number;}
 export interface RiftApi {
+  terminalSendTracked(id:string,text:string):Promise<void>;
+  promptSummaries():Promise<PromptSummary[]>;
+  promptPatch(id:string,path:string,viewId:string):Promise<FilePatch>;
+  promptFinish():Promise<void>;
+  terminalSessions(provider: import('./terminal').TerminalProvider): Promise<AgentSession[]>;
+  terminalStart(provider: import('./terminal').TerminalProvider, mode: import('./terminal').TerminalMode, cols: number, rows: number, resumeSessionId?:string,slot?:'terminal'|'review'): Promise<import('./terminal').TerminalState>;
+  terminalRead(id: string | null, cursor: number,slot?:'terminal'|'review'): Promise<import('./terminal').TerminalRead>;
+  terminalInput(id: string, data: string, paste: boolean,slot?:'terminal'|'review'): Promise<void>;
+  terminalResize(id: string, cols: number, rows: number,slot?:'terminal'|'review'): Promise<void>;
+  terminalSubmitReview(id:string,text:string):Promise<void>;
+  terminalStop(slot?:'terminal'|'review'): Promise<void | {checkpointError:string|null}>;
   platform: "darwin" | "linux" | "win32";
   setTheme(theme: "dark" | "light"): Promise<void>;
   saveImageAttachment(name: string, type: string, data: Uint8Array): Promise<string>;

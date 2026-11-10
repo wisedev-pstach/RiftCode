@@ -7,9 +7,11 @@ function inlineAngularTemplate() {
     name: "rift-inline-angular-template",
     enforce: "pre" as const,
     transform(code: string, id: string) {
-      if (!id.endsWith("/app.component.ts")) return null;
-      const template = readFileSync(resolve("src/renderer/src/app.component.html"), "utf8");
-      return code.replace('templateUrl: "./app.component.html"', `template: ${JSON.stringify(template)}`);
+      if (!id.endsWith(".component.ts")) return null;
+      return code.replace(/templateUrl:\s*(['"])(\.\/[^'"]+)\1/g, (_match, _quote, relative) => {
+        const template = readFileSync(resolve(id.slice(0, id.lastIndexOf('/')), relative), "utf8");
+        return `template: ${JSON.stringify(template)}`;
+      });
     }
   };
 }

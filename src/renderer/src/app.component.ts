@@ -11,7 +11,13 @@ import {
   ViewChild
 } from "@angular/core";
 import { marked } from "marked";
+import {ReviewTerminalComponent} from './review-terminal.component';
+import type {ReviewContext} from '../../shared/review-request';
+import { AiTerminalComponent } from './ai-terminal.component';
+import { SearchableSelectComponent } from './searchable-select.component';
+import type { SourceLocation } from '../../shared/terminal';
 import type { AgentConversationHistory, AgentId, AgentMode, AgentOption, AgentRunResult, AgentSession, AgentStreamEvent, AgentToolEvent, ChangedFile, ContextResourcePath, FilePatch, GitHubAuthStatus, RepositoryFileView, RepositorySearchResult, RepositorySnapshot, UpdateStatus } from "../../shared/contracts";
+import type {PromptSummary} from '../../shared/contracts';
 import versionManifest from "../../../version.json";
 
 type DiffKind = "header" | "hunk" | "context" | "addition" | "deletion" | "meta";
@@ -530,6 +536,7 @@ function buildExplorerEntries(
 @Component({
   selector: "rift-root",
   standalone: true,
+  imports: [ReviewTerminalComponent, AiTerminalComponent, SearchableSelectComponent],
   templateUrl: "./app.component.html",
   changeDetection: ChangeDetectionStrategy.OnPush
 })
@@ -611,6 +618,7 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly activeLinkedNoteId = signal<string | null>(null);
   readonly reviewedFiles = signal<string[]>([]);
   readonly reviewedFileCount = computed(() => {
+    if(this.promptReview())return 0;
     const paths = new Set(this.repository()?.files.map((file) => file.path) ?? []);
     return this.reviewedFiles().filter((path) => paths.has(path)).length;
   });
@@ -640,6 +648,74 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly agentError = signal<string | null>(null);
   readonly agentModalOpen = signal(false);
   readonly chatPageOpen = signal(false);
+  readonly targetBranchChoices = computed(() => this.repository()?.targetBranches.map(branch => ({value: branch.ref, label: branch.label})) ?? []);
+  readonly comparisonChoices = computed(() => this.repository()?.comparisons.map(option => ({value: option.id, label: option.label, detail: option.detail, pinned: option.id === 'working-tree' || option.id === 'current-branch'})) ?? []);
+  // Renderer-lifetime preference only; neither layout transition touches session ownership.
+  readonly terminalDocked = signal(false);
+  readonly dockHeight = signal(480);
+  private readonly dockAreaHeight = signal(806);
+  readonly dockMinimum = computed(() => Math.min(280, Math.floor(this.dockAreaHeight() * .45)));
+  readonly dockMaximum = computed(() => Math.max(this.dockMinimum(), this.dockAreaHeight() - Math.min(180, Math.floor(this.dockAreaHeight() * .30)) - 6));
+  readonly effectiveDockHeight = computed(() => Math.max(this.dockMinimum(), Math.min(this.dockMaximum(), this.dockHeight())));
+  private dockObserver?: ResizeObserver;
+  private dockDrag?: {pointer:number;y:number;height:number};
+  @ViewChild('workspace') set workspaceElement(ref:ElementRef<HTMLElement>|undefined) {
+    this.dockObserver?.disconnect();
+    if(ref) {
+      this.dockAreaHeight.set(ref.nativeElement.getBoundingClientRect().height);
+      this.dockObserver=new ResizeObserver(entries=>this.dockAreaHeight.set(entries[0].contentRect.height));
+      this.dockObserver.observe(ref.nativeElement);
+    }
+  }
+  beginDockResize(event:PointerEvent):void {
+    if(event.button!==0)return;
+    event.preventDefault();
+    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+    this.dockDrag={pointer:event.pointerId,y:event.clientY,height:this.effectiveDockHeight()};
+  }
+  moveDockResize(event:PointerEvent):void {
+    if(this.dockDrag?.pointer===event.pointerId)this.setDockHeight(this.dockDrag.height+this.dockDrag.y-event.clientY);
+  }
+  endDockResize():void {this.dockDrag=undefined;}
+  private setDockHeight(height:number):void {this.dockHeight.set(Math.max(this.dockMinimum(),Math.min(this.dockMaximum(),height)));}
+  resizeDockWithKeyboard(event:KeyboardEvent):void {
+    if(!['ArrowUp','ArrowDown','Home','End'].includes(event.key))return;
+    event.preventDefault();
+    this.setDockHeight(event.key==='Home'?this.dockMinimum():event.key==='End'?this.dockMaximum():this.effectiveDockHeight()+(event.key==='ArrowUp'?20:-20));
+  }
+  readonly terminalOpen = signal(true);
+  dockTerminal():void { this.terminalDocked.set(true);this.terminalOpen.set(true); }
+  closeTerminalDock():void { this.terminalDocked.set(false);this.terminalOpen.set(true); }
+  readonly terminalReady = signal(false);
+  readonly sourceTarget = signal<SourceLocation | null>(null);
+  @ViewChild('aiTerminal') aiTerminal?: AiTerminalComponent;
+  @ViewChild('reviewTerminal') reviewTerminal?: ReviewTerminalComponent;
+  readonly reviewWorkbenchOpen=signal(false);readonly reviewVisited=signal(false);
+  readonly terminalReviewContext=computed<ReviewContext>(()=>{const repo=this.repository();return {repository:repo?.name??'',comparison:repo?.comparisonLabel??'',startRevision:repo?.startRevision??'',endRevision:repo?.endRevision??null,files:repo?.files.map(file=>file.path)??[],currentPath:this.selectedPath()??'',notes:this.formatNotes(this.selectedNotes()),projectContext:this.workspaceContextSection([]).join('\n')};});
+  private contextTerminal():AiTerminalComponent|undefined{return this.reviewWorkbenchOpen()?this.reviewTerminal:this.aiTerminal;}
+  openTerminal(): void { this.reviewWorkbenchOpen.set(false);this.terminalOpen.set(true); this.chatPageOpen.set(false); this.reviewPageOpen.set(false); void this.loadRepositoryPaths(); }
+  insertTerminalNotes(): void { const notes=this.selectedNotes(); if(notes.length) { if(!this.terminalOpen())this.openTerminal(); void this.contextTerminal()?.insert(this.formatNotes(notes)); } }
+  insertTerminalSelection(): void {
+    const context=this.selectedContext();
+    if(!context)return;
+    if(!this.terminalOpen())this.openTerminal();
+    void this.contextTerminal()?.insert(`Location: ${this.selectedPath()}:${context.startLine}-${context.endLine}\nSelected diff:\n\x60\x60\x60diff\n${context.diff}\n\x60\x60\x60`);
+    this.toolsMenu.set(null);
+  }
+  async navigateTerminalSource(location: SourceLocation): Promise<void> {
+    const root=this.repository()?.root;
+    const request=++this.repositoryViewRequest;
+    try {
+      // Main's known-file + realpath guard remains authoritative, including symlink rejection.
+      const file=await window.rift.readRepositoryViewFile(location.path);
+      if(this.repository()?.root!==root || request!==this.repositoryViewRequest)return;
+      this.promptReview.set(null);this.showDiff(); this.editMode.set(false); this.patchRequest++;
+      this.selectedPath.set(location.path); this.patch.set(null); this.highlightedRows.set(null);
+      this.repositoryFileError.set(null); this.repositoryFileLoading.set(false); this.repositoryFileView.set(file);
+      this.selectedRange.set(null); this.sourceTarget.set(location);
+      requestAnimationFrame(()=>this.diffScroll?.nativeElement.querySelector('.source-target')?.scrollIntoView({block:'center'}));
+    } catch(e) { if(this.repository()?.root===root && request===this.repositoryViewRequest)this.reviewMessage.set(e instanceof Error?e.message:String(e)); }
+  }
   readonly activeQuestion = signal("");
   readonly conversations = signal<Conversation[]>([]);
   readonly repositoryConversations = computed(() => {
@@ -669,10 +745,18 @@ export class AppComponent implements OnInit, OnDestroy {
     const context = this.workspaceContext();
     return (context.details.trim() ? 1 : 0) + context.links.length + context.resources.length;
   });
-  readonly selectedFile = computed(() => this.repository()?.files.find((file) => file.path === this.selectedPath()));
+  readonly promptReview=signal<PromptSummary|null>(null);
+  readonly comparisonFiles=computed(()=>this.promptReview()?.files??this.repository()?.files??[]);
+  openPromptReview(summary:PromptSummary):void{
+    this.promptReview.set(summary);this.sidebarView.set('changes');this.editMode.set(false);this.fileFilter.set('');this.hideReviewed.set(false);this.showDiff();this.selectedPath.set(null);
+    const path=summary.files[0]?.path;if(path)this.selectFile(path);else this.patch.set(null);
+  }
+  resetPromptReview():void{if(this.promptReview()){const terminal=this.terminalOpen();this.leavePromptReview();this.terminalOpen.set(terminal);}}
+  leavePromptReview():void{this.promptReview.set(null);this.selectedPath.set(null);const path=this.repository()?.files[0]?.path;if(path)this.selectFile(path);else this.patch.set(null);}
+  readonly selectedFile = computed(() => this.comparisonFiles().find((file) => file.path === this.selectedPath()));
   readonly filteredFiles = computed(() => {
     const patterns = this.fileFilter().split(",").map((pattern) => pattern.trim()).filter(Boolean).map(wildcardExpression);
-    const files = this.repository()?.files ?? [];
+    const files = this.comparisonFiles();
     const reviewed = new Set(this.reviewedFiles());
     return files.filter((file) => (
       (!this.hideReviewed() || !reviewed.has(file.path))
@@ -685,13 +769,13 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly expandedExplorerFolders = signal<ReadonlySet<string>>(new Set());
   readonly explorerEntries = computed(() => buildExplorerEntries(
     this.explorerShowAll() ? this.repositoryPaths() : [],
-    this.repository()?.files ?? [],
+    this.comparisonFiles(),
     this.expandedExplorerFolders(),
     this.explorerFilterPatterns()
   ));
   readonly explorerFolderPaths = computed(() => explorerFolderPaths(
     this.explorerShowAll() ? this.repositoryPaths() : [],
-    this.repository()?.files ?? []
+    this.comparisonFiles()
   ));
   readonly explorerAllCollapsed = computed(() => {
     const expanded = this.expandedExplorerFolders();
@@ -847,7 +931,6 @@ export class AppComponent implements OnInit, OnDestroy {
 
   private removeRepositoryListener?: () => void;
   private removeAgentListener?: () => void;
-  private readonly loadingStartedAt = performance.now();
   private refreshing = false;
   private refreshDirty = false;
   private selecting = false;
@@ -907,18 +990,7 @@ export class AppComponent implements OnInit, OnDestroy {
         this.repositorySearchHighlights.update((current) => new Map(current).set(data.path, data.lines));
       }
     };
-    const request = ++this.repositoryRequest;
-    void window.rift.openRepository()
-      .then((repository) => {
-        if (request === this.repositoryRequest) this.acceptRepository(repository);
-      })
-      .catch((reason: Error) => {
-        if (request === this.repositoryRequest) this.error.set(reason.message);
-      })
-      .finally(() => {
-        const remaining = Math.max(0, 2_000 - (performance.now() - this.loadingStartedAt));
-        setTimeout(() => this.loading.set(false), remaining);
-      });
+    void this.retryRepository();
 
     this.removeRepositoryListener = window.rift.onRepositoryChanged((changedPaths) => {
       const reviewed = new Set(this.reviewedFiles());
@@ -1020,6 +1092,7 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   ngOnDestroy(): void {
+    this.dockObserver?.disconnect();
     this.removeRepositoryListener?.();
     this.removeAgentListener?.();
     if (this.chatFollowTimer) clearTimeout(this.chatFollowTimer);
@@ -1028,6 +1101,14 @@ export class AppComponent implements OnInit, OnDestroy {
     this.highlightWorker.terminate();
     this.revokeImagePreviews(this.questionImageAttachments());
     this.revokeImagePreviews(this.chatImageAttachments());
+  }
+
+  async retryRepository(): Promise<void> {
+    const request=++this.repositoryRequest;
+    this.loading.set(true);this.error.set(null);
+    try { const repository=await window.rift.openRepository();if(request===this.repositoryRequest)this.acceptRepository(repository); }
+    catch(reason) { if(request===this.repositoryRequest)this.error.set(reason instanceof Error?reason.message:String(reason)); }
+    finally { if(request===this.repositoryRequest)this.loading.set(false); }
   }
 
   async chooseRepository(): Promise<void> {
@@ -1042,19 +1123,17 @@ export class AppComponent implements OnInit, OnDestroy {
     }
   }
 
-  async selectComparison(event: Event): Promise<void> {
-    if (!(event.target instanceof HTMLSelectElement)) return;
-    const select = event.target;
+  async selectComparison(value: string): Promise<void> {
+    if (this.comparisonChanging()) return;
     const request = ++this.repositoryRequest;
     this.comparisonChanging.set(true);
     this.selectedRange.set(null);
     this.allChangesSelected.set(false);
     try {
-      const repository = await window.rift.selectComparison(select.value);
+      const repository = await window.rift.selectComparison(value);
       if (request === this.repositoryRequest) this.acceptRepository(repository);
     } catch (reason) {
       if (request === this.repositoryRequest) {
-        select.value = this.repository()?.comparisonId ?? "working-tree";
         this.error.set(reason instanceof Error ? reason.message : String(reason));
       }
     } finally {
@@ -1468,6 +1547,7 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   selectFile(path: string): void {
+    this.terminalOpen.set(this.terminalDocked()); this.sourceTarget.set(null);
     this.fileToolsMenu.set(null);
     this.chatPageOpen.set(false);
     this.reviewPageOpen.set(false);
@@ -1485,7 +1565,9 @@ export class AppComponent implements OnInit, OnDestroy {
     void this.loadEditableFile(path);
   }
 
+  /* Checkpoint comparisons are read-only snapshots, never the current worktree. */
   toggleEditMode(): void {
+    if(this.promptReview())return;
     const active = !this.editMode();
     this.editMode.set(active);
     const path = this.selectedPath();
@@ -1573,6 +1655,7 @@ export class AppComponent implements OnInit, OnDestroy {
 
   @HostListener("document:keydown", ["$event"])
   handleKeyboardShortcut(event: KeyboardEvent): void {
+    if (event.target instanceof Element && event.target.closest("rift-ai-terminal,rift-review-terminal")) return;
     if (!(event.ctrlKey || event.metaKey)) return;
     if (event.key.toLowerCase() === "f") {
       event.preventDefault();
@@ -1615,7 +1698,6 @@ export class AppComponent implements OnInit, OnDestroy {
       document.getElementById(tool === "note" ? "review-note" : "explain-question")?.focus();
       return true;
     }
-    if (tool === "question" && (!this.selectedAgent() || this.agentRunning())) return false;
     const rows = this.rows();
     const range = this.selectedRange();
     let index = range?.focus ?? -1;
@@ -1708,6 +1790,9 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   private async openRepositoryPath(path: string): Promise<void> {
+    if(this.promptReview()?.files.some(file=>file.path===path)){this.selectFile(path);return;}
+    this.promptReview.set(null);
+    this.terminalOpen.set(this.terminalDocked()); this.sourceTarget.set(null);
     if (this.sidebarView() === "explorer") this.revealExplorerPath(path);
     if (this.repository()?.files.some((file) => file.path === path)) {
       this.selectFile(path);
@@ -1761,19 +1846,17 @@ export class AppComponent implements OnInit, OnDestroy {
     this.requestSearchPreviewHighlighting();
   }
 
-  async selectTargetBranch(event: Event): Promise<void> {
-    if (!(event.target instanceof HTMLSelectElement)) return;
-    const select = event.target;
+  async selectTargetBranch(value: string): Promise<void> {
+    if (this.comparisonChanging()) return;
     const request = ++this.repositoryRequest;
     this.comparisonChanging.set(true);
     this.selectedRange.set(null);
     this.allChangesSelected.set(false);
     try {
-      const repository = await window.rift.selectTargetBranch(select.value);
+      const repository = await window.rift.selectTargetBranch(value);
       if (request === this.repositoryRequest) this.acceptRepository(repository);
     } catch (reason) {
       if (request === this.repositoryRequest) {
-        select.value = this.repository()?.targetBranch ?? "";
         this.error.set(reason instanceof Error ? reason.message : String(reason));
       }
     } finally {
@@ -1970,6 +2053,7 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   isFileReviewed(path: string): boolean {
+    if(this.promptReview())return false;
     return this.reviewedFiles().includes(path);
   }
 
@@ -1980,6 +2064,7 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   toggleFileReviewed(path: string): void {
+    if(this.promptReview())return;
     const reviewed = this.isFileReviewed(path);
     this.reviewedFiles.update((paths) => reviewed
       ? paths.filter((entry) => entry !== path)
@@ -2126,60 +2211,11 @@ export class AppComponent implements OnInit, OnDestroy {
     }
   }
 
-  startExplain(useLatestConversation = true): void {
-    const savedSelection = this.loadSavedSelection();
-    const agent = this.agents().some((option) => option.id === savedSelection.agent) ? savedSelection.agent : this.selectedAgent();
-    if (agent) {
-      this.selectedAgent.set(agent);
-      const savedModel = savedSelection.agent === agent ? savedSelection.model : this.loadSavedModel(agent);
-      const model = savedModel && this.modelsAgent === agent && this.agentModels().includes(savedModel)
-        ? savedModel
-        : null;
-      this.selectedModel.set(model);
-      this.modelSearch.set(model ? this.modelLabel(agent, model) : "");
-    }
-    if (useLatestConversation) this.useExplainConversation(this.preferredConversation(agent), false);
-    this.noteComposerOpen.set(false);
-    this.questionDraft.set("");
-    this.clearImageAttachments("question");
-    this.modelSearch.set(this.selectedModel() && agent ? this.modelLabel(agent, this.selectedModel()!) : "");
-    this.modelPickerOpen.set(false);
-    this.questionComposerOpen.set(true);
-    if (agent) {
-      if (this.modelsAgent !== agent) void this.loadAgentModels(agent);
-      void this.loadProviderSessions(agent);
-    }
-  }
+  startExplain(_useLatestConversation = true): void { this.insertTerminalSelection(); }
 
-  startSidebarExplain(): void {
-    if (!this.selectedAgent() || this.agentRunning()) return;
-    if (!this.selectedContext()) {
-      this.selectedRange.set(null);
-      this.allChangesSelected.set(true);
-    }
-    this.toolsMenu.set({
-      x: Math.max(6, window.innerWidth - (this.reviewSidebarOpen() ? 710 : 444)),
-      y: 86
-    });
-    this.startExplain();
-  }
-
-  openChats(): void {
-    this.reviewPageOpen.set(false);
-    this.chatPageOpen.set(true);
-    this.activeConversationId.set(null);
-    const agent = this.selectedAgent();
-    if (agent) void this.loadProviderSessions(agent);
-  }
-
-  openReviewPage(): void {
-    this.reviewSidebarOpen.set(false);
-    this.chatPageOpen.set(false);
-    this.reviewPageOpen.set(true);
-    this.activeConversationId.set(null);
-    const agent = this.selectedAgent();
-    if (agent && this.modelsAgent !== agent && !this.modelsLoading()) void this.loadAgentModels(agent);
-  }
+  startSidebarExplain(): void { this.insertTerminalSelection(); }
+  openChats(): void { this.openTerminal(); }
+  openReviewPage(): void { this.openTerminal(); }
 
   selectReviewModel(event: Event): void {
     if (event.target instanceof HTMLSelectElement) this.selectModel(event.target.value || null);
@@ -2270,6 +2306,11 @@ export class AppComponent implements OnInit, OnDestroy {
     this.contextDialogOpen.set(false);
     this.persistReviewSession();
     this.reviewMessage.set(this.contextItemCount() > 0 ? "Project context saved" : "Project context cleared");
+  }
+
+  prepareTerminalReview():void {
+    if(!this.repository())return;
+    this.terminalOpen.set(true);this.chatPageOpen.set(false);this.reviewPageOpen.set(false);this.reviewVisited.set(true);this.reviewWorkbenchOpen.set(true);void this.loadRepositoryPaths();
   }
 
   async startReview(): Promise<void> {
@@ -2395,6 +2436,7 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   showDiff(): void {
+    this.terminalOpen.set(this.terminalDocked());
     this.chatPageOpen.set(false);
     this.reviewPageOpen.set(false);
     this.activeConversationId.set(null);
@@ -2728,6 +2770,10 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   sendNotesToAgent(): void {
+    this.insertTerminalNotes();
+  }
+
+  sendNotesToLegacyAgent(): void {
     const agent = this.selectedAgent();
     const notes = this.selectedNotes();
     if (!agent || notes.length === 0 || this.agentRunning()) return;
@@ -2749,20 +2795,12 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   openConversation(id?: number): void {
-    const conversation = this.conversations().find((entry) => entry.id === (id ?? this.activeConversationId()));
+    const conversation = this.repositoryConversations().find((entry) => entry.id === (id ?? this.activeConversationId()));
     if (!conversation) return;
-    this.activeConversationId.set(conversation.id);
-    this.activeQuestion.set(conversation.question);
-    this.agentResult.set(conversation.result);
-    this.agentError.set(conversation.error);
-    this.chatReplyDraft.set("");
-    this.clearImageAttachments("chat");
-    this.activityExpanded.set(false);
-    this.selectedToolCall.set(null);
-    this.chatModelPickerOpen.set(false);
-    this.chatModelSearch.set("");
-    this.chatPageOpen.set(true);
-    this.scrollChatToBottom(true);
+    this.openTerminal();
+    const context=conversation.context;
+    const text=['Saved Rift context (not a provider resume)',context?`Location: ${context.filePath}:${context.startLine}-${context.endLine}\n${context.diff}`:'',...conversation.history.flatMap(turn=>[turn.question,turn.result?.explanation??'']),conversation.question,conversation.result?.explanation??''].join('\n\n');
+    this.aiTerminal?.retain(text);
   }
 
   closeConversation(id: number): void {
@@ -3080,6 +3118,7 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   private acceptRepository(repository: RepositorySnapshot, preserveSelection = false): void {
+    if(this.promptReview() && (this.repository()?.root!==repository.root || this.repository()?.comparisonId!==repository.comparisonId || this.repository()?.targetBranch!==repository.targetBranch))this.promptReview.set(null);
     const previousPath = this.selectedPath();
     const previousComparison = this.repository()?.comparisonId;
     const previousRoot = this.repository()?.root;
@@ -3123,7 +3162,7 @@ export class AppComponent implements OnInit, OnDestroy {
       this.repositoryFileLoading.set(false);
       this.repositoryFileError.set(null);
     }
-    if (this.sidebarView() === "explorer" && this.explorerShowAll()) {
+    if (this.repository()) {
       void this.loadRepositoryPaths();
     } else {
       this.repositoryPathsRequest += 1;
@@ -3207,6 +3246,8 @@ export class AppComponent implements OnInit, OnDestroy {
 
   private async loadPatch(path: string, preserveSelection = false): Promise<void> {
     const request = ++this.patchRequest;
+    const root=this.repository()?.root,checkpoint=this.promptReview();
+    const current=()=>request===this.patchRequest && root===this.repository()?.root && path===this.selectedPath() && checkpoint?.viewId===this.promptReview()?.viewId;
     this.highlightRequest += 1;
     const previousPatch = this.patch();
     if (!preserveSelection) {
@@ -3215,8 +3256,8 @@ export class AppComponent implements OnInit, OnDestroy {
       this.resetHorizontalScroll();
     }
     try {
-      const patch = await window.rift.getFilePatch(path, this.fullFile());
-      if (request === this.patchRequest) {
+      const patch = checkpoint ? await window.rift.promptPatch(checkpoint.id,path,checkpoint.viewId) : await window.rift.getFilePatch(path, this.fullFile());
+      if (current()) {
         if (
           previousPatch?.path === patch.path
           && previousPatch.patch === patch.patch
@@ -3227,7 +3268,7 @@ export class AppComponent implements OnInit, OnDestroy {
         this.requestHighlighting();
       }
     } catch (reason) {
-      if (request === this.patchRequest) this.error.set(reason instanceof Error ? reason.message : String(reason));
+      if (current()) this.error.set(reason instanceof Error ? reason.message : String(reason));
     }
   }
 

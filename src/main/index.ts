@@ -1,7 +1,7 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, net, shell } from "electron";
 import { execFile, spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
-import { existsSync, statSync, watch, type FSWatcher } from "node:fs";
+import { existsSync, mkdirSync, statSync, watch, type FSWatcher } from "node:fs";
 import { mkdir, open, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
@@ -11,6 +11,41 @@ import { listRepositoryFiles, loadFilePatch, loadRepository, readRepositoryViewF
 import type { IpcMainInvokeEvent } from "electron";
 import type { AgentConversationHistory, AgentConversationMessage, AgentId, AgentMode, AgentOption, AgentRunResult, AgentSession, AgentStreamEvent, AgentToolEvent, GitHubAuthStatus, GitHubIssueResult, RepositorySnapshot, UpdateStatus } from "../shared/contracts";
 import versionManifest from "../../version.json";
+import { TerminalWorkspace } from './terminal-workspace';
+import { terminalLaunch, terminalEnvironment } from './terminal-service';
+import type { TerminalProvider } from '../shared/terminal';
+import { assertTerminalProvider, providerArgs, openCodeInteractiveArgs } from '../shared/terminal';
+import { listTerminalSessions, listOpenCodeSessions } from './terminal-sessions';
+import { previewUserData } from './preview';
+const previewDirectory = previewUserData(process.argv, app.getPath('appData'));
+if (previewDirectory) { mkdirSync(previewDirectory, {recursive:true}); app.setPath('userData',previewDirectory); app.setName('Rift Preview'); }
+async function resolveTerminalCommand(provider:TerminalProvider):Promise<string|null> {
+  await shellPathReady;
+  try {
+    const found = await execute(process.platform === 'win32' ? 'where.exe' : 'which', [provider]);
+    return found.split(/\r?\n/).find(path => process.platform !== 'win32' || /\.(exe|cmd|bat)$/i.test(path)) ?? null;
+  } catch { return null; }
+}
+async function terminalMetadataCommand(command:string,args:string[],root:string):Promise<string> {
+  const launch=terminalLaunch(command,args);
+  const result=await promisify(execFile)(launch.file,typeof launch.args==='string'?[launch.args]:launch.args,{cwd:root,env:terminalEnvironment(),timeout:5000,maxBuffer:1024*1024,windowsHide:true,windowsVerbatimArguments:typeof launch.args==='string'});
+  return result.stdout;
+}
+async function providerSessions(root:string,provider:TerminalProvider):Promise<AgentSession[]> {
+  assertTerminalProvider(provider);
+  if(provider!=='opencode')return listTerminalSessions(root,provider);
+  return listOpenCodeSessions(root,async()=>{
+    const command=await resolveTerminalCommand(provider);
+    if(!command)throw new Error('OpenCode is not installed.');
+    return terminalMetadataCommand(command,['session','list','--format','json'],root);
+  });
+}
+const terminals = new TerminalWorkspace(resolveTerminalCommand,providerSessions,async(provider,mode,id,command,root)=>{
+  if(provider!=='opencode')return providerArgs(provider,mode,id);
+  return openCodeInteractiveArgs(mode,id,await terminalMetadataCommand(command,['--help'],root));
+});
+
+const terminal=terminals.terminal;
 
 function agentSessionTitle(prompt: string): string {
   const line = prompt.split(/\r?\n/).map((part) => part.trim()).find((part) => part && !part.startsWith("#"));
@@ -18,10 +53,10 @@ function agentSessionTitle(prompt: string): string {
 }
 
 const AGENTS: Readonly<Record<AgentId, { label: string; args: (prompt: string, model: string | null, mode: AgentMode, sessionId: string | undefined, resourcePaths: string[]) => string[]; promptViaStdin?: boolean }>> = {
-  opencode: { label: "OpenCode", args: (prompt, model, mode, sessionId, resourcePaths) => ["run", "--pure", "--agent", mode === "edit" ? "build" : "plan", "--format", "json", "--auto", ...(model ? ["--model", model] : []), ...(sessionId ? ["--session", sessionId] : []), ...resourcePaths.filter((path) => !statSync(path).isDirectory()).flatMap((path) => ["--file", path]), "--", prompt] },
+  opencode: { label: "OpenCode", args: (prompt, model, mode, sessionId, resourcePaths) => ["run", "--pure", "--agent", mode === "edit" ? "build" : "plan", "--format", "json", ...(model ? ["--model", model] : []), ...(sessionId ? ["--session", sessionId] : []), ...resourcePaths.filter((path) => !statSync(path).isDirectory()).flatMap((path) => ["--file", path]), "--", prompt] },
   claude: {
     label: "Claude Code",
-    args: (prompt, model, mode, sessionId, resourcePaths) => ["--print", "--verbose", "--output-format", "stream-json", "--include-partial-messages", "--permission-mode", mode === "edit" ? "auto" : "plan", "--tools", mode === "edit" ? "Read,Grep,Glob,Bash,Edit,Write" : "Read,Grep,Glob,Bash", ...[...new Set(resourcePaths.map((path) => statSync(path).isDirectory() ? path : dirname(path)))].flatMap((path) => ["--add-dir", path]), ...(model ? ["--model", model] : []), ...(sessionId ? ["--resume", sessionId] : ["--name", agentSessionTitle(prompt)])],
+    args: (prompt, model, mode, sessionId, resourcePaths) => ["--print", "--verbose", "--output-format", "stream-json", "--include-partial-messages", "--permission-mode", mode === "edit" ? "default" : "plan", "--tools", mode === "edit" ? "Read,Grep,Glob,Bash,Edit,Write" : "Read,Grep,Glob,Bash", ...[...new Set(resourcePaths.map((path) => statSync(path).isDirectory() ? path : dirname(path)))].flatMap((path) => ["--add-dir", path]), ...(model ? ["--model", model] : []), ...(sessionId ? ["--resume", sessionId] : ["--name", agentSessionTitle(prompt)])],
     promptViaStdin: true
   }
 };
@@ -121,7 +156,7 @@ async function loadUpdateStatus(): Promise<UpdateStatus> {
     latestVersion: null,
     releaseNotes: [],
     updateAvailable: false,
-    installSupported: process.platform === "darwin" || process.platform === "win32",
+    installSupported: !previewDirectory && (process.platform === "darwin" || process.platform === "win32"),
     error: null
   };
   const controller = new AbortController();
@@ -187,6 +222,7 @@ async function launchWindowsUpdate(): Promise<void> {
 }
 
 async function installUpdate(): Promise<boolean> {
+  if (previewDirectory) throw new Error('Updates are disabled in the isolated preview.');
   if (!mainWindow) throw new Error("The Rift window is unavailable.");
   const status = await checkForUpdate();
   if (!status.updateAvailable || !status.latestVersion) throw new Error("No update is available.");
@@ -741,7 +777,7 @@ function parseAgentOutput(id: AgentId, output: string, complete = true): AgentRu
 }
 
 function assertTrustedSender(event: IpcMainInvokeEvent): void {
-  if (event.sender !== mainWindow?.webContents) throw new Error("Unauthorized IPC sender.");
+  if (event.sender !== mainWindow?.webContents || event.senderFrame !== mainWindow?.webContents.mainFrame) throw new Error("Unauthorized IPC sender.");
 }
 
 function watchRepository(root: string): void {
@@ -791,6 +827,7 @@ function repositoryFilePath(path: unknown): string {
 }
 
 async function openRepository(path: string): Promise<RepositorySnapshot> {
+  terminals.reset();terminal.checkpoints.clear();
   const previousPath = currentRepositoryPath;
   const previousComparisonId = activeComparisonId;
   const previousTargetBranch = activeTargetBranch;
@@ -817,6 +854,43 @@ async function openRepository(path: string): Promise<RepositorySnapshot> {
 }
 
 function registerIpc(): void {
+  ipcMain.handle('terminal:sessions', async (event, provider) => {
+    assertTrustedSender(event);
+    if (!snapshot || snapshot.root !== currentRepositoryPath) throw new Error('Open a repository first.');
+    const root=snapshot.root, generation=repositoryGeneration;
+    const sessions=await providerSessions(root,provider);
+    if (generation!==repositoryGeneration || snapshot?.root!==root || currentRepositoryPath!==root) throw new Error('Repository changed.');
+    return sessions;
+  });
+  ipcMain.handle('terminal:start', (event, provider, mode, cols, rows, resumeSessionId, slot) => {
+    assertTrustedSender(event);
+    if (!snapshot || snapshot.root !== currentRepositoryPath) throw new Error('Open a repository first.');
+    return terminals.slot(slot).start(snapshot.root, provider, mode, cols, rows, resumeSessionId);
+  });
+  ipcMain.handle('terminal:read', (event, id, cursor, slot) => {
+    assertTrustedSender(event);
+    if (id !== null && (typeof id !== 'string' || id.length > 100)) throw new Error('Invalid session.');
+    return terminals.slot(slot).read(id, cursor);
+  });
+  ipcMain.handle('terminal:input', (event, id, data, paste, slot) => {
+    assertTrustedSender(event);
+    if (typeof paste !== 'boolean') throw new Error('Invalid paste option.');
+    terminals.slot(slot).input(id, data, paste);
+  });
+  ipcMain.handle('terminal:resize', (event, id, cols, rows, slot) => {
+    assertTrustedSender(event); terminals.slot(slot).resize(id, cols, rows);
+  });
+  ipcMain.handle('terminal:send-tracked', (event,id,text)=>{assertTrustedSender(event);return terminal.sendTracked(id,text);});
+  ipcMain.handle('prompt:summaries',event=>{assertTrustedSender(event);return terminal.checkpoints.list(currentRepositoryPath ?? '');});
+  ipcMain.handle('prompt:patch',(event,id,path,viewId)=>{assertTrustedSender(event);if(typeof id!=='string'||typeof viewId!=='string'||viewId.length>100||typeof path!=='string'||id.length>200||path.length>4096)throw new Error('Invalid checkpoint.');return terminal.checkpoints.patch(currentRepositoryPath ?? '',id,path,viewId);});
+  ipcMain.handle('prompt:finish',event=>{assertTrustedSender(event);return terminal.checkpoints.finish(currentRepositoryPath ?? '');});
+  ipcMain.handle('terminal:submit-review',(event,id,text)=>{assertTrustedSender(event);return terminals.review.submit(id,text);});
+  ipcMain.handle('terminal:stop', async (event,slot) => {
+    assertTrustedSender(event);terminals.slot(slot).reset();
+    if(slot==='review')return {checkpointError:null};
+    try{await terminal.checkpoints.finish(currentRepositoryPath ?? '');return {checkpointError:null};}
+    catch(error){return {checkpointError:error instanceof Error?error.message:String(error)};}
+  });
   ipcMain.handle("window:set-theme", (event, theme: unknown) => {
     assertTrustedSender(event);
     if (theme !== "dark" && theme !== "light") throw new Error("Invalid window theme.");
@@ -1122,6 +1196,10 @@ function createWindow(): void {
       sandbox: true
     }
   });
+  mainWindow.webContents.on('render-process-gone', () => terminals.reset());
+  mainWindow.webContents.on('destroyed', () => terminals.reset());
+  mainWindow.webContents.on('did-start-navigation', (_event, _url, _inPlace, isMainFrame) => { if (isMainFrame) terminals.reset(); });
+  mainWindow.on('closed', () => terminals.reset());
   mainWindow.setMenuBarVisibility(false);
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   mainWindow.webContents.on("will-navigate", (event) => event.preventDefault());
@@ -1171,6 +1249,7 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
+  terminals.reset();
   watcher?.close();
   if (attachmentDirectory) void rm(attachmentDirectory, { recursive: true, force: true });
 });

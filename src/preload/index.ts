@@ -3,6 +3,17 @@ import type { RiftApi } from "../shared/contracts";
 
 const api: RiftApi = {
   platform: process.platform as RiftApi["platform"],
+  terminalSendTracked:(id,text)=>ipcRenderer.invoke('terminal:send-tracked',id,text),
+  promptSummaries:()=>ipcRenderer.invoke('prompt:summaries'),
+  promptPatch:(id,path,viewId)=>ipcRenderer.invoke('prompt:patch',id,path,viewId),
+  promptFinish:()=>ipcRenderer.invoke('prompt:finish'),
+  terminalSessions: provider => ipcRenderer.invoke('terminal:sessions', provider),
+  terminalStart: (provider, mode, cols, rows, resumeSessionId, slot) => ipcRenderer.invoke('terminal:start', provider, mode, cols, rows, resumeSessionId, slot),
+  terminalRead: (id, cursor, slot) => ipcRenderer.invoke('terminal:read', id, cursor, slot),
+  terminalInput: (id, data, paste, slot) => ipcRenderer.invoke('terminal:input', id, data, paste, slot),
+  terminalResize: (id, cols, rows, slot) => ipcRenderer.invoke('terminal:resize', id, cols, rows, slot),
+  terminalSubmitReview:(id,text)=>ipcRenderer.invoke('terminal:submit-review',id,text),
+  terminalStop: (slot) => ipcRenderer.invoke('terminal:stop',slot),
   setTheme: (theme) => ipcRenderer.invoke("window:set-theme", theme),
   saveImageAttachment: (name, type, data) => ipcRenderer.invoke("attachment:save-image", name, type, data),
   saveClipboardImage: () => ipcRenderer.invoke("context:paste-image"),

@@ -1,11 +1,13 @@
 {
-  "version": "0.7.3",
+  "version": "0.8.1",
   "releaseNotes": [
-    "Added wildcard filtering to the explorer with auto-expanded parents and a match-count badge.",
-    "Added collapse-all and expand-all toggling plus arrow, Home, End, and Escape keyboard navigation in the explorer tree.",
-    "Added file and folder context menus in the explorer: mark reviewed, copy relative or full path, and reveal in the system file manager.",
-    "Added per-folder changed-file counts with review summaries in the explorer.",
-    "Added Cmd/Ctrl+N to start a review note and Cmd/Ctrl+K to ask the agent about the selected lines, with shortcut badges in the selection tools.",
-    "Fixed keyboard focus transfer into the explorer tree and repository search under the renderer build."
+    "Agent workspace with retained native Claude Code, OpenCode and Codex sessions, including named conversation resume.",
+    "Dock Agent or the independent Review session below file review; resize or unpin without restarting the session.",
+    "Slim dock toolbar with separated compact controls and actual 11px terminal text; undocking restores normal sizing.",
+    "Direct notes and selection insertion without Enter, plus repository file-and-line navigation from terminal output.",
+    "Track individual prompts with working-tree checkpoints, change summaries and exact per-prompt review diffs.",
+    "Dedicated scoped review requests, custom instructions and follow-ups, with immediate review-brief collapse while sending.",
+    "Search branches inside comparison selectors; improved startup geometry, Windows PTY metadata and retained scroll anchors.",
+    "Available through the normal update manifest and installers; isolated preview profiles intentionally keep updates disabled."
   ]
 }

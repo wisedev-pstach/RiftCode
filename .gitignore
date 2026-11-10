@@ -8,3 +8,5 @@ release/
 build/icon.iconset/
 .idea/
 .dev-data/
+test-results/
+playwright-report/

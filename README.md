@@ -2,7 +2,7 @@
 
 > A visual, AI-native workspace for understanding, reviewing, and refining code changes.
 
-[![Version](https://img.shields.io/badge/version-0.7.3-c8ff63?style=flat-square&labelColor=171b21)](./version.json)
+[![Version](https://img.shields.io/badge/version-0.8.0-c8ff63?style=flat-square&labelColor=171b21)](./version.json)
 [![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-8ea0b2?style=flat-square&labelColor=171b21)](#getting-started)
 [![License](https://img.shields.io/badge/license-MIT-8ea0b2?style=flat-square&labelColor=171b21)](./LICENSE)
 
@@ -50,10 +50,13 @@ rift .
 
 ### AI Agents
 
-Rift discovers supported coding agents installed on your machine. Install and authenticate at least one to use AI review and chat features:
+Rift discovers supported coding agents installed on your machine. Install and authenticate at least one to use the unified AI terminal:
 
 - [OpenCode](https://opencode.ai/)
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview)
+- [Codex CLI](https://developers.openai.com/codex/cli/) (interactive terminal)
+
+Use **AI terminal** to choose a provider, **New session** or **Resume existing**, and Review/plan or Edit intent. **Review changes** prepares the current comparison as context, without starting a provider or submitting a prompt. Notes stay in a horizontal **Notes** drawer; secondary paste/copy actions live in **Context & info**. Press Enter yourself inside the CLI. Ctrl/Cmd-click `file:line` output to open source. Sessions survive view switches, not repository changes or app shutdown. Saved Rift notes/history are preserved; native resume uses provider-owned sessions scoped to this repository. See [terminal setup, safety and verification](docs/TERMINAL-AI.md).
 
 Repository browsing, diffs, notes, review tracking, and editing work without an AI agent.
 
@@ -78,9 +81,9 @@ Rift does not try to replace engineering judgment. It gives that judgment a work
 | Review | Understand | Act |
 | --- | --- | --- |
 | Compare the working tree, branches, and commits | Browse changed files as a tree or open the full repository | Edit changed files directly from the diff |
-| Switch between unified and side-by-side diffs | Search file names and repository contents | Ask OpenCode or Claude Code about selected lines |
-| Expand to full-file context | Attach project details, links, files, images, and directories | Continue agent conversations with retained context |
-| Mark files and folders reviewed | Add notes anchored to precise changed lines | Run an independent AI review and reconsider it after fixes |
+| Switch between unified and side-by-side diffs | Search file names and repository contents | Insert selected code into Claude, OpenCode or Codex |
+| Expand to full-file context | Attach project details, links, files, images, and directories | Resume provider sessions for the current repository |
+| Mark files and folders reviewed | Add notes anchored to precise changed lines | Prepare comparison context with Review changes |
 
 Additional details include light and dark themes, per-repository review sessions, changed-region navigation, syntax-aware rendering, and live repository refresh.
 
