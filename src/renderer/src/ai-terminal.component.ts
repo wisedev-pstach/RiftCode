@@ -12,7 +12,9 @@ export class AiTerminalComponent implements AfterViewInit, OnDestroy {
   readonly reviewWorkbench:boolean=false;
   readonly slot:'terminal'|'review'='terminal';
   @Input() reviewContext:ReviewContext|null=null;
-  @Input() docked=false;
+  private dockedValue=false;
+  @Input() set docked(value:boolean){this.dockedValue=value;if(this.terminal)this.scheduleFit();}
+  get docked():boolean{return this.dockedValue;}
   @Output() readonly dock=new EventEmitter<void>();
   @Output() readonly closeDock=new EventEmitter<void>();
   @Output() readonly switchDock=new EventEmitter<void>();
@@ -102,6 +104,9 @@ export class AiTerminalComponent implements AfterViewInit, OnDestroy {
       const anchor=terminal&&buffer&&buffer.viewportY<buffer.baseY
         ? terminal.registerMarker(buffer.viewportY-buffer.baseY-buffer.cursorY) : undefined;
       try {
+        // Capture the history marker before changing real cell metrics/reflow.
+        const fontSize=this.docked?12:13;
+        if(terminal&&terminal.options.fontSize!==fontSize)terminal.options.fontSize=fontSize;
         this.fit.fit();
         if(anchor&&!anchor.isDisposed) {
           const target=terminal!.cols===cols?viewport!:anchor.line;

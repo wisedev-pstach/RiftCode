@@ -20,6 +20,24 @@
 .terminal-docked > :is(rift-ai-terminal,rift-review-terminal) { overflow:auto; }
 /* The extra dock action must not squeeze away the actual provider/mode/status. */
 @container (max-width:600px) { .terminal-identity small { white-space:normal; overflow:visible; } }
+/* Dock-only chrome: retain the same sibling hosts and all direct context actions. */
+.terminal-docked > :is(rift-ai-terminal,rift-review-terminal) .terminal-toolbar { height:34px; gap:10px; padding:0 8px; }
+.terminal-docked > :is(rift-ai-terminal,rift-review-terminal) .terminal-identity { flex:1 1 auto; gap:6px; }
+.terminal-docked > :is(rift-ai-terminal,rift-review-terminal) .terminal-identity > div { display:flex; flex-direction:row; align-items:center; gap:8px; overflow:hidden; }
+.terminal-docked > :is(rift-ai-terminal,rift-review-terminal) .terminal-identity strong { font-size:12px; flex:0 1 auto; }
+.terminal-docked > :is(rift-ai-terminal,rift-review-terminal) .terminal-identity small { font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex:0 0 auto; }
+.terminal-docked > :is(rift-ai-terminal,rift-review-terminal) .terminal-status { font-size:11px; }
+.terminal-docked > :is(rift-ai-terminal,rift-review-terminal) .terminal-cwd { flex:0 2 140px; font-size:11px; }
+.terminal-docked > :is(rift-ai-terminal,rift-review-terminal) .terminal-actions { gap:4px; }
+.terminal-docked > :is(rift-ai-terminal,rift-review-terminal) :is(.terminal-toolbar,.terminal-context-strip) :is(button,summary) { height:28px; padding:0 8px; gap:4px; font-size:11px; border-radius:4px; }
+.terminal-docked > :is(rift-ai-terminal,rift-review-terminal) .terminal-context-strip { height:34px; padding:2px 8px 3px; gap:4px; flex-wrap:nowrap; }
+.terminal-docked > :is(rift-ai-terminal,rift-review-terminal) .terminal-context-strip small { font-size:10px; white-space:nowrap; }
+.terminal-docked > :is(rift-ai-terminal,rift-review-terminal) .terminal-footer { height:0; min-height:0; padding:0; border:0; overflow:hidden; }
+.terminal-docked > :is(rift-ai-terminal,rift-review-terminal) .terminal-stage { padding:6px 8px; }
+@container(max-width:600px) {
+ .terminal-docked > :is(rift-ai-terminal,rift-review-terminal) .terminal-context-strip small { display:none; }
+ .terminal-docked > :is(rift-ai-terminal,rift-review-terminal) .terminal-identity strong { max-width:100px; }
+}
 /* Source navigation shares the code surface; terminal chrome lives in workspace.css. */
 .source-target { background:rgba(200,255,99,.15); outline:1px solid #799545; }
 .source-location { color:#b5dc7c; font:12px ui-monospace,monospace; padding:10px; }
