@@ -1,10 +1,13 @@
 {
-  "version": "0.8.0",
+  "version": "0.8.1",
   "releaseNotes": [
-    "Added a terminal-first AI workspace with retained native PTY sessions for Claude Code, OpenCode and Codex.",
-    "Copy review notes or insert selected notes and code context without submitting the CLI prompt.",
-    "Ctrl/Cmd-click repository file:line references in terminal reviews to jump to highlighted source, including unchanged files.",
-    "Search current comparisons and target branches without changing the selected comparison until an explicit choice.",
-    "Added isolated preview data for owner testing; existing chats and notes remain available."
+    "Agent workspace with retained native Claude Code, OpenCode and Codex sessions, including named conversation resume.",
+    "Dock Agent or the independent Review session below file review; resize or unpin without restarting the session.",
+    "Slim dock toolbar with separated compact controls and actual 11px terminal text; undocking restores normal sizing.",
+    "Direct notes and selection insertion without Enter, plus repository file-and-line navigation from terminal output.",
+    "Track individual prompts with working-tree checkpoints, change summaries and exact per-prompt review diffs.",
+    "Dedicated scoped review requests, custom instructions and follow-ups, with immediate review-brief collapse while sending.",
+    "Search branches inside comparison selectors; improved startup geometry, Windows PTY metadata and retained scroll anchors.",
+    "Available through the normal update manifest and installers; isolated preview profiles intentionally keep updates disabled."
   ]
 }
