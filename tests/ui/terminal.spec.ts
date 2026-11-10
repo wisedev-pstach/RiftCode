@@ -443,9 +443,9 @@ for(const provider of ['claude','opencode','codex'])test(`actual harmless PTY pa
   const reviewer=fixture.workspace.review.read(null,0).state!;
   const editPid=Number(fixture.workspace.terminal.read(edit.id,0).data.match(/PID=(\d+)/)![1]),reviewPid=Number(fixture.workspace.review.read(reviewer.id,0).data.match(/PID=(\d+)/)![1]);expect(editPid).not.toBe(reviewPid);
   await review.getByRole('button',{name:'Dock to bottom',exact:true}).click();
-  await expect(review.locator('.xterm-rows')).toHaveCSS('font-size','12px');
+  await expect(review.locator('.xterm-rows')).toHaveCSS('font-size','11px');
   await review.getByRole('button',{name:'Show Agent in dock',exact:true}).click();
-  await expect(page.locator('rift-ai-terminal .xterm-rows')).toHaveCSS('font-size','12px');
+  await expect(page.locator('rift-ai-terminal .xterm-rows')).toHaveCSS('font-size','11px');
   await page.getByRole('separator',{name:'Resize bottom terminal'}).press('ArrowUp');
   await page.locator('rift-ai-terminal').getByRole('button',{name:'Show Review in dock',exact:true}).click();
   await review.getByRole('button',{name:'Close dock',exact:true}).click();
@@ -1432,10 +1432,26 @@ for(const width of [1024,1280,1440])for(const theme of ['dark','light']) {
  });
 }
 
+for(const theme of ['dark','light'])test(`slim dock Context keyboard menu stays inside minimum dock with Notes open ${theme}`,async({page})=>{
+ await page.setViewportSize({width:1024,height:900});if(theme==='light')await page.getByRole('button',{name:'Use light theme',exact:true}).click();
+ const agent=page.locator('rift-ai-terminal');await agent.getByRole('button',{name:'Start session',exact:true}).click();await expect(agent.locator('.terminal-surface')).toContainText('Ready >');await agent.getByRole('button',{name:'Dock to bottom',exact:true}).click();
+ await page.getByRole('separator',{name:'Resize bottom terminal'}).press('Home');await agent.getByRole('button',{name:'Notes (0)',exact:true}).click();await expect(page.locator('.workspace')).toHaveClass(/review-open/);
+ const before=await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.input||c.start||c.stop));
+ const trigger=agent.locator('.terminal-context-menu summary');await trigger.focus();await trigger.press('Enter');await expect(trigger).toHaveAttribute('aria-expanded','true');
+ const bounds=await agent.locator('.terminal-context-actions').evaluate(el=>{const b=el.getBoundingClientRect(),p=el.closest('rift-ai-terminal')!.getBoundingClientRect();return {inside:b.left>=p.left&&b.right<=p.right&&b.top>=p.top&&b.bottom<=p.bottom,hit:[...el.querySelectorAll('button')].every(c=>{const r=c.getBoundingClientRect();return c.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));})};});
+ expect(bounds).toEqual({inside:true,hit:true});await page.screenshot({path:`/opt/data/output/riftcode/slim-dock/context-minimum-notes-${theme}.png`});
+ await page.keyboard.press('Escape');await expect(trigger).toBeFocused();await expect(trigger).toHaveAttribute('aria-expanded','false');
+ await expect(agent.locator('.terminal-identity').getByRole('status')).toHaveText('running');
+ await expect(agent.locator('.terminal-identity strong')).not.toHaveAttribute('title');
+ await expect(agent.locator('.terminal-identity')).toHaveAttribute('title',/Claude Code · Edit · running · \/fixture\/repo/);
+ for(const name of ['Close dock','Show Review in dock','Stop session','Notes (0)','Insert selected notes (0)','Copy notes','Insert selection'])await expect(agent.getByRole('button',{name,exact:true})).toHaveAttribute('title',/.+/);
+ expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.input||c.start||c.stop))).toEqual(before);
+});
+
 // Focused synthetic gallery; baseline is captured from unchanged HEAD renderer.
 for(const width of [1024,1440])for(const theme of ['dark','light'])test(`compact dock geometry ${theme} ${width}`,async({page})=>{
  const {mkdir,writeFile,readFile}=await import('node:fs/promises');
- const dir='/opt/data/output/riftcode/compact-dock';await mkdir(dir,{recursive:true});
+ const dir='/opt/data/output/riftcode/slim-dock-spaced';await mkdir(dir,{recursive:true});
  const baseline=process.env.COMPACT_BASELINE==='1',phase=baseline?'before':'after';
  await page.setViewportSize({width,height:900});if(theme==='light')await page.getByRole('button',{name:'Use light theme',exact:true}).click();
  await page.evaluate(()=>{const b=document.createElement('div');b.textContent='SYNTHETIC BRIDGE · HARMLESS FIXTURE · NO PROVIDER CALL';b.style.cssText='position:fixed;bottom:3px;left:20px;font:10px sans-serif;z-index:9999;color:#8793a0;pointer-events:none';document.body.append(b);});
@@ -1449,16 +1465,27 @@ for(const width of [1024,1440])for(const theme of ['dark','light'])test(`compact
  await review.getByRole('button',{name:'Close dock',exact:true}).click();await shot('review-normal');
  await writeFile(`${dir}/${phase}-${theme}-${width}.json`,JSON.stringify(geometry,null,2));
  if(baseline)return;
- const old={"1024": {"agent": {"dock": 480, "surface": 293, "header": 56, "strip": 53, "footer": 38}, "review": {"dock": 480, "surface": 120, "header": 56, "strip": 53, "footer": 26}}, "1440": {"agent": {"dock": 480, "surface": 293, "header": 56, "strip": 53, "footer": 38}, "review": {"dock": 480, "surface": 120, "header": 56, "strip": 53, "footer": 26}}}[String(width) as '1024'|'1440'];
- for(const slot of ['agent','review']){expect(geometry[slot].dock).toBe(old[slot].dock);expect(geometry[slot].header).toBeGreaterThanOrEqual(32);expect(geometry[slot].header).toBeLessThanOrEqual(36);expect(geometry[slot].header+geometry[slot].strip+geometry[slot].footer).toBeLessThanOrEqual(70);expect(geometry[slot].surface-old[slot].surface).toBeGreaterThanOrEqual(60);}
+ // Exact b94ee10 baseline: 34px header + 34px separate strip; 480px dock.
+ const old={agent:400,review:185};
+ for(const slot of ['agent','review']){expect(geometry[slot].dock).toBe(480);expect(geometry[slot].header).toBeGreaterThanOrEqual(30);expect(geometry[slot].header).toBeLessThanOrEqual(34);expect(geometry[slot].footer).toBe(0);expect(geometry[slot].surface-old[slot as 'agent'|'review']).toBeGreaterThanOrEqual(30);}
  await review.getByRole('button',{name:'Dock to bottom',exact:true}).click();
  for(const host of [review,agent]){
   if(host===agent)await review.getByRole('button',{name:'Show Agent in dock',exact:true}).click();
-  await expect(host.locator('.terminal-toolbar')).toHaveCSS('height','34px');
+  await expect.poll(()=>host.locator('.terminal-context-strip').evaluate(el=>el.closest('.terminal-toolbar')!==null)).toBe(true);
+  await expect(host.locator('.terminal-toolbar')).toHaveCSS('height','32px');
+  await expect(host.locator('.terminal-toolbar')).toHaveCSS('gap','8px');
+  await expect(host.locator('.terminal-toolbar')).toHaveCSS('padding','1px 4px');
+  await expect(host.locator('.terminal-actions')).toHaveCSS('gap','4px');
+  await expect(host.locator('.terminal-context-strip')).toHaveCSS('gap','4px');
+  expect(await host.locator('.terminal-context-strip').evaluate(el=>{const b=el.getBoundingClientRect(),h=el.closest('.terminal-toolbar')!.getBoundingClientRect();return b.top>=h.top&&b.bottom<=h.bottom;})).toBe(true);
   for(const notesOpen of [false,true]){
   if(notesOpen){await host.getByRole('button',{name:'Notes (0)',exact:true}).click();await expect(page.locator('.workspace')).toHaveClass(/review-open/);}
-  const bounds=await host.locator('.terminal-actions > button,.terminal-toolbar summary,.terminal-context-strip button').evaluateAll(els=>els.filter(el=>el.checkVisibility()).map(el=>{const b=el.getBoundingClientRect(),p=el.closest('rift-ai-terminal,rift-review-terminal')!.getBoundingClientRect(),r=document.createRange();r.selectNodeContents(el);const text=r.getBoundingClientRect();return {height:b.height,inside:b.x>=p.x&&b.right<=p.right&&b.y>=p.y&&b.bottom<=p.bottom,hit:el.contains(document.elementFromPoint(b.x+b.width/2,b.y+b.height/2)),text:text.x>=b.x&&text.right<=b.right};}));
-  for(const b of bounds){expect(b.height).toBe(28);expect(b.inside).toBe(true);expect(b.hit).toBe(true);expect(b.text).toBe(true);}
+  const bounds=await host.locator('.terminal-actions > button,.terminal-toolbar summary,.terminal-context-strip button').evaluateAll(els=>els.filter(el=>el.checkVisibility()).map(el=>{const b=el.getBoundingClientRect(),p=el.closest('rift-ai-terminal,rift-review-terminal')!.getBoundingClientRect(),r=document.createRange();r.selectNodeContents(el);const text=r.getBoundingClientRect();return {height:b.height,inside:b.x>=p.x&&b.right<=p.right&&b.y>=p.y&&b.bottom<=p.bottom,hit:el.contains(document.elementFromPoint(b.x+b.width/2,b.y+b.height/2)),text:(!el.textContent?.trim() || el.querySelector('.visually-hidden')) ? true : text.x>=b.x&&text.right<=b.right};}));
+  for(const b of bounds){expect(b.height).toBe(24);expect(b.inside).toBe(true);expect(b.hit).toBe(true);expect(b.text).toBe(true);}
+  for(const group of ['.terminal-actions','.terminal-context-strip']){
+   const gaps=await host.locator(group).evaluate(el=>{const boxes=[...el.children].filter(c=>c.checkVisibility()).map(c=>c.getBoundingClientRect());return boxes.slice(1).map((b,i)=>b.left-boxes[i].right);});
+   for(const gap of gaps)expect(gap).toBeGreaterThanOrEqual(4);
+  }
   if(notesOpen){await host.getByRole('button',{name:'Notes (0)',exact:true}).click();await expect(page.locator('.workspace')).not.toHaveClass(/review-open/);}
   }
  }
@@ -1469,12 +1496,17 @@ for(const width of [1024,1440])for(const theme of ['dark','light'])test(`compact
  const agent=page.locator('rift-ai-terminal'),rows=agent.locator('.xterm-rows');
  await agent.getByRole('button',{name:'Start session',exact:true}).click();await expect(agent.locator('.terminal-surface')).toContainText('Ready >');
  await expect(rows).toHaveCSS('font-size','13px');
+ const metrics=()=>agent.evaluate(el=>{const t=(window as any).ng.getComponent(el).terminal;return {font:t.options.fontSize,...t._core._renderService.dimensions.css.cell};});
+ const normalMetrics=await metrics();expect(normalMetrics.font).toBe(13);
+ const normalRow=await rows.evaluate(el=>el.firstElementChild!.getBoundingClientRect().height);
  await page.evaluate(()=>{const f=window as any;f.fontHost=document.querySelector('rift-ai-terminal');f.fontXterm=document.querySelector('rift-ai-terminal .xterm');f.fixtureAppend(Array.from({length:300},(_,i)=>`\r\nFONT-LINE-${String(i).padStart(3,'0')} ${'synthetic wrap '.repeat(15)}`).join(''));});
  await expect(rows).toContainText('FONT-LINE-299');await agent.locator('.xterm-screen').hover();await page.mouse.wheel(0,-2400);await page.waitForTimeout(200);
  const anchor=(await rows.textContent())!.match(/FONT-LINE-\d+/)![0];
- await agent.getByRole('button',{name:'Dock to bottom',exact:true}).click();await expect(rows).toHaveCSS('font-size','12px');await page.waitForTimeout(180);expect((await rows.textContent())!.match(/FONT-LINE-\d+/)![0]).toBe(anchor);
+ await agent.getByRole('button',{name:'Dock to bottom',exact:true}).click();await expect(rows).toHaveCSS('font-size','11px');expect(await rows.evaluate(el=>el.firstElementChild!.getBoundingClientRect().height)).toBeLessThan(normalRow);await page.waitForTimeout(180);expect((await rows.textContent())!.match(/FONT-LINE-\d+/)![0]).toBe(anchor);
+ const dockMetrics=await metrics();expect(dockMetrics.font).toBe(11);expect(dockMetrics.width).toBeLessThan(normalMetrics.width);expect(dockMetrics.height).toBeLessThan(normalMetrics.height);
  await page.getByRole('separator',{name:'Resize bottom terminal'}).press('ArrowUp');await page.waitForTimeout(120);expect((await rows.textContent())!.match(/FONT-LINE-\d+/)![0]).toBe(anchor);
  await agent.getByRole('button',{name:'Close dock',exact:true}).click();await expect(rows).toHaveCSS('font-size','13px');await page.waitForTimeout(180);expect((await rows.textContent())!.match(/FONT-LINE-\d+/)![0]).toBe(anchor);
+ expect(await metrics()).toEqual(normalMetrics);console.log('ACTUAL XTERM FONT/CELL',theme,width,JSON.stringify({normal:normalMetrics,docked:dockMetrics,restored:await metrics()}));
  expect(await page.evaluate(()=>{const f=window as any;return f.fontHost===document.querySelector('rift-ai-terminal')&&f.fontXterm===document.querySelector('rift-ai-terminal .xterm');})).toBe(true);
  expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.start||c.stop||c.input))).toEqual([{start:'claude',mode:'edit'}]);
 });
@@ -1485,7 +1517,7 @@ test('compact direct context buttons route selected notes and selection to each 
  await page.getByRole('button',{name:'Open review notes',exact:true}).click();await page.getByRole('button',{name:'Agent',exact:true}).click();await agent.getByRole('button',{name:'Start session',exact:true}).click();await agent.getByRole('button',{name:'Dock to bottom',exact:true}).click();
  for(const [host,slot] of [[agent,'input'],[review,'reviewInput']] as const){
   if(slot==='reviewInput'){await agent.getByRole('button',{name:'Show Review in dock',exact:true}).click();await host.getByRole('button',{name:'Start review session',exact:true}).click();await expect(host.getByRole('button',{name:'Run review',exact:true})).toBeEnabled();}
-  await expect(host.locator('.xterm-rows')).toHaveCSS('font-size','12px');
+  await expect(host.locator('.xterm-rows')).toHaveCSS('font-size','11px');
   const strip=host.locator('.terminal-context-strip');await expect(strip.getByRole('button',{name:'Notes (1)',exact:true})).toBeVisible();await strip.getByRole('button',{name:'Copy notes',exact:true}).click();await strip.getByRole('button',{name:'Insert selected notes (1)',exact:true}).click();
   await expect.poll(()=>page.evaluate(key=>(window as any).fixtureCalls.filter((c:any)=>c[key]).length,slot)).toBe(1);
   await page.locator('.diff-row.addition').first().click({button:'right'});await page.keyboard.press('Escape');await strip.getByRole('button',{name:'Insert selection',exact:true}).click();

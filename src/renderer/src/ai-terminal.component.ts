@@ -105,7 +105,7 @@ export class AiTerminalComponent implements AfterViewInit, OnDestroy {
         ? terminal.registerMarker(buffer.viewportY-buffer.baseY-buffer.cursorY) : undefined;
       try {
         // Capture the history marker before changing real cell metrics/reflow.
-        const fontSize=this.docked?12:13;
+        const fontSize=this.docked?11:13;
         if(terminal&&terminal.options.fontSize!==fontSize)terminal.options.fontSize=fontSize;
         this.fit.fit();
         if(anchor&&!anchor.isDisposed) {

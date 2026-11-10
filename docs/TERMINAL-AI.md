@@ -4,7 +4,7 @@
 
 Use **Dock ↓** in Agent or Review to keep it below the file/diff viewer. Drag the divider or focus it and use Arrow Up/Down, Home or End. Switch Terminal/Review in the dock header; both sessions remain independent. **Unpin ×** (Close dock) returns the selected pane to its original rail placement without Stop, restart or submission. File links, Explorer and checkpoint changes open above the dock. The same terminal/xterm, scrollback, draft and process are retained. See [TERMINAL-DOCKING.md](TERMINAL-DOCKING.md).
 
-While docked, Agent/Review use compact 68px shared chrome, 28px direct controls and a 12px terminal font; Unpin restores the normal 13px font and layout. Notes, Insert notes (count), Copy and Selection stay directly available. See [COMPACT-DOCK.md](COMPACT-DOCK.md) for measured before/after geometry.
+While docked, Agent/Review use one 32px toolbar with 24px direct controls, 4px button gaps / 8px group gaps and an actual 11px terminal font. Unpin restores the normal 13px font and layout. Notes/count, Insert notes/count, Copy and Selection remain directly available as compact accessible controls. See [SLIM-DOCK.md](SLIM-DOCK.md) for measured before/after geometry and actual font/cell metrics.
 
 ## Use
 

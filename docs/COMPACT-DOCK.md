@@ -1,4 +1,6 @@
-# Compact retained Agent / Review dock
+# Historical compact retained Agent / Review dock
+
+**Superseded:** the 68px two-row milestone below is historical. The current user request and 32px single-bar implementation are documented in [SLIM-DOCK.md](SLIM-DOCK.md). Measurements and package references below belong to that earlier milestone, not the current renderer.
 
 Unreleased **0.8.0**, existing PR #4 only. Baseline renderer: `868fd936a67cf084bb5a4dfc1f71f519e80c6030`. No backend, IPC, provider argument, credential, account, packaging, commit or push changes.
 
