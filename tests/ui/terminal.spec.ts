@@ -81,28 +81,25 @@ test('Agent label preserves the prompt icon and upright Notes Agent Review rail'
  await expect(page.locator('rift-ai-terminal .terminal-identity strong')).toHaveText('Agent');
 });
 
-test('selection destination label follows active docked Review and Agent without submitting',async({page})=>{
+test('selection destination follows full Review and docked Agent without submitting',async({page})=>{
  const agent=page.locator('rift-ai-terminal'),review=page.locator('rift-review-terminal');
  await agent.getByRole('button',{name:'Start session',exact:true}).click();
- await page.getByRole('button',{name:'Open code review',exact:true}).click();
- await expect(review.getByRole('region',{name:'Review context',exact:true})).toBeVisible();
- await expect(review.getByRole('combobox',{name:'Review provider',exact:true})).toBeVisible();
+ await agent.getByRole('button',{name:'Dock to bottom',exact:true}).click();
+ await page.locator('.diff-row.addition').first().click({button:'right'});await page.keyboard.press('Escape');
+ await agent.getByRole('button',{name:'Open Review',exact:true}).click();
  await review.getByRole('button',{name:'Start review session',exact:true}).click();
- await review.getByRole('button',{name:'Dock to bottom',exact:true}).click();
  await expect(review.locator('.terminal-surface')).toContainText('Ready >');
- await page.locator('.diff-row.addition').first().click({button:'right'});
- const reviewInsert=page.getByRole('menuitem',{name:'Insert selection in Review'});
- await expect(reviewInsert).toContainText('Context only — no Enter');await reviewInsert.click();
+ await review.getByRole('button',{name:'Insert selection',exact:true}).click();
  const text='Location: src/changed.ts:2-2\nSelected diff:\n```diff\n+new\n```';
  await expect.poll(()=>page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.reviewInput))).toEqual([{reviewInput:text,paste:true}]);
- await review.getByRole('button',{name:'Show Agent in dock',exact:true}).click();
+ await page.getByRole('button',{name:'Agent',exact:true}).click();
  await page.locator('.diff-row.addition').first().click({button:'right'});
  await page.getByRole('menuitem',{name:'Insert selection in Agent'}).click();
  await expect.poll(()=>page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.input))).toEqual([{input:text,paste:true}]);
  expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.start||c.reviewStart||c.stop||c.reviewStop||c.input||c.reviewInput||c.reviewSubmit))).toEqual([{start:'claude',mode:'edit'},{reviewStart:'claude',mode:'review'},{reviewInput:text,paste:true},{input:text,paste:true}]);
 });
 
-test('notes destination label follows active docked Review and Agent without submitting',async({page})=>{
+test('notes destination follows full Review and docked Agent without submitting',async({page})=>{
  const agent=page.locator('rift-ai-terminal'),review=page.locator('rift-review-terminal');
  await agent.getByRole('button',{name:'Back to code',exact:true}).click();
  await page.locator('.diff-row.addition').first().click({button:'right'});
@@ -115,7 +112,6 @@ test('notes destination label follows active docked Review and Agent without sub
  await agent.getByRole('button',{name:'Start session',exact:true}).click();
  await page.getByRole('button',{name:'Open code review',exact:true}).click();
  await review.getByRole('button',{name:'Start review session',exact:true}).click();
- await review.getByRole('button',{name:'Dock to bottom',exact:true}).click();
  await expect(review.locator('.terminal-surface')).toContainText('Ready >');
  const reviewInsert=page.getByRole('button',{name:'Insert 1 in Review',exact:true});
  await expect(reviewInsert).toBeVisible();await reviewInsert.click();
@@ -123,21 +119,22 @@ test('notes destination label follows active docked Review and Agent without sub
  const text=await page.evaluate(()=>(window as any).fixtureCalls.find((c:any)=>c.reviewInput).reviewInput);
  expect(text).toContain('Check destination routing.');expect(text).toContain('src/changed.ts');
  expect(text.endsWith('\r')).toBe(false);expect(text).not.toContain('\x1b');
- await review.getByRole('button',{name:'Show Agent in dock',exact:true}).click();
+ await page.getByRole('button',{name:'Agent',exact:true}).click();
  await page.getByRole('button',{name:'Insert 1 in Agent',exact:true}).click();
  await expect.poll(()=>page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.input))).toEqual([{input:text,paste:true}]);
  expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.start||c.reviewStart||c.stop||c.reviewStop||c.input||c.reviewInput||c.reviewSubmit))).toEqual([{start:'claude',mode:'edit'},{reviewStart:'claude',mode:'review'},{reviewInput:text,paste:true},{input:text,paste:true}]);
 });
 
-test('Agent dock tooltip and Review switch name match their retained surfaces',async({page})=>{
+test('Agent dock offers Open Review in the full workspace with no Review dock action',async({page})=>{
  const agent=page.locator('rift-ai-terminal');
  await expect(agent.getByRole('button',{name:'Dock to bottom',exact:true})).toHaveAttribute('title','Dock agent');
  await agent.getByRole('button',{name:'Dock to bottom',exact:true}).click();
- await agent.getByRole('button',{name:'Show Review in dock',exact:true}).click();
+ await agent.getByRole('button',{name:'Open Review',exact:true}).click();
  const review=page.locator('rift-review-terminal');
- await expect(review.getByRole('button',{name:'Show Agent in dock',exact:true})).toHaveText('Agent');
- await review.getByRole('button',{name:'Close dock',exact:true}).click();
- await expect(review.getByRole('button',{name:'Dock to bottom',exact:true})).toHaveAttribute('title','Dock review');
+ await expect(review.getByRole('button',{name:'Dock to bottom',exact:true})).toHaveCount(0);
+ await expect(page.locator('.workspace')).not.toHaveClass(/terminal-docked/);
+ await page.getByRole('button',{name:'Agent',exact:true}).click();
+ await expect(page.locator('.workspace')).toHaveClass(/terminal-docked/);
  expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.start||c.reviewStart||c.stop||c.reviewStop||c.input||c.reviewInput))).toEqual([]);
 });
 
@@ -152,9 +149,9 @@ test('Agent selection insertion and accessible context labels retain context wit
  await insert.click();
  await expect(agent.getByRole('textbox',{name:'Pending agent context',exact:true})).toHaveValue(/Selected diff/);
  await agent.getByRole('button',{name:'Dock to bottom',exact:true}).click();
- await agent.getByRole('button',{name:'Show Review in dock',exact:true}).click();
- await page.locator('.diff-row.addition').first().click({button:'right'});
- await page.getByRole('menuitem',{name:'Insert selection in Review'}).click();
+ await page.locator('.diff-row.addition').first().click({button:'right'});await page.keyboard.press('Escape');
+ await agent.getByRole('button',{name:'Open Review',exact:true}).click();
+ await page.locator('rift-review-terminal').getByRole('button',{name:'Insert selection',exact:true}).click();
  await expect(page.locator('rift-review-terminal').getByRole('textbox',{name:'Pending review context',exact:true})).toHaveValue(/Selected diff/);
  expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.start||c.reviewStart||c.stop||c.reviewStop||c.input||c.reviewInput||c.reviewSubmit))).toEqual([]);
 });
@@ -169,10 +166,11 @@ for(const width of [1024,1440])for(const theme of ['dark','light'])test(`Agent l
  await expect(agent.getByTitle('Dock agent',{exact:true})).toBeVisible();await shot('rail');
  await agent.getByRole('button',{name:'Start session',exact:true}).click();
  await agent.getByTitle('Dock agent',{exact:true}).click();await shot('agent-docked');
- await agent.getByRole('button',{name:'Show Review in dock',exact:true}).click();
+ await agent.getByRole('button',{name:'Open Review',exact:true}).click();
  const review=page.locator('rift-review-terminal');
- await expect(review.getByRole('button',{name:'Show Agent in dock',exact:true})).toHaveText('Agent');
- await shot('review-docked');
+ await expect(page.getByRole('button',{name:'Agent',exact:true})).toBeVisible();
+ await expect(page.locator('.workspace')).not.toHaveClass(/terminal-docked/);
+ await shot('review-full-workspace');
 });
 
 test('bottom docking retains the live terminal and closing returns original placement',async({page})=>{
@@ -198,17 +196,17 @@ test('docked Review switches independent retained surfaces while a request is pe
  await expect(review.getByRole('button',{name:'Run review',exact:true})).toBeEnabled();
  await page.evaluate(()=>{const f=window as any;f.reviewHost=document.querySelector('rift-review-terminal');f.reviewXterm=document.querySelector('rift-review-terminal .xterm');f.rift.terminalSubmitReview=()=>new Promise(resolve=>f.finishDockedReview=resolve);});
  await review.getByRole('button',{name:'Run review',exact:true}).click();
- await review.getByRole('button',{name:'Dock to bottom',exact:true}).click();
- await review.getByRole('button',{name:'Show Agent in dock',exact:true}).click();
+ await page.getByRole('button',{name:'Agent',exact:true}).click();
+ await page.locator('rift-ai-terminal').getByRole('button',{name:'Dock to bottom',exact:true}).click();
  await expect(page.locator('rift-ai-terminal .terminal-status')).toHaveText('running');
- await page.locator('rift-ai-terminal').getByRole('button',{name:'Show Review in dock',exact:true}).click();
+ await page.locator('rift-ai-terminal').getByRole('button',{name:'Open Review',exact:true}).click();
  await expect(review.getByRole('button',{name:'Sending…',exact:true})).toBeDisabled();
  await page.evaluate(()=>(window as any).finishDockedReview());
  await expect(review.getByText('Request sent',{exact:true})).toBeVisible();
  const reference=review.locator('.xterm-screen');await reference.click({position:{x:95,y:22},modifiers:['Control']});
  await expect(page.locator('.source-target')).toContainText('line12');
- await expect(review).toBeVisible();await expect(page.locator('.workspace')).toHaveClass(/terminal-docked/);await expect(page.locator('.workspace')).not.toHaveClass(/review-open/);
- await review.getByRole('button',{name:'Close dock',exact:true}).click();
+ await expect(review).toBeHidden();await expect(page.locator('.workspace')).not.toHaveClass(/terminal-docked/);await expect(page.locator('.workspace')).not.toHaveClass(/review-open/);
+ await page.getByRole('button',{name:'Open code review',exact:true}).click();
  await review.getByRole('button',{name:'Edit review brief',exact:true}).click();
  await expect(review.getByRole('textbox',{name:'Review instructions'})).toHaveValue('Keep this review draft');
  expect(await page.evaluate(()=>{const f=window as any;return f.reviewHost===document.querySelector('rift-review-terminal')&&f.reviewXterm===document.querySelector('rift-review-terminal .xterm');})).toBe(true);
@@ -231,14 +229,14 @@ for(const width of [1024,1440])for(const theme of ['dark','light'])test(`docked 
  await page.setViewportSize({width,height:600});await expect.poll(async()=>{const f=(await page.locator('.diff-panel').boundingBox())!,t=(await terminal.boundingBox())!;return f.height>=145&&t.height>=220&&t.y+t.height<=570;}).toBe(true);
  await page.setViewportSize({width,height:900});await expect(separator).toHaveAttribute('aria-valuenow','280');await separator.press('ArrowUp');await expect.poll(async()=>(await terminal.boundingBox())!.height).toBe(300);
  const remembered=(await terminal.boundingBox())!.height;await page.getByRole('button',{name:'Close dock',exact:true}).click();await shot('closed');await page.getByRole('button',{name:'Dock to bottom',exact:true}).click();await expect.poll(async()=>(await terminal.boundingBox())!.height).toBe(remembered);
- await page.getByRole('button',{name:'Open code review',exact:true}).click();const review=page.locator('rift-review-terminal');await review.getByRole('button',{name:'Start review session',exact:true}).click();await review.getByRole('button',{name:'Run review',exact:true}).click();await expect(review.getByText('Request sent',{exact:true})).toBeVisible();await separator.press('End');await shot('review');
+ await page.getByRole('button',{name:'Open code review',exact:true}).click();const review=page.locator('rift-review-terminal');await review.getByRole('button',{name:'Start review session',exact:true}).click();await review.getByRole('button',{name:'Run review',exact:true}).click();await expect(review.getByText('Request sent',{exact:true})).toBeVisible();await expect(separator).toHaveCount(0);await shot('review-full-workspace');
  expect((await review.locator('.terminal-surface').boundingBox())!.height).toBeGreaterThanOrEqual(120);
  await page.getByRole('button',{name:'Open review notes',exact:true}).click();await shot('review-notes');
- const file=(await page.locator('.diff-panel').boundingBox())!,pane=(await review.boundingBox())!;expect(file.y+file.height).toBeLessThanOrEqual(pane.y);expect(file.height).toBeGreaterThanOrEqual(180);
+ await expect(page.locator('.diff-panel')).toHaveCount(0);expect((await review.boundingBox())!.height).toBeGreaterThan(700);
 });
 
-test('docked Review launcher and expanded brief keep controls reachable inside the lower pane',async({page})=>{
- await page.setViewportSize({width:1024,height:900});await page.getByRole('button',{name:'Open code review',exact:true}).click();const review=page.locator('rift-review-terminal');await review.getByRole('button',{name:'Dock to bottom',exact:true}).click();
+test('full Review launcher and expanded brief keep controls reachable without docking',async({page})=>{
+ await page.setViewportSize({width:1024,height:900});await page.getByRole('button',{name:'Open code review',exact:true}).click();const review=page.locator('rift-review-terminal');
  const start=review.getByRole('button',{name:'Start review session',exact:true});await expect(start).toBeVisible();
  expect(await start.evaluate(el=>{const b=el.getBoundingClientRect();return el.contains(document.elementFromPoint(b.x+b.width/2,b.y+b.height/2));})).toBe(true);
  await start.click();await expect(review.getByRole('button',{name:'Run review',exact:true})).toBeEnabled();
@@ -318,9 +316,9 @@ test('dedicated review workbench runs scoped review and follow-up without replac
  await run.click();
  const sends=await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.reviewSubmit));
  expect(sends).toHaveLength(1);await expect(workbench.getByText('Last sent request', {exact:true})).toBeVisible();await workbench.getByText('Last sent request', {exact:true}).click();await expect(workbench.locator('.review-request-snapshot pre')).toContainText('Scope: current file');expect(sends[0].text).toContain('Scope: current file');expect(sends[0].text).toContain('src/changed.ts');expect(sends[0].text).toContain('Start revision: HEAD');expect(sends[0].text).toContain('Check error handling');
- await workbench.getByRole('textbox',{name:'Review follow-up'}).fill('Explain the boundary case');
- await workbench.getByRole('button',{name:'Send follow-up',exact:true}).click();
- expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.reviewSubmit).map((c:any)=>c.text))).toEqual([sends[0].text,'Explain the boundary case']);
+ await workbench.locator('.xterm-helper-textarea').focus();await page.keyboard.type('Explain the boundary case');await page.keyboard.press('Enter');
+ await expect.poll(()=>page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.reviewInput).map((c:any)=>c.reviewInput).join(''))).toBe('Explain the boundary case\r');
+ expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.reviewSubmit).map((c:any)=>c.text))).toEqual([sends[0].text]);
  await workbench.getByRole('button',{name:'Stop session',exact:true}).click();
  await page.getByRole('button',{name:'Agent',exact:true}).click();
  await expect(page.locator('rift-ai-terminal .terminal-status')).toHaveText('running');
@@ -347,7 +345,7 @@ for(const width of [1024,1440])for(const theme of ['dark','light'])test(`review 
  await review.getByRole('button',{name:'Resume existing',exact:true}).click();await review.getByRole('listbox',{name:'Provider session',exact:true}).getByRole('option').first().click();await reachable(review.getByRole('button',{name:'Resume review session',exact:true}));await shot('review-resume-notes');
  await review.getByRole('button',{name:'Resume review session',exact:true}).click();const run=review.getByRole('button',{name:'Run review',exact:true});await expect(run).toBeEnabled();await reachable(run);await shot('review-ready-notes');await run.click();
  const submits=await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.reviewSubmit));expect(submits).toHaveLength(1);expect(submits[0].text).toContain('Scope: selected notes');expect(submits[0].text).toContain('Check the error boundary');expect(submits[0].text).toContain('Prioritize regressions');
- await review.getByRole('textbox',{name:'Review follow-up'}).fill('Explain the highest priority finding.');await reachable(review.getByRole('button',{name:'Send follow-up',exact:true}));await shot('review-follow-up-notes');await review.getByRole('button',{name:'Send follow-up',exact:true}).click();
+ await review.locator('.xterm-helper-textarea').focus();await page.keyboard.type('Explain the highest priority finding.');await page.keyboard.press('Enter');await shot('review-native-input-notes');
  await page.getByRole('button',{name:'Open review notes',exact:true}).click();await shot('review-notes-closed');
  expect(await page.locator('.review-rail small').first().evaluate(el=>({writing:getComputedStyle(el).writingMode,orientation:getComputedStyle(el).textOrientation}))).toEqual({writing:'vertical-rl',orientation:'upright'});
  await page.getByRole('button',{name:'Agent',exact:true}).click();await expect(page.locator('rift-ai-terminal .terminal-status')).toHaveText('running');
@@ -415,7 +413,7 @@ test('accepted review brief collapses for output and reopens without submitting 
  await expect.poll(async()=>(await review.locator('.terminal-surface').boundingBox())!.height).toBeGreaterThanOrEqual(280);
  expect((await review.locator('.terminal-surface').boundingBox())!.height-before).toBeGreaterThan(140);
  await expect(review.locator('.review-brief')).toContainText('Current file');await expect(review.locator('.review-brief')).toContainText('Honest');
- for(const button of [edit,review.getByRole('button',{name:'Rerun review',exact:true}),review.getByRole('button',{name:'Send follow-up',exact:true})])expect(await button.evaluate(el=>{const r=el.getBoundingClientRect();return r.bottom<=innerHeight&&el.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));})).toBe(true);
+ for(const button of [edit,review.getByRole('button',{name:'Rerun review',exact:true})])expect(await button.evaluate(el=>{const r=el.getBoundingClientRect();return r.bottom<=innerHeight&&el.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));})).toBe(true);
  const snapshot=await review.locator('.review-request-snapshot pre').textContent();await edit.click();await expect(edit).toHaveAttribute('aria-expanded','true');await review.getByRole('textbox',{name:'Review instructions'}).fill('Changed draft');await expect(review.locator('.review-request-snapshot pre')).toHaveText(snapshot!);
  await review.getByRole('button',{name:'Collapse review brief',exact:true}).click();expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.reviewSubmit))).toHaveLength(1);
  await review.getByText('Last sent request',{exact:true}).click();await expect(review.locator('.review-request-snapshot pre')).toBeVisible();
@@ -442,18 +440,18 @@ for(const provider of ['claude','opencode','codex'])test(`actual harmless PTY pa
   await expect.poll(async()=>Buffer.from(await fixture.bytes()).toString('hex')).toBe(Buffer.from(contextPaste(request!)+'\r').toString('hex'));
   const reviewer=fixture.workspace.review.read(null,0).state!;
   const editPid=Number(fixture.workspace.terminal.read(edit.id,0).data.match(/PID=(\d+)/)![1]),reviewPid=Number(fixture.workspace.review.read(reviewer.id,0).data.match(/PID=(\d+)/)![1]);expect(editPid).not.toBe(reviewPid);
-  await review.getByRole('button',{name:'Dock to bottom',exact:true}).click();
-  await expect(review.locator('.xterm-rows')).toHaveCSS('font-size','11px');
-  await review.getByRole('button',{name:'Show Agent in dock',exact:true}).click();
+  await expect(review.locator('.xterm-rows')).toHaveCSS('font-size','13px');
+  await page.getByRole('button',{name:'Agent',exact:true}).click();
+  await page.locator('rift-ai-terminal').getByRole('button',{name:'Dock to bottom',exact:true}).click();
   await expect(page.locator('rift-ai-terminal .xterm-rows')).toHaveCSS('font-size','11px');
   await page.getByRole('separator',{name:'Resize bottom terminal'}).press('ArrowUp');
-  await page.locator('rift-ai-terminal').getByRole('button',{name:'Show Review in dock',exact:true}).click();
-  await review.getByRole('button',{name:'Close dock',exact:true}).click();
+  await page.locator('rift-ai-terminal').getByRole('button',{name:'Open Review',exact:true}).click();
+  await page.getByRole('button',{name:'Open code review',exact:true}).click();
   await expect(review.locator('.xterm-rows')).toHaveCSS('font-size','13px');
   expect(fixture.workspace.terminal.read(edit.id,0).state).toEqual(edit);expect(fixture.workspace.review.read(reviewer.id,0).state).toEqual(reviewer);process.kill(editPid,0);process.kill(reviewPid,0);
   expect(Buffer.from(await fixture.bytes()).toString('hex')).toBe(Buffer.from(contextPaste(request!)+'\r').toString('hex'));
-  await review.getByRole('textbox',{name:'Review follow-up'}).fill('Explain src/changed.ts:2');await review.getByRole('button',{name:'Send follow-up',exact:true}).click();
-  await expect.poll(async()=>Buffer.from(await fixture.bytes()).toString('hex')).toBe(Buffer.from(contextPaste(request!)+'\r'+contextPaste('Explain src/changed.ts:2')+'\r').toString('hex'));
+  await review.locator('.xterm-helper-textarea').focus();await page.keyboard.type('Explain src/changed.ts:2');await page.keyboard.press('Enter');
+  await expect.poll(async()=>Buffer.from(await fixture.bytes()).toString('hex')).toBe(Buffer.from(contextPaste(request!)+'\r'+'Explain src/changed.ts:2'+'\r').toString('hex'));
   await expect.poll(()=>fixture.requests()).toEqual([request,'Explain src/changed.ts:2']);
   await expect(review.locator('.terminal-surface')).toContainText('REQUEST_ACCEPTED=2');
   expect(fixture.workspace.terminal.read(edit.id,0).state?.id).toBe(edit.id);expect(fixture.starts).toEqual([{slot:'terminal',mode:'edit'},{slot:'review',mode:'review'}]);
@@ -462,7 +460,7 @@ for(const provider of ['claude','opencode','codex'])test(`actual harmless PTY pa
  }finally{await fixture.cleanup();}
 });
 
-test('review waits for explicit CLI readiness and preserves follow-up on uncertain submit without automatic retry',async({page})=>{
+test('review waits for explicit CLI readiness and preserves prepared instructions on uncertain submit without automatic retry',async({page})=>{
  await page.getByRole('button',{name:'Open code review',exact:true}).click();const review=page.getByRole('region',{name:'Code review workbench'});
  await page.evaluate(()=>{const f=window as any,read=f.rift.terminalRead;f.reviewInputReady=false;f.rift.terminalRead=async(id:string|null,cursor:number,slot?:string)=>{const result=await read(id,cursor,slot);if(slot==='review'&&result.state){const text=f.reviewInputReady?'\x1b[?2004hReady > ':'Trust this repository? > ';return {...result,data:text.slice(cursor),cursor:text.length};}return result;};});
  await review.getByRole('button',{name:'Start review session',exact:true}).click();await expect(review.locator('.terminal-status')).toHaveText('running');
@@ -472,9 +470,9 @@ test('review waits for explicit CLI readiness and preserves follow-up on uncerta
  // A real CLI appends readiness; reset the synthetic cursor to send the complete sequence.
  await page.evaluate(()=>{const f=window as any,read=f.rift.terminalRead;let delivered=false;f.rift.terminalRead=async(id:string|null,cursor:number,slot?:string)=>{const result=await read(id,cursor,slot);if(slot==='review'&&!delivered){delivered=true;return {...result,data:'\x1b[?2004hReady > '};}return result;};});
  await expect(review.getByRole('button',{name:'Run review',exact:true})).toBeEnabled();
- await review.getByRole('textbox',{name:'Review follow-up'}).fill('Keep this draft if writing fails');
+ await review.getByRole('textbox',{name:'Review instructions'}).fill('Keep this draft if writing fails');
  await page.evaluate(()=>{const f=window as any;f.failedReviewSends=0;f.rift.terminalSubmitReview=async()=>{f.failedReviewSends++;throw new Error('PTY write failed; submission is uncertain. Inspect the CLI before retrying.');};});
- await review.getByRole('button',{name:'Send follow-up',exact:true}).click();await expect(review.getByRole('alert')).toContainText('uncertain');await expect(review.getByRole('textbox',{name:'Review follow-up'})).toHaveValue('Keep this draft if writing fails');
+ await review.getByRole('button',{name:'Run review',exact:true}).click();await expect(review.getByRole('alert')).toContainText('uncertain');await expect(review.getByRole('textbox',{name:'Review instructions'})).toHaveValue('Keep this draft if writing fails');
  await page.getByRole('button',{name:'Agent',exact:true}).click();await page.getByRole('button',{name:'Open code review',exact:true}).click();expect(await page.evaluate(()=>(window as any).failedReviewSends)).toBe(1);
 });
 
@@ -638,7 +636,10 @@ test('repository opening uses semantic workspace skeletons and releases immediat
  await page.reload();
  await expect(page.getByRole('status',{name:'Opening repository'})).toBeVisible();
  await page.evaluate(()=>(window as any).failRepo(new Error('Fixture repository unavailable')));
- await expect(page.getByRole('alert')).toContainText('Fixture repository unavailable');
+ await expect(page.getByRole('alert')).toContainText('Could not open the repository');
+ await expect(page.getByText('Fixture repository unavailable',{exact:true})).toBeHidden();
+ await page.getByText('Technical details',{exact:true}).click();
+ await expect(page.getByText('Fixture repository unavailable',{exact:true})).toBeVisible();
  await page.getByRole('button',{name:'Retry',exact:true}).click();
  await expect(page.getByRole('status',{name:'Opening repository'})).toBeVisible();
  await page.evaluate(()=>(window as any).openRepo());
@@ -906,6 +907,9 @@ test('late stop cannot clear a replacement start in another repository',async({p
  await page.getByRole('button',{name:'terminal-fixture',exact:true}).click();
  await page.getByRole('button',{name:/^(Start|Resume) session$/,exact:true}).click();
  await expect(page.locator('rift-ai-terminal .terminal-status')).toHaveText('Starting');
+ // Starting is rendered before the two-frame native geometry prerequisite finishes.
+ // Wait for the substituted native call itself, not just its earlier UI state.
+ await expect.poll(()=>page.evaluate(()=>typeof (window as any).finishStart)).toBe('function');
  await page.evaluate(()=>(window as any).finishStart());
  await expect(page.locator('rift-ai-terminal .terminal-status')).toHaveText('running');
  await page.evaluate(()=>(window as any).finishStop());
@@ -1444,7 +1448,7 @@ for(const theme of ['dark','light'])test(`slim dock Context keyboard menu stays 
  await expect(agent.locator('.terminal-identity').getByRole('status')).toHaveText('running');
  await expect(agent.locator('.terminal-identity strong')).not.toHaveAttribute('title');
  await expect(agent.locator('.terminal-identity')).toHaveAttribute('title',/Claude Code · Edit · running · \/fixture\/repo/);
- for(const name of ['Close dock','Show Review in dock','Stop session','Notes (0)','Insert selected notes (0)','Copy notes','Insert selection'])await expect(agent.getByRole('button',{name,exact:true})).toHaveAttribute('title',/.+/);
+ for(const name of ['Close dock','Open Review','Stop session','Notes (0)','Insert selected notes (0)','Copy notes','Insert selection'])await expect(agent.getByRole('button',{name,exact:true})).toHaveAttribute('title',/.+/);
  expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.input||c.start||c.stop))).toEqual(before);
 });
 
@@ -1461,16 +1465,17 @@ for(const width of [1024,1440])for(const theme of ['dark','light'])test(`compact
  await agent.getByRole('button',{name:'Dock to bottom',exact:true}).click();await shot('agent-docked');
  const measure=async(host:any)=>host.evaluate((el:HTMLElement)=>{const rect=(s:string)=>el.querySelector(s)!.getBoundingClientRect();return {dock:el.getBoundingClientRect().height,surface:rect('.terminal-surface').height,header:rect('.terminal-toolbar').height,strip:rect('.terminal-context-strip').height,footer:rect('.terminal-footer').height};});
  const geometry:any={agent:await measure(agent)};
- await agent.getByRole('button',{name:'Show Review in dock',exact:true}).click();await review.getByRole('textbox',{name:'Review instructions'}).fill('Synthetic boundary review');await review.getByRole('button',{name:'Start review session',exact:true}).click();await expect(review.getByRole('button',{name:'Run review',exact:true})).toBeEnabled();await review.getByRole('button',{name:'Run review',exact:true}).click();await expect(review.getByText('Request sent',{exact:true})).toBeVisible();await shot('review-docked');geometry.review=await measure(review);
- await review.getByRole('button',{name:'Close dock',exact:true}).click();await shot('review-normal');
+ await agent.getByRole('button',{name:'Open Review',exact:true}).click();await review.getByRole('textbox',{name:'Review instructions'}).fill('Synthetic boundary review');await review.getByRole('button',{name:'Start review session',exact:true}).click();await expect(review.getByRole('button',{name:'Run review',exact:true})).toBeEnabled();await review.getByRole('button',{name:'Run review',exact:true}).click();await expect(review.getByText('Request sent',{exact:true})).toBeVisible();await shot('review-full-workspace');geometry.review=await measure(review);
+ await page.getByRole('button',{name:'Open code review',exact:true}).click();await shot('review-normal');
  await writeFile(`${dir}/${phase}-${theme}-${width}.json`,JSON.stringify(geometry,null,2));
  if(baseline)return;
  // Exact b94ee10 baseline: 34px header + 34px separate strip; 480px dock.
  const old={agent:400,review:185};
- for(const slot of ['agent','review']){expect(geometry[slot].dock).toBe(480);expect(geometry[slot].header).toBeGreaterThanOrEqual(30);expect(geometry[slot].header).toBeLessThanOrEqual(34);expect(geometry[slot].footer).toBe(0);expect(geometry[slot].surface-old[slot as 'agent'|'review']).toBeGreaterThanOrEqual(30);}
- await review.getByRole('button',{name:'Dock to bottom',exact:true}).click();
- for(const host of [review,agent]){
-  if(host===agent)await review.getByRole('button',{name:'Show Agent in dock',exact:true}).click();
+ for(const slot of ['agent']){expect(geometry[slot].dock).toBe(480);expect(geometry[slot].header).toBeGreaterThanOrEqual(30);expect(geometry[slot].header).toBeLessThanOrEqual(34);expect(geometry[slot].footer).toBe(0);expect(geometry[slot].surface-old[slot as 'agent'|'review']).toBeGreaterThanOrEqual(30);}
+ await expect(review.getByRole('button',{name:'Dock to bottom',exact:true})).toHaveCount(0);
+ await expect(review.locator('.xterm-rows')).toHaveCSS('font-size','13px');
+ await page.getByRole('button',{name:'Agent',exact:true}).click();
+ for(const host of [agent]){
   await expect.poll(()=>host.locator('.terminal-context-strip').evaluate(el=>el.closest('.terminal-toolbar')!==null)).toBe(true);
   await expect(host.locator('.terminal-toolbar')).toHaveCSS('height','32px');
   await expect(host.locator('.terminal-toolbar')).toHaveCSS('gap','8px');
@@ -1494,18 +1499,23 @@ for(const width of [1024,1440])for(const theme of ['dark','light'])test(`compact
 for(const width of [1024,1440])for(const theme of ['dark','light'])test(`compact dock font changes actual xterm metrics and restores normal font and exact reflow anchor without session writes ${theme} ${width}`,async({page})=>{
  await page.setViewportSize({width,height:900});if(theme==='light')await page.getByRole('button',{name:'Use light theme',exact:true}).click();
  const agent=page.locator('rift-ai-terminal'),rows=agent.locator('.xterm-rows');
+ // xterm restores the buffer synchronously but paints its DOM on a later frame.
+ // Await committed rendering, not only a wall-clock delay under CPU contention.
+ const rendered=()=>page.evaluate(()=>new Promise<void>(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve()))));
  await agent.getByRole('button',{name:'Start session',exact:true}).click();await expect(agent.locator('.terminal-surface')).toContainText('Ready >');
  await expect(rows).toHaveCSS('font-size','13px');
  const metrics=()=>agent.evaluate(el=>{const t=(window as any).ng.getComponent(el).terminal;return {font:t.options.fontSize,...t._core._renderService.dimensions.css.cell};});
  const normalMetrics=await metrics();expect(normalMetrics.font).toBe(13);
  const normalRow=await rows.evaluate(el=>el.firstElementChild!.getBoundingClientRect().height);
  await page.evaluate(()=>{const f=window as any;f.fontHost=document.querySelector('rift-ai-terminal');f.fontXterm=document.querySelector('rift-ai-terminal .xterm');f.fixtureAppend(Array.from({length:300},(_,i)=>`\r\nFONT-LINE-${String(i).padStart(3,'0')} ${'synthetic wrap '.repeat(15)}`).join(''));});
- await expect(rows).toContainText('FONT-LINE-299');await agent.locator('.xterm-screen').hover();await page.mouse.wheel(0,-2400);await page.waitForTimeout(200);
+ await expect(rows).toContainText('FONT-LINE-299');await agent.locator('.xterm-screen').hover();await page.mouse.wheel(0,-2400);await page.waitForTimeout(200);await rendered();
  const anchor=(await rows.textContent())!.match(/FONT-LINE-\d+/)![0];
- await agent.getByRole('button',{name:'Dock to bottom',exact:true}).click();await expect(rows).toHaveCSS('font-size','11px');expect(await rows.evaluate(el=>el.firstElementChild!.getBoundingClientRect().height)).toBeLessThan(normalRow);await page.waitForTimeout(180);expect((await rows.textContent())!.match(/FONT-LINE-\d+/)![0]).toBe(anchor);
+ await agent.getByRole('button',{name:'Dock to bottom',exact:true}).click();await expect(rows).toHaveCSS('font-size','11px');expect(await rows.evaluate(el=>el.firstElementChild!.getBoundingClientRect().height)).toBeLessThan(normalRow);await page.waitForTimeout(180);await rendered();expect((await rows.textContent())!.match(/FONT-LINE-\d+/)![0]).toBe(anchor);
  const dockMetrics=await metrics();expect(dockMetrics.font).toBe(11);expect(dockMetrics.width).toBeLessThan(normalMetrics.width);expect(dockMetrics.height).toBeLessThan(normalMetrics.height);
- await page.getByRole('separator',{name:'Resize bottom terminal'}).press('ArrowUp');await page.waitForTimeout(120);expect((await rows.textContent())!.match(/FONT-LINE-\d+/)![0]).toBe(anchor);
- await agent.getByRole('button',{name:'Close dock',exact:true}).click();await expect(rows).toHaveCSS('font-size','13px');await page.waitForTimeout(180);expect((await rows.textContent())!.match(/FONT-LINE-\d+/)![0]).toBe(anchor);
+ const dockViewport=await agent.evaluate(el=>(window as any).ng.getComponent(el).terminal.buffer.active.viewportY);
+ await page.getByRole('separator',{name:'Resize bottom terminal'}).press('ArrowUp');await page.waitForTimeout(120);await rendered();expect((await rows.textContent())!.match(/FONT-LINE-\d+/)![0]).toBe(anchor);
+ expect(await agent.evaluate(el=>(window as any).ng.getComponent(el).terminal.buffer.active.viewportY)).toBe(dockViewport);
+ await agent.getByRole('button',{name:'Close dock',exact:true}).click();await expect(rows).toHaveCSS('font-size','13px');await page.waitForTimeout(180);await rendered();expect((await rows.textContent())!.match(/FONT-LINE-\d+/)![0]).toBe(anchor);
  expect(await metrics()).toEqual(normalMetrics);console.log('ACTUAL XTERM FONT/CELL',theme,width,JSON.stringify({normal:normalMetrics,docked:dockMetrics,restored:await metrics()}));
  expect(await page.evaluate(()=>{const f=window as any;return f.fontHost===document.querySelector('rift-ai-terminal')&&f.fontXterm===document.querySelector('rift-ai-terminal .xterm');})).toBe(true);
  expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.start||c.stop||c.input))).toEqual([{start:'claude',mode:'edit'}]);
@@ -1516,15 +1526,308 @@ test('compact direct context buttons route selected notes and selection to each 
  await agent.getByRole('button',{name:'Back to code',exact:true}).click();await page.locator('.diff-row.addition').first().click({button:'right'});await page.getByRole('menuitem',{name:'Add note'}).click();await page.getByRole('textbox',{name:'Review note',exact:true}).fill('Synthetic compact context');await page.getByRole('button',{name:'Add note',exact:true}).click();await page.getByRole('checkbox',{name:'Select note',exact:true}).check();
  await page.getByRole('button',{name:'Open review notes',exact:true}).click();await page.getByRole('button',{name:'Agent',exact:true}).click();await agent.getByRole('button',{name:'Start session',exact:true}).click();await agent.getByRole('button',{name:'Dock to bottom',exact:true}).click();
  for(const [host,slot] of [[agent,'input'],[review,'reviewInput']] as const){
-  if(slot==='reviewInput'){await agent.getByRole('button',{name:'Show Review in dock',exact:true}).click();await host.getByRole('button',{name:'Start review session',exact:true}).click();await expect(host.getByRole('button',{name:'Run review',exact:true})).toBeEnabled();}
-  await expect(host.locator('.xterm-rows')).toHaveCSS('font-size','11px');
+  if(slot==='reviewInput'){await agent.getByRole('button',{name:'Open Review',exact:true}).click();await host.getByRole('button',{name:'Start review session',exact:true}).click();await expect(host.getByRole('button',{name:'Run review',exact:true})).toBeEnabled();}
+  await expect(host.locator('.xterm-rows')).toHaveCSS('font-size',slot==='reviewInput'?'13px':'11px');
   const strip=host.locator('.terminal-context-strip');await expect(strip.getByRole('button',{name:'Notes (1)',exact:true})).toBeVisible();await strip.getByRole('button',{name:'Copy notes',exact:true}).click();await strip.getByRole('button',{name:'Insert selected notes (1)',exact:true}).click();
   await expect.poll(()=>page.evaluate(key=>(window as any).fixtureCalls.filter((c:any)=>c[key]).length,slot)).toBe(1);
-  await page.locator('.diff-row.addition').first().click({button:'right'});await page.keyboard.press('Escape');await strip.getByRole('button',{name:'Insert selection',exact:true}).click();
+  if(slot==='input'){await page.locator('.diff-row.addition').first().click({button:'right'});await page.keyboard.press('Escape');}await strip.getByRole('button',{name:'Insert selection',exact:true}).click();
   await expect.poll(()=>page.evaluate(key=>(window as any).fixtureCalls.filter((c:any)=>c[key]).length,slot)).toBe(2);
  }
  const calls=await page.evaluate(()=>(window as any).fixtureCalls);
  for(const key of ['input','reviewInput']){const inputs=calls.filter((c:any)=>c[key]);expect(inputs[0][key]).toContain('Synthetic compact context');expect(inputs[1][key]).toContain('Selected diff');for(const input of inputs){expect(input.paste).toBe(true);expect(input[key].endsWith('\r')).toBe(false);}}
  expect(calls.filter((c:any)=>c.copy)).toHaveLength(2);expect(calls.filter((c:any)=>c.start||c.reviewStart||c.stop||c.reviewStop||c.reviewSubmit)).toEqual([{start:'claude',mode:'edit'},{reviewStart:'claude',mode:'review'}]);
- await review.getByRole('button',{name:'Close dock',exact:true}).click();await expect(review.locator('.xterm-rows')).toHaveCSS('font-size','13px');
+ await page.getByRole('button',{name:'Open code review',exact:true}).click();await expect(review.locator('.xterm-rows')).toHaveCSS('font-size','13px');
+});
+
+
+test('Review is full-workspace only and restores the retained Agent pin',async({page})=>{
+ const agent=page.locator('rift-ai-terminal'),review=page.locator('rift-review-terminal');
+ await agent.getByRole('button',{name:'Start session',exact:true}).click();
+ await agent.getByRole('button',{name:'Dock to bottom',exact:true}).click();
+ const height=(await agent.boundingBox())!.height;
+ await page.getByRole('button',{name:'Open code review',exact:true}).click();
+ await expect(review.getByRole('button',{name:'Dock to bottom',exact:true})).toHaveCount(0);
+ await expect(page.locator('.workspace')).not.toHaveClass(/terminal-docked/);
+ await expect(page.getByRole('separator',{name:'Resize bottom terminal'})).toHaveCount(0);
+ await expect(agent).toBeHidden();
+ await review.getByRole('button',{name:'Start review session',exact:true}).click();
+ await expect(review.locator('.xterm-rows')).toHaveCSS('font-size','13px');
+ await page.getByRole('button',{name:'Agent',exact:true}).click();
+ await expect(page.locator('.workspace')).toHaveClass(/terminal-docked/);
+ expect((await agent.boundingBox())!.height).toBe(height);
+ expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.start||c.reviewStart||c.stop||c.reviewStop||c.input||c.reviewInput))).toEqual([{start:'claude',mode:'edit'},{reviewStart:'claude',mode:'review'}]);
+});
+
+
+test('Review finding opens a real syntax-coloured Changes diff and focuses provenance without saving a note',async({page})=>{
+ await page.getByRole('button',{name:'Open code review',exact:true}).click();
+ await page.evaluate(()=>{const host=document.querySelector('rift-review-terminal')!;(window as any).ng.getComponent(host).navigate.emit({path:'src/changed.ts',line:2,column:1});});
+ await expect(page.locator('.diff-row.addition.source-target')).toContainText('new');
+ await expect(page.locator('.source-target')).toBeFocused();
+ await expect(page.getByRole('button',{name:'From Review',exact:true})).toBeVisible();
+ await expect(page.getByRole('button',{name:'From Review',exact:true})).toHaveCSS('height','28px');
+ await expect(page.locator('.diff-row.context .hljs-keyword')).toContainText('const');
+ await expect(page.getByRole('button',{name:'Changes',exact:true})).toHaveAttribute('aria-pressed','true');
+ await expect(page.locator('.review-note')).toHaveCount(0);
+ await expect(page.getByRole('button',{name:'Mark reviewed',exact:true})).toBeVisible();
+});
+
+test('Review follow-up uses native CLI input only without extra prepared submission',async({page})=>{
+ await page.getByRole('button',{name:'Open code review',exact:true}).click();
+ const review=page.locator('rift-review-terminal');
+ await review.getByRole('button',{name:'Start review session',exact:true}).click();
+ await expect(review.locator('.terminal-surface')).toContainText('Ready >');
+ await expect(review.getByRole('region',{name:'Review follow-up composer'})).toHaveCount(0);
+ await expect(review.getByRole('textbox',{name:'Review follow-up',exact:true})).toHaveCount(0);
+ await expect(review.getByRole('button',{name:'Send follow-up',exact:true})).toHaveCount(0);
+ await review.locator('.xterm-helper-textarea').focus();await page.keyboard.type('Explain the target');await page.keyboard.press('Enter');
+ await expect.poll(()=>page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.reviewInput).map((c:any)=>c.reviewInput).join(''))).toBe('Explain the target\r');
+ expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.reviewStart||c.reviewStop||c.reviewSubmit))).toEqual([{reviewStart:'claude',mode:'review'}]);
+});
+
+test('Review references are keyboard-discoverable and unchanged source is syntax-coloured with honest provenance',async({page})=>{
+ await page.getByRole('button',{name:'Open code review',exact:true}).click();
+ const review=page.locator('rift-review-terminal');
+ await review.getByRole('button',{name:'Start review session',exact:true}).click();
+ const link=review.getByRole('button',{name:'Inspect review reference src/my file.ts:12:3',exact:true});
+ await expect(link).toBeVisible();await link.focus();await link.press('Enter');
+ await expect(page.locator('.repository-file-row.source-target')).toBeFocused();
+ await expect(page.locator('.source-target .hljs-keyword')).toHaveText('const');
+ await expect(page.getByRole('button',{name:'From Review',exact:true})).toBeVisible();
+ await expect(page.locator('.diff-row.addition,.diff-row.deletion,.review-note')).toHaveCount(0);
+});
+
+for(const outcome of ['resolve','reject'])test(`obsolete Review reference ${outcome} cannot replace a newer target or error`,async({page})=>{
+ await page.getByRole('button',{name:'Open code review',exact:true}).click();
+ await page.evaluate(()=>{const f=window as any,read=f.rift.readRepositoryViewFile;let first=true;f.rift.readRepositoryViewFile=(path:string)=>{if(!first)return read(path);first=false;return new Promise((resolve,reject)=>{f.oldSourceResolve=()=>resolve({path,content:'old',binary:false,truncated:false});f.oldSourceReject=()=>reject(new Error('obsolete reference'));});};const c=f.ng.getComponent(document.querySelector('rift-review-terminal'));c.navigate.emit({path:'src/my file.ts',line:12,column:3});});
+ await page.evaluate(()=>(window as any).ng.getComponent(document.querySelector('rift-review-terminal')).navigate.emit({path:'src/changed.ts',line:2,column:1}));
+ await expect(page.locator('.source-target')).toContainText('new');
+ await page.evaluate(outcome=>(window as any)[outcome==='resolve'?'oldSourceResolve':'oldSourceReject'](),outcome);
+ await expect(page.locator('.source-target')).toContainText('new');await expect(page.locator('.source-target')).toBeFocused();
+ await expect(page.locator('.statusbar')).not.toContainText('obsolete');
+});
+
+for(const width of [1024,1440])for(const theme of ['dark','light'])test(`Review compact brief hierarchy ${theme} ${width}`,async({page})=>{
+ await page.setViewportSize({width,height:900});if(theme==='light')await page.getByRole('button',{name:'Use light theme',exact:true}).click();
+ await page.getByRole('button',{name:'Open code review',exact:true}).click();const review=page.locator('rift-review-terminal');
+ await page.evaluate(()=>{const b=document.createElement('div');b.textContent='SYNTHETIC BROWSER BRIDGE · TEST DATA · NO PROVIDER CALL';b.style.cssText='position:fixed;bottom:4px;left:20px;font:10px sans-serif;z-index:9999;pointer-events:none;color:#8995a1';document.body.append(b);});
+ const shot=async(state:string)=>{await page.waitForTimeout(120);await page.screenshot({path:`/opt/data/output/riftcode/review-findings/after-${theme}-${width}-${state}.png`});};
+ await shot('launch');await review.getByRole('textbox',{name:'Review instructions'}).fill('Synthetic boundary inspection');
+ await review.getByRole('button',{name:'Start review session',exact:true}).click();
+ const run=review.getByRole('button',{name:'Run review',exact:true});await expect(run).toBeEnabled();
+ const r=(await run.boundingBox())!;await shot('brief');expect(r.height).toBeGreaterThanOrEqual(28);expect(r.height).toBeLessThanOrEqual(32);expect(r.width).toBeLessThan(140);
+ await expect(review.getByRole('button',{name:'Edit review brief',exact:true})).toBeVisible();
+ await expect(review.locator('.review-run-actions small,.review-follow-up')).toHaveCount(0);
+ const expanded=(await review.locator('.terminal-surface').boundingBox())!.height;
+ await page.evaluate(()=>{const f=window as any;f.rift.terminalSubmitReview=()=>new Promise((resolve,reject)=>{f.acceptGallery=resolve;f.rejectGallery=reject;});});
+ await run.click();await expect(review.getByRole('button',{name:'Sending…',exact:true})).toBeDisabled();await shot('pending');
+ const pending=(await review.locator('.terminal-surface').boundingBox())!.height;expect(pending-expanded).toBeGreaterThan(100);
+ await page.evaluate(()=>(window as any).acceptGallery());await expect(review.getByText('Request sent',{exact:true})).toBeVisible();await shot('accepted');
+ const accepted=await review.locator('.review-request-snapshot pre').textContent();
+ await review.getByRole('button',{name:'Edit review brief',exact:true}).click();await review.getByRole('textbox',{name:'Review instructions'}).fill('Synthetic revised draft');await review.getByRole('button',{name:'Rerun review',exact:true}).click();
+ await page.evaluate(()=>(window as any).rejectGallery(new Error('Synthetic submission rejected; inspect native CLI before retrying.')));
+ await expect(review.getByRole('textbox',{name:'Review instructions'})).toHaveValue('Synthetic revised draft');await expect(review.locator('.review-request-snapshot pre')).toHaveText(accepted!);await shot('failure');
+ await page.evaluate(()=>(window as any).ng.getComponent(document.querySelector('rift-review-terminal')).navigate.emit({path:'src/changed.ts',line:2,column:1}));
+ await expect(page.locator('.source-target')).toBeFocused();await expect(page.locator('.diff-row.context .hljs-keyword')).toBeVisible();await shot('target-diff');
+ await page.getByRole('button',{name:'From Review',exact:true}).click();
+ await review.getByRole('button',{name:'Inspect review reference src/my file.ts:12:3',exact:true}).press('Enter');
+ await expect(page.locator('.source-target')).toBeFocused();await expect(page.locator('.source-target .hljs-keyword')).toBeVisible();await shot('target-source');
+ const {writeFile}=await import('node:fs/promises');await writeFile(`/opt/data/output/riftcode/review-findings/${theme}-${width}-geometry.json`,JSON.stringify({expanded,pending,gain:pending-expanded,run:r},null,2));
+});
+
+for(const mode of ['unified','split'])test(`Review finding retains ${mode} layout and expands real context outside the hunk`,async({page})=>{
+ await page.evaluate(mode=>{const f=window as any,c=f.ng.getComponent(document.querySelector('rift-root'));c.diffMode.set(mode);f.patchContexts=[];f.rift.getFilePatch=async(path:string,full:boolean)=>{f.patchContexts.push(full);return {path,binary:false,patch:full?'@@ -1,3 +1,3 @@\n const a = 1;\n-old\n+new\n const outside = true;\n':'@@ -2 +2 @@\n-old\n+new\n'};};},mode);
+ await page.getByRole('button',{name:'Open code review',exact:true}).click();
+ await page.evaluate(()=>(window as any).ng.getComponent(document.querySelector('rift-review-terminal')).navigate.emit({path:'src/changed.ts',line:3,column:1}));
+ await expect(page.locator('.source-target')).toContainText('outside');await expect(page.locator('.source-target')).toBeFocused();
+ await expect(page.locator('.source-target')).toHaveClass(/context/);await expect(page.locator('.source-target .hljs-keyword')).toHaveText('const');
+ expect(await page.evaluate(()=>(window as any).patchContexts)).toEqual([false,true]);
+ expect(await page.evaluate(()=>(window as any).ng.getComponent(document.querySelector('rift-root')).diffMode())).toBe(mode);
+});
+
+test('Review deleted-file reference focuses the historical deletion without reading a nonexistent worktree file',async({page})=>{
+ await page.evaluate(()=>{const f=window as any,c=f.ng.getComponent(document.querySelector('rift-root'));c.repository.set({...c.repository(),files:[{path:'src/changed.ts',status:'deleted',additions:0,deletions:2}]});f.rift.readRepositoryViewFile=async()=>{throw new Error('Must not read deleted worktree file');};f.rift.getFilePatch=async(path:string)=>({path,binary:false,patch:'@@ -1,2 +0,0 @@\n-const removed = true;\n-const gone = true;\n'});});
+ await page.getByRole('button',{name:'Open code review',exact:true}).click();
+ await page.evaluate(()=>(window as any).ng.getComponent(document.querySelector('rift-review-terminal')).navigate.emit({path:'src/changed.ts',line:2,column:1}));
+ await expect(page.locator('.source-target.deletion')).toContainText('gone');await expect(page.locator('.source-target')).toBeFocused();
+ await expect(page.getByRole('button',{name:'From Review',exact:true})).toBeVisible();
+});
+
+test('unavailable Review line never claims a focused finding or saved Note',async({page})=>{
+ await page.getByRole('button',{name:'Open code review',exact:true}).click();
+ await page.evaluate(()=>(window as any).ng.getComponent(document.querySelector('rift-review-terminal')).navigate.emit({path:'src/my file.ts',line:900,column:1}));
+ await expect(page.locator('.statusbar')).toContainText('Referenced line is unavailable');
+ await expect(page.locator('.source-target,.source-reference,.review-note')).toHaveCount(0);
+});
+
+test('changed file selection leaves full Review and restores only the Agent dock',async({page})=>{
+ const agent=page.locator('rift-ai-terminal');await agent.getByRole('button',{name:'Dock to bottom',exact:true}).click();
+ await agent.getByRole('button',{name:'Open Review',exact:true}).click();await page.locator('.file-row').first().click();
+ await expect(page.locator('.diff-panel')).toBeVisible();await expect(page.locator('rift-review-terminal')).toBeHidden();await expect(agent).toBeVisible();await expect(page.locator('.workspace')).toHaveClass(/terminal-docked/);
+ expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.start||c.reviewStart||c.stop||c.reviewStop||c.input||c.reviewInput||c.reviewSubmit))).toEqual([]);
+});
+
+for(const outcome of ['resolve','reject'])for(const destination of ['repository','reference','workspace'])test(`late Review patch ${outcome} is fenced after ${destination} switch`,async({page})=>{
+ await page.getByRole('button',{name:'Open code review',exact:true}).click();
+ await expect(page.locator('rift-review-terminal')).toBeVisible();
+ await page.evaluate(()=>{const f=window as any;f.rift.getFilePatch=()=>new Promise((resolve,reject)=>{f.finishObsoletePatch=()=>resolve({path:'src/changed.ts',binary:false,patch:'@@ -1 +1 @@\n-old\n+obsolete patch\n'});f.failObsoletePatch=()=>reject(new Error('obsolete patch error'));});f.ng.getComponent(document.querySelector('rift-review-terminal')).navigate.emit({path:'src/changed.ts',line:1,column:1});});
+ await expect.poll(()=>page.evaluate(()=>!!(window as any).finishObsoletePatch)).toBe(true);
+ if(destination==='repository'){
+  await page.evaluate(()=>{const f=window as any;f.rift.chooseRepository=async()=>({...f.fixtureRepository,root:'/fixture/replacement',files:[]});});await page.getByRole('button',{name:'terminal-fixture',exact:true}).click();
+ }else if(destination==='workspace')await page.getByRole('button',{name:'Open code review',exact:true}).click();
+ else{await page.evaluate(()=>(window as any).ng.getComponent(document.querySelector('rift-review-terminal')).navigate.emit({path:'src/my file.ts',line:14,column:1}));await expect(page.locator('.source-target')).toContainText('line14');}
+ await page.evaluate(outcome=>(window as any)[outcome==='resolve'?'finishObsoletePatch':'failObsoletePatch'](),outcome);await page.waitForTimeout(100);
+ await expect(page.locator('.statusbar')).not.toContainText('obsolete patch');if(await page.locator('.diff-panel').count())await expect(page.locator('.diff-panel')).not.toContainText('obsolete patch');
+ if(destination==='reference'){await expect(page.locator('.source-target')).toContainText('line14');await expect(page.locator('.source-target')).toBeFocused();}
+ else await expect(page.locator('.source-target,.source-reference')).toHaveCount(0);
+});
+
+for(const kind of ['truncated','range'])test(`Review rejects an unavailable ${kind} target without claiming success`,async({page})=>{
+ await page.getByRole('button',{name:'Open code review',exact:true}).click();
+ await page.evaluate(kind=>{const f=window as any;if(kind==='truncated')f.rift.readRepositoryViewFile=async(path:string)=>({path,content:'const first = 1;\nconst partial',binary:false,truncated:true});f.ng.getComponent(document.querySelector('rift-review-terminal')).navigate.emit({path:'src/my file.ts',line:kind==='truncated'?2:12,endLine:kind==='truncated'?2:900,column:1});},kind);
+ await expect(page.locator('.statusbar')).toContainText('Referenced line is unavailable');await expect(page.locator('.source-target,.source-reference')).toHaveCount(0);
+});
+
+test('deleted comparison paths remain discoverable as Review references when absent from worktree paths',async({page})=>{
+ await page.evaluate(()=>{const f=window as any,c=f.ng.getComponent(document.querySelector('rift-root'));c.repository.set({...c.repository(),files:[{path:'src/deleted.ts',status:'deleted',additions:0,deletions:12}]});f.rift.listRepositoryFiles=async()=>['src/changed.ts'];const read=f.rift.terminalRead;f.rift.terminalRead=async(...args:any[])=>{const r=await read(...args);return {...r,data:r.data.replace('src/my file.ts:12:3','src/deleted.ts:12:1')};};f.rift.getFilePatch=async(path:string)=>({path,binary:false,patch:'@@ -1,12 +0,0 @@\n'+Array.from({length:12},(_,i)=>'-const removed'+(i+1)+' = true;').join('\n')+'\n'});f.rift.readRepositoryViewFile=async()=>{throw new Error('Deleted path cannot be read from worktree');};});
+ await page.getByRole('button',{name:'Open code review',exact:true}).click();const review=page.locator('rift-review-terminal');await review.getByRole('button',{name:'Start review session',exact:true}).click();
+ await review.getByRole('button',{name:'Inspect review reference src/deleted.ts:12:1',exact:true}).click();
+ await expect(page.locator('.source-target.deletion')).toContainText('removed12');await expect(page.locator('.source-target')).toBeFocused();
+});
+
+for(const theme of ['dark','light'])test(`source location metadata uses readable theme text ${theme}`,async({page})=>{
+ if(theme==='light')await page.getByRole('button',{name:'Use light theme',exact:true}).click();
+ await page.getByRole('button',{name:'Open code review',exact:true}).click();await page.evaluate(()=>(window as any).ng.getComponent(document.querySelector('rift-review-terminal')).navigate.emit({path:'src/my file.ts',line:12,column:3}));
+ const location=page.locator('.source-location');await expect(location).toBeVisible();
+ const muted=await page.evaluate(()=>{const span=document.createElement('span');span.style.color='var(--ws-muted)';document.body.append(span);const value=getComputedStyle(span).color;span.remove();return value;});
+ await expect(location).toHaveCSS('color',muted);
+});
+
+test('Review reference uses guarded real Git patch bytes, full context and syntax in Changes',async({page})=>{
+ const {mkdtemp,mkdir,writeFile,rm}=await import('node:fs/promises');const {tmpdir}=await import('node:os');const {join}=await import('node:path');const {execFileSync}=await import('node:child_process');
+ const {loadRepository,loadFilePatch,readRepositoryViewFile}=await import('../../src/main/git');
+ const root=await mkdtemp(join(tmpdir(),'rift-finding-git-'));await mkdir(join(root,'src'));
+ const lines=Array.from({length:60},(_,i)=>`const synthetic${i+1} = ${i+1};`);
+ try{
+  await writeFile(join(root,'src/changed.ts'),lines.join('\n')+'\n');execFileSync('git',['init','-q'],{cwd:root});execFileSync('git',['add','.'],{cwd:root});execFileSync('git',['-c','user.name=Synthetic Fixture','-c','user.email=fixture@example.invalid','commit','-qm','Synthetic baseline'],{cwd:root});
+  lines[1]='const synthetic2 = 200;';lines[49]='const synthetic50 = 5000;';await writeFile(join(root,'src/changed.ts'),lines.join('\n')+'\n');
+  const snapshot=await loadRepository(root,'working-tree');const requests:boolean[]=[];
+  await page.exposeFunction('realFindingPatch',async(path:string,full:boolean)=>{requests.push(full);return loadFilePatch(snapshot,path,full);});await page.exposeFunction('realFindingSource',(path:string)=>readRepositoryViewFile(root,path));
+  await page.evaluate(snapshot=>{const f=window as any;f.rift.getFilePatch=f.realFindingPatch;f.rift.readRepositoryViewFile=f.realFindingSource;f.ng.getComponent(document.querySelector('rift-root')).acceptRepository(snapshot);},snapshot);
+  await page.getByRole('button',{name:'Open code review',exact:true}).click();
+  await expect(page.locator('rift-review-terminal')).toBeVisible();
+  await page.evaluate(()=>(window as any).ng.getComponent(document.querySelector('rift-review-terminal')).navigate.emit({path:'src/changed.ts',line:25,column:1}));
+  await expect(page.locator('.source-target.context')).toContainText('synthetic25');await expect(page.locator('.source-target')).toBeFocused();await expect(page.locator('.source-target .hljs-keyword')).toHaveText('const');
+  await expect(page.locator('.diff-row.addition')).toContainText(['synthetic2 = 200','synthetic50 = 5000']);await expect(page.locator('.diff-row.deletion')).toContainText(['synthetic2 = 2','synthetic50 = 50']);
+  expect(requests).toContain(true);await expect(page.getByRole('button',{name:'From Review',exact:true})).toBeVisible();
+ }finally{await rm(root,{recursive:true,force:true});}
+});
+test('ordinary source rejects delayed diff syntax and requests its own highlighting',async({page})=>{
+ await page.addInitScript(()=>{
+  const f=window as any,NativeWorker=window.Worker;f.delayedSyntax=[];
+  f.Worker=class {
+   onmessage:any;worker:Worker;
+   constructor(url:URL,options:WorkerOptions){this.worker=new NativeWorker(url,options);this.worker.onmessage=event=>{if(event.data.type==='diff')f.delayedSyntax.push(()=>this.onmessage?.(event));else this.onmessage?.(event);};}
+   postMessage(message:any){this.worker.postMessage(message);}terminate(){this.worker.terminate();}
+  };
+ });
+ await page.reload();
+ await expect.poll(()=>page.evaluate(()=>(window as any).delayedSyntax.length)).toBeGreaterThan(0);
+ await page.getByRole('button',{name:'Back to code',exact:true}).click();
+ await page.evaluate(()=>(window as any).delayedSyntax=[]);
+ await page.evaluate(()=>(window as any).ng.getComponent(document.querySelector('rift-root')).loadPatch('src/changed.ts'));
+ await expect.poll(()=>page.evaluate(()=>(window as any).delayedSyntax.length)).toBe(1);
+ await page.getByRole('button',{name:'Explorer',exact:true}).click();
+ await page.getByRole('button',{name:'Full',exact:true}).click();
+ await page.locator('[data-explorer-kind="file"]').filter({hasText:'my file.ts'}).click();
+ await expect(page.locator('.repository-file-row').first()).toContainText('const line1 = true;');
+ await page.evaluate(()=>{const f=window as any;f.delayedSyntax.shift()();});
+ await expect(page.locator('.repository-file-row').first()).toContainText('const line1 = true;');
+ await expect(page.locator('.repository-file-lines')).not.toContainText('unchanged');
+ await expect.poll(()=>page.evaluate(()=>(window as any).delayedSyntax.length)).toBeGreaterThan(0);
+ await page.evaluate(()=>{for(const deliver of (window as any).delayedSyntax.splice(0))deliver();});
+ await expect(page.locator('.repository-file-row').first().locator('.hljs-keyword')).toHaveText('const');
+});
+for(const destination of ['Agent','Review'])test(`returning from ${destination} reloads a canceled selected diff without accepting its stale response`,async({page})=>{
+ await page.getByRole('button',{name:'Back to code',exact:true}).click();
+ await page.evaluate(()=>{
+  const f=window as any,c=f.ng.getComponent(document.querySelector('rift-root'));
+  c.repository.set({...c.repository(),files:[...c.repository().files,{path:'src/pending.ts',status:'modified',additions:1,deletions:1}]});
+  f.pendingPatchCalls=0;
+  f.rift.getFilePatch=async(path:string)=>{
+   f.pendingPatchCalls++;
+   if(f.pendingPatchCalls===1)return new Promise(resolve=>f.finishCanceledDiff=()=>resolve({path,binary:false,patch:'@@ -1 +1 @@\n-old\n+const obsolete = true;\n'}));
+   return {path,binary:false,patch:'@@ -1 +1 @@\n-old\n+const current = true;\n'};
+  };
+ });
+ await page.locator('.file-row').filter({hasText:'pending.ts'}).click();
+ await expect.poll(()=>page.evaluate(()=>!!(window as any).finishCanceledDiff)).toBe(true);
+ await page.getByRole('button',{name:destination==='Agent'?'Agent':'Open code review',exact:true}).click();
+ await page.evaluate(()=>(window as any).finishCanceledDiff());
+ await page.getByRole('button',{name:'Back to code',exact:true}).click();
+ await expect(page.locator('.diff-row.addition')).toContainText('const current = true;');
+ await expect(page.locator('.diff-row.addition .hljs-keyword')).toHaveText('const');
+ await expect(page.locator('.diff-panel')).not.toContainText('obsolete');
+ expect(await page.evaluate(()=>(window as any).pendingPatchCalls)).toBe(2);
+ await expect(page.locator('.diff-panel')).toContainText('src/pending.ts');
+});
+
+async function deferOrdinarySource(page:Page):Promise<void>{
+ await page.getByRole('button',{name:'Back to code',exact:true}).click();
+ await page.evaluate(()=>{
+  const f=window as any,read=f.rift.readRepositoryViewFile;f.ordinaryReads=[];
+  f.rift.readRepositoryViewFile=(path:string)=>{
+   f.ordinaryReads.push(path);
+   if(path!=='src/my file.ts')return read(path);
+   return new Promise((resolve,reject)=>{
+    if(f.ordinaryReads.length===1){f.finishOldOrdinary=()=>resolve({path,content:'obsolete ordinary source',binary:false,truncated:false});f.failOldOrdinary=()=>reject(new Error('obsolete ordinary error'));}
+    else f.finishFreshOrdinary=async()=>resolve(await read(path));
+   });
+  };
+ });
+ await page.getByRole('button',{name:'Explorer',exact:true}).click();
+ await page.getByRole('button',{name:'Full',exact:true}).click();
+ await page.locator('[data-explorer-kind="file"]').filter({hasText:'my file.ts'}).click();
+ await expect.poll(()=>page.evaluate(()=>(window as any).ordinaryReads)).toEqual(['src/my file.ts']);
+ await expect(page.locator('.diff-panel')).toContainText('Opening repository file');
+}
+
+for(const destination of ['Agent','Review'])for(const outcome of ['resolve','reject'])test(`returning from ${destination} reloads canceled ordinary source after late ${outcome}`,async({page})=>{
+ await deferOrdinarySource(page);
+ await page.getByRole('button',{name:destination==='Agent'?'Agent':'Open code review',exact:true}).click();
+ await page.evaluate(outcome=>(window as any)[outcome==='resolve'?'finishOldOrdinary':'failOldOrdinary'](),outcome);
+ expect(await page.evaluate(()=>(window as any).ordinaryReads)).toEqual(['src/my file.ts']);
+ await page.getByRole('button',{name:'Back to code',exact:true}).click();
+ await expect.poll(()=>page.evaluate(()=>(window as any).ordinaryReads)).toEqual(['src/my file.ts','src/my file.ts']);
+ await expect(page.locator('.diff-panel')).toContainText('Opening repository file');
+ await page.evaluate(()=>(window as any).finishFreshOrdinary());
+ await expect(page.locator('.repository-file-row').first()).toContainText('const line1 = true;');
+ await expect(page.locator('.repository-file-row').first().locator('.hljs-keyword')).toHaveText('const');
+ await expect(page.locator('.diff-panel')).not.toContainText('Opening repository file');
+ await expect(page.locator('.diff-panel')).not.toContainText('obsolete ordinary');
+ await expect(page.locator('.statusbar')).not.toContainText('obsolete ordinary');
+ expect(await page.evaluate(()=>(window as any).ng.getComponent(document.querySelector('rift-root')).repositoryFileLoading())).toBe(false);
+});
+
+for(const replacement of ['repository','comparison','reference','changed file'])test(`canceled ordinary source is not revived after newer ${replacement}`,async({page})=>{
+ await deferOrdinarySource(page);
+ await page.getByRole('button',{name:'Open code review',exact:true}).click();
+ await expect(page.locator('rift-review-terminal')).toBeVisible();
+ if(replacement==='reference'){
+  await page.evaluate(()=>(window as any).ng.getComponent(document.querySelector('rift-review-terminal')).navigate.emit({path:'src/changed.ts',line:2,column:1}));
+  await expect(page.locator('.source-target')).toContainText('new');
+ }else if(replacement==='changed file'){
+  await page.locator('[data-explorer-kind="file"]').filter({hasText:'changed.ts'}).click();
+  await expect(page.locator('.diff-row.addition')).toContainText('new');
+ }else{
+  await page.evaluate(replacement=>{const f=window as any,c=f.ng.getComponent(document.querySelector('rift-root')),repo=c.repository();c.acceptRepository({...repo,...(replacement==='repository'?{root:'/fixture/replacement'}:{targetBranch:'replacement-target'})});},replacement);
+ }
+ await page.evaluate(()=>(window as any).failOldOrdinary());
+ // Exercise the return transition directly, including roots with no visible Code action.
+ await page.evaluate(()=>{const c=(window as any).ng.getComponent(document.querySelector('rift-root'));c.openTerminal();c.showDiff();});
+ await page.waitForTimeout(150);
+ expect(await page.evaluate(()=>(window as any).ordinaryReads.filter((path:string)=>path==='src/my file.ts'))).toEqual(['src/my file.ts']);
+ await expect(page.locator('.statusbar')).not.toContainText('obsolete ordinary');
+ if(replacement==='reference'||replacement==='changed file')await expect(page.locator('.diff-row.addition')).toContainText('new');
+ expect(await page.evaluate(()=>(window as any).ng.getComponent(document.querySelector('rift-root')).repositoryFileLoading())).toBe(false);
 });

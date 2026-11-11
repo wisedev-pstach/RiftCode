@@ -1,0 +1,65 @@
+# Review finding navigation — 0.8.2 candidate
+
+## Current scope
+
+The latest user corrections supersede the historical docked-Review and app follow-up-composer designs:
+
+- Review is full-workspace only. No dock button, dock binding, bottom resizer or slim Review CSS remains. Agent keeps its 32px toolbar, 24px controls, 4px button / 8px group gaps and real 11px dock / 13px normal xterm font.
+- Opening Review hides the pinned Agent without remounting or stopping either bounded PTY. Returning to Agent restores its pin and remembered height. Opening a reference displays Changes; it never starts/stops a provider or submits input.
+- The review brief has a compact summary, aligned 28–30px actions, scope/tone/instructions and progressive help. Validated Run/Rerun immediately collapses the editor and shows Sending. Acknowledgment updates the immutable sent request; failure reopens the draft without rewriting the previous accepted snapshot or resending.
+- The bottom app-level Follow-up textarea and Send follow-up action are removed. Continue directly in the native provider terminal. Explicit prepared Run/Rerun is unchanged; native input remains on the same session.
+
+## Finding references
+
+Changed-file references use the existing repository patch loader, syntax worker and unified/split renderers. A target outside the current hunk requests real full-file patch context rather than fabricating additions/deletions. Deleted-file references use old-side historical deletion lines; ordinary references use new-side lines. The known reference paths combine worktree paths with trusted comparison paths, so deleted files remain discoverable even though they are absent from the worktree list. The user's unified/split preference is retained. Unchanged-file fallback is actual repository source, syntax-highlighted as context without inventing a diff. Both endpoints of a referenced range must be available; binary, missing lines and the incomplete final line of a truncated preview never receive a successful marker. Existing syntax-worker safety bounds still apply (30,000 total characters / 10,000 characters on one row); larger previews remain plain rather than claiming syntax highlighting beyond those bounds.
+
+The actual target row is centered and receives DOM focus. A blue outline/gutter is independent of manual note styling and preserves addition/deletion backgrounds. A transient **From Review** reference bar returns to the retained Review. Agent links use **From Agent**, based on separate trusted parent event bindings; no severity, issue identity or finding text is inferred. Navigation does not create a saved Note or mark a file reviewed.
+
+Terminal output remains untrusted. Main's existing known-file/realpath check stays authoritative for worktree source. Historical deletion patches come only from membership in the trusted comparison. Existing traversal, URL and symlink-escape regressions remain required. Source and syntax HTML rendering retain Angular escaping / the existing worker's escaping. Reads, patches, syntax replies, errors and scheduled focus are fenced against obsolete repositories, comparisons, selected paths and newer navigation requests.
+
+### Public xterm affordance
+
+Pinned xterm 6 exposes underline and pointer-cursor **hover** decorations but no public API for persistent per-link colour styling. We do not rewrite ANSI, intercept provider output or depend on xterm internals. Review therefore adds a keyboard-accessible, underlined repository-reference row from public rendered buffer cells: at most **120 rows / 16,384 UTF-16 code units**, with **eight deduplicated location buttons**. These are references, not an invented findings/severity list. Native Ctrl/Cmd-click remains available with a Review-specific inspect tooltip. Existing wrapped/Unicode reference fixtures are preserved.
+
+## Final independent review
+
+Read-only review `deleg_354e5712` approved the corrected ordinary-source cancellation flow with no security or logic blockers, confirming the four recorded RED failures, 51 focused passes, source hashes and guarded fresh retry. Earlier review `deleg_d077ffe4` confirmed the original stale-syntax and missing-patch blockers resolved. Welcome polish separately passed review `deleg_7ec463f6`. These reviews are not a substitute for the combined full regression/package gate or native authenticated-provider acceptance.
+
+## Final combined candidate gate
+
+Final frozen-source verification in `/opt/data/output/riftcode/0.8.2-final/` passed: **90 core + 30 installer**, **90 actual Electron-runtime/native tests**, TypeScript/Angular/build, and **172/172 UI tests** in one complete 9.4-minute serial run. Four newly regenerated unsigned macOS/Windows x64/arm64 archives report version **0.8.2**, contain production PTY dependencies and exact-architecture native helpers, and match all **six runtime assets per archive** byte-for-byte with the final build. `gates.json` records zero exit codes and unchanged runtime/test fingerprints throughout the final UI/package pass.
+
+The preceding complete UI attempt passed 171/172: its sole failure was the legacy bootstrap test still expecting raw diagnostic text in the alert. That test now asserts friendly guidance, initially hidden original detail, explicit Technical details disclosure and successful Retry. The entire 172-case suite was rerun cleanly, not reported as an aggregate of focused retries. Core/build/Electron evidence was reused only after SHA-256 checks proved the sole intervening change was that UI test. Earlier interrupted/failed attempts below remain historical.
+
+No authenticated provider prompt, native macOS/Windows GUI acceptance, merge, tag or official update promotion is established by these Linux/browser/cross-package checks. Native follow-ups remain direct provider input.
+
+## Verification and evidence
+
+TDD logs and completed verification counts are recorded below after the final serial gates. Screenshots are synthetic substitute-bridge data, not private user code or authenticated provider output. Current gallery: `/opt/data/output/riftcode/review-findings/`, dark/light at 1024 and 1440, covering launch, brief, pending, accepted, failure, Changes target and source. `before-*` is rebuilt from exact pristine **0.8.1 / `9aaa71fffac30d53502efb01360d03bee7bcd1aa`** in an isolated scratch copy with its own preview port. The before target-diff screenshots intentionally show the original defect: a changed-file reference opened raw source rather than its actual diff. `after-*` uses the current candidate. No private screenshot code/findings are copied into fixtures.
+
+Measured native surface (same 900px viewport, expanded brief, both themes): **171.6 → 310px at 1024**, **219.6 → 358px at 1440**. The removed app-level follow-up panel alone occupied **102px**. Validated dispatch now releases another **165px** by collapsing the brief. Run is **30px high / approximately 100px wide**. Agent geometry and exact reflow-anchor assertions remain intact. The reference strip reserves its settled 39px during Starting, preventing a first-output native resize. Geometry JSON is next to the screenshots.
+
+Visual audit: the compact summary, normal primary action and explicit reference/focus marker retain the existing Command / Inspect composition and upright rail. No hero/card-grid, decorative metrics, gradients or broader navigation redesign were introduced. Help and the immutable accepted request remain inspectable without a default warning wall.
+
+## Acceptance boundaries
+
+This is source-candidate metadata only, not release authorization. No commit, push, merge, tag, release, schedule, account write or paid/authenticated provider invocation is performed by this task. Actual harmless POSIX PTYs through a substituted browser bridge establish local native process retention and byte transport only. Windows ConPTY, macOS native GUI, authenticated Claude/OpenCode/Codex and owner acceptance remain separate gates. Packaging/publication and independent review are parent-owned.
+### Independently reviewed navigation races — focused RED → GREEN
+
+`src/renderer/src/app.component.ts` now invalidates outstanding diff syntax when ordinary Explorer/search source opens and requests fresh syntax after its guarded read. Back to code reloads a missing selected changed-file patch through the existing guarded loader after Agent/Review canceled its request; canceled responses are not restored.
+
+Three appended cases in `tests/ui/terminal.spec.ts` reproduce both defects: a delayed **real syntax worker** reply painted `unchanged/old/new` into unrelated source (RED), and deferred patches left no addition row after returning from Agent or Review (two REDs). Final current-source isolated build/typecheck passed, and these cases passed **15/15** with five repetitions. Deferred patch resolve/reject guards for replacement root, newer reference and workspace plus empty-root checkpoint protection passed **21/21** over three repetitions. That guard-only scratch test copy adds an explicit Review-visible DOM barrier before its existing component lookup; canonical pre-existing cases were not edited. Without this barrier, the older guard harness intermittently queries an unrendered Review host; logs retain those failures rather than attributing them to these fixes.
+
+Isolated evidence: `/opt/data/cache/scratch/rift-nav-race-4175/` (`red1.log`, `green1.log`, `red2.log`, `final-build.log`, `final-races.log`, `final-guards.log`, `source-fingerprints.json`). Preview used only port **4175** and `race-out/`; no server remains. Final tested renderer TS/HTML/styles match the current canonical sources, including Welcome changes. App TS SHA-256: `7866edb5ae056ad95f0ab7c1d63a505d1d860b13da04fc4e50b0d976085714b1`; full source hashes are in the JSON. Canonical regression file SHA-256: `2039be8de9138750b481f292b65b224b3e53e615d159aae2b3cf89cee6c91352`.
+
+Rerun from that isolated directory: `CHROMIUM_EXECUTABLE=/opt/hermes/tools/chromium-1208/chrome-linux64/chrome npx playwright test tests/ui/terminal.spec.ts -g 'ordinary source rejects|reloads a canceled selected diff' --repeat-each=5 --reporter=line`. Guard filter: `'late Review patch|late checkpoint patch' --repeat-each=3`. No full-suite, packaging or native authenticated-provider acceptance is claimed here; the combined full gate remains parent-owned.
+
+### Canceled ordinary-source read — canonical follow-up
+
+The remaining spinner race retained `repositoryFileLoading=true` after Agent/Review invalidated an ordinary Explorer/search read; the obsolete read's guarded `finally` could no longer clear it. The fix retains only the pending source intent (path/root/token), clears canceled loading on workspace departure, and performs a fresh guarded ordinary-source read on Back to code. It never restores the canceled reply. New references, changed-file selections and repository/comparison replacement discard that intent; changed-file recovery still uses the patch loader. No new ZIP/Git-initialization source-loading path was added.
+
+Four appended Agent/Review × resolve/reject cases genuinely failed on the unmodified source because Back to code issued no new read (`red.log`: **4 failed**). After the minimal fix, all four explicitly observe the new read only after Back, its pending spinner, actual fixture source, real syntax-worker highlighting, cleared loading and absence of obsolete content/errors. Four bounded negative cases cover replacement repository, comparison, newer Review reference and changed-file selection. Canonical build/typecheck passed. The eight new cases, three prior race cases and six late Review patch guards passed **51/51** with three repetitions; the six guards retain the parent's explicit Review-visible barrier. Final `git diff --check` passed and preview port 4173 is free.
+
+Evidence directory: `/opt/data/cache/scratch/ordinary-source-race/`. Logs: `red-build.log`, `red.log`, `green-build.log`, `final-green.log`. Intermediate `green.log` and `repeated-green.log` retain negative-test harness failures (hidden Back action after root replacement and a Changes click that legitimately reloaded the still-selected source); the final negatives use direct return transitions where needed and direct Explorer selection. Existing Node deprecation and browser favicon 404 diagnostics remain in logs. Current app TS SHA-256: `f373a8ca0378481b7e387f3d93d08b33e8a4d7046bb0def4aa1d0a7fa9220355`; terminal spec: `32f855840012131a443784b667bcc399ae5d24c6cd0a80b19e813a8c1350a9ed`. These supersede the earlier app/spec fingerprints above.
+
+Canonical reproduction: `npm run build`, then `CHROMIUM_EXECUTABLE=/opt/hermes/tools/chromium-1208/chrome-linux64/chrome npx playwright test tests/ui/terminal.spec.ts -g 'reloads canceled ordinary source|canceled ordinary source is not revived|ordinary source rejects|reloads a canceled selected diff|late Review patch' --repeat-each=3 --reporter=line`. This follow-up did **not** run full suites, packaging, commit or push. The earlier full UI gate was interrupted, not passed; the parent owns the final combined gate on frozen source.
