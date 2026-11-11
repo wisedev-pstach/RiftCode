@@ -6,10 +6,20 @@
   </main>
 } @else if (!repository()) {
   <main class="center-state">
-    <span class="loading-wordmark"><strong>RIFT</strong><small>/code</small><em>v{{ appVersion }}</em></span>
-    <h1>Open a Git repository</h1>
-    @if (error()) { <p role="alert">{{ error() }}</p><button class="primary-button" (click)="retryRepository()">Retry</button> } @else { <p>Launch Rift from a repository or choose one here.</p> }
-    <button class="primary-button" (click)="chooseRepository()">Choose repository</button>
+    <section class="repository-welcome" aria-labelledby="repository-welcome-title">
+      <span class="welcome-wordmark" aria-label="RIFTcode"><strong>RIFT</strong><small>/code</small><em>v{{ appVersion }}</em></span>
+      <h1 id="repository-welcome-title">Open a Git repository</h1>
+      @if (error()) {
+        <p role="alert">{{ repositoryErrorMessage() }}</p>
+      } @else { <p>Choose an existing checkout to start reviewing code.</p> }
+      <div class="repository-welcome-actions">
+        <button class="primary-button" [disabled]="repositoryChoosing()" (click)="chooseRepository()">{{ repositoryChoosing() ? 'Choosing…' : 'Choose repository' }}</button>
+        @if (error()) { <button class="welcome-retry" [disabled]="repositoryChoosing()" (click)="retryRepository()">Retry</button> }
+      </div>
+      @if (error()) {
+        <details class="repository-error-details"><summary>Technical details</summary><pre>{{ error() }}</pre></details>
+      }
+    </section>
   </main>
 } @else {
   <main class="app-shell" [class.platform-windows]="platform === 'win32'" [class.platform-macos]="platform === 'darwin'">
@@ -69,7 +79,7 @@
       </div>
     </header>
 
-    <section #workspace class="workspace" [style.--dock-height]="effectiveDockHeight() + 'px'" [class.terminal-docked]="terminalDocked()" [class.review-open]="reviewSidebarOpen()" [class.resizing-changes]="changesPanelResizing()" [style.--changes-width]="effectiveChangesPanelWidth() + 'px'">
+    <section #workspace class="workspace" [style.--dock-height]="effectiveDockHeight() + 'px'" [class.terminal-docked]="agentDockVisible()" [class.review-open]="reviewSidebarOpen()" [class.resizing-changes]="changesPanelResizing()" [style.--changes-width]="effectiveChangesPanelWidth() + 'px'">
       <aside class="changes-panel">
         <div class="panel-title">
           <span class="sidebar-view-toggle" aria-label="Sidebar view">
@@ -224,12 +234,12 @@
         ></button>
       </aside>
 
-      <rift-ai-terminal (switchDock)="prepareTerminalReview()" [docked]="terminalDocked()" (dock)="dockTerminal()" (closeDock)="closeTerminalDock()" #aiTerminal [hidden]="!terminalOpen() || reviewWorkbenchOpen()" [root]="repository()!.root" [paths]="repositoryPaths()" [dark]="darkTheme()" [noteCount]="notes().length" [selectedNoteCount]="selectedNotes().length" [hasSelection]="selectedLineCount() > 0" (review)="prepareTerminalReview()" (notes)="reviewSidebarOpen.set(!reviewSidebarOpen())" (back)="showDiff()" (copyNotes)="copyNotes()" (insertNotes)="insertTerminalNotes()" (insertSelection)="insertTerminalSelection()" (navigate)="navigateTerminalSource($event)" (checkpointReset)="resetPromptReview()" (checkpointReview)="openPromptReview($event)" (readyChange)="terminalReady.set($event)" />
-      @if(reviewVisited()) {<rift-review-terminal (switchDock)="openTerminal()" [docked]="terminalDocked()" (dock)="dockTerminal()" (closeDock)="closeTerminalDock()" #reviewTerminal [hidden]="!terminalOpen() || !reviewWorkbenchOpen()" [reviewContext]="terminalReviewContext()" [root]="repository()!.root" [paths]="repositoryPaths()" [dark]="darkTheme()" [noteCount]="notes().length" [selectedNoteCount]="selectedNotes().length" [hasSelection]="selectedLineCount() > 0" (notes)="reviewSidebarOpen.set(!reviewSidebarOpen())" (back)="showDiff()" (copyNotes)="copyNotes()" (insertNotes)="insertTerminalNotes()" (insertSelection)="insertTerminalSelection()" (navigate)="navigateTerminalSource($event)" />}
-      @if (terminalDocked()) {
+      <rift-ai-terminal (switchDock)="prepareTerminalReview()" [docked]="terminalDocked()" (dock)="dockTerminal()" (closeDock)="closeTerminalDock()" #aiTerminal [hidden]="!terminalOpen() || reviewWorkbenchOpen()" [root]="repository()!.root" [paths]="terminalSourcePaths()" [dark]="darkTheme()" [noteCount]="notes().length" [selectedNoteCount]="selectedNotes().length" [hasSelection]="selectedLineCount() > 0" (review)="prepareTerminalReview()" (notes)="reviewSidebarOpen.set(!reviewSidebarOpen())" (back)="showDiff()" (copyNotes)="copyNotes()" (insertNotes)="insertTerminalNotes()" (insertSelection)="insertTerminalSelection()" (navigate)="navigateTerminalSource($event)" (checkpointReset)="resetPromptReview()" (checkpointReview)="openPromptReview($event)" (readyChange)="terminalReady.set($event)" />
+      @if(reviewVisited()) {<rift-review-terminal #reviewTerminal [hidden]="!terminalOpen() || !reviewWorkbenchOpen()" [reviewContext]="terminalReviewContext()" [root]="repository()!.root" [paths]="terminalSourcePaths()" [dark]="darkTheme()" [noteCount]="notes().length" [selectedNoteCount]="selectedNotes().length" [hasSelection]="selectedLineCount() > 0" (notes)="reviewSidebarOpen.set(!reviewSidebarOpen())" (back)="showDiff()" (copyNotes)="copyNotes()" (insertNotes)="insertTerminalNotes()" (insertSelection)="insertTerminalSelection()" (navigate)="navigateTerminalSource($event, 'review')" />}
+      @if (agentDockVisible()) {
         <button class="dock-resizer" role="separator" aria-label="Resize bottom terminal" aria-orientation="horizontal" [attr.aria-valuenow]="effectiveDockHeight()" [attr.aria-valuemin]="dockMinimum()" [attr.aria-valuemax]="dockMaximum()" aria-valuetext="Bottom terminal height in pixels" (pointerdown)="beginDockResize($event)" (pointermove)="moveDockResize($event)" (pointerup)="endDockResize()" (pointercancel)="endDockResize()" (lostpointercapture)="endDockResize()" (keydown)="resizeDockWithKeyboard($event)"></button>
       }
-      @if (!terminalOpen() || terminalDocked()) {
+      @if (!terminalOpen() || agentDockVisible()) {
       <section class="diff-panel">
         @if (promptReview(); as prompt) { <div class="prompt-comparison" role="status" aria-label="Prompt comparison"><span>Changes since prompt {{ prompt.number }}: {{ prompt.label }} · {{ prompt.live ? 'captured live view' : 'frozen' }} · {{ prompt.files.length }} {{ prompt.files.length === 1 ? 'file' : 'files' }} · +{{ prompt.additions }} −{{ prompt.deletions }}</span><button (click)="leavePromptReview()">Repository comparison</button></div> }
         <div class="diff-toolbar">
@@ -266,6 +276,7 @@
             </div>
           </div>
         </div>
+        @if(sourceTarget(); as target) {<div class="source-reference" role="status"><button (click)="sourceOrigin()==='review' ? prepareTerminalReview() : openTerminal()">{{ sourceOrigin()==='review' ? 'From Review' : 'From Agent' }}</button><span>{{ target.path }}:{{ target.line }}:{{ target.column }}</span><button (click)="sourceTarget.set(null);sourceOrigin.set(null)" aria-label="Dismiss source reference">×</button></div>}
         <div class="diff-viewport">
         <div #diffScroll class="diff-scroll" role="listbox" aria-multiselectable="true" aria-label="Changed lines">
           @if (repositoryFileLoading()) {
@@ -279,7 +290,7 @@
             @if (sourceTarget(); as target) { <p class="source-location">{{ target.path }}:{{ target.line }}:{{ target.column }} · column {{ target.column }}</p> }
             <div class="repository-file-lines">
               @for (line of repositoryFileLines(); track $index) {
-                <div class="repository-file-row" [class.source-target]="sourceTarget() && $index + 1 >= sourceTarget()!.line && $index + 1 <= (sourceTarget()!.endLine || sourceTarget()!.line)"><span>{{ $index + 1 }}</span><code>{{ line || " " }}</code></div>
+                <div class="repository-file-row" tabindex="0" [class.source-target]="sourceTarget() && $index + 1 >= sourceTarget()!.line && $index + 1 <= (sourceTarget()!.endLine || sourceTarget()!.line)"><span>{{ $index + 1 }}</span>@if(rows()[$index]?.highlighted){<code [innerHTML]="rows()[$index].highlighted"></code>}@else{<code>{{ line || " " }}</code>}</div>
               }
             </div>
           } @else if (patch()?.binary) {
@@ -290,6 +301,7 @@
                 class="diff-row {{ row.kind }}"
                 [attr.data-diff-index]="$index"
                 [class.line-selected]="isRowSelected($index, row)"
+                [class.source-target]="isSourceTarget(row)"
                 [attr.tabindex]="isSelectable(row) ? 0 : -1"
                 [attr.role]="isSelectable(row) ? 'option' : null"
                 [attr.aria-selected]="isSelectable(row) ? isRowSelected($index, row) : null"
@@ -344,6 +356,7 @@
                         class="split-side left {{ left.row.kind }}"
                         [attr.data-diff-index]="left.index"
                         [class.line-selected]="isRowSelected(left.index, left.row)"
+                        [class.source-target]="isSourceTarget(left.row) && selectedFile()?.status === 'deleted'"
                         tabindex="0"
                         role="option"
                         [attr.aria-selected]="isRowSelected(left.index, left.row)"
@@ -379,6 +392,7 @@
                         class="split-side right {{ right.row.kind }}"
                         [attr.data-diff-index]="right.index"
                         [class.line-selected]="isRowSelected(right.index, right.row)"
+                        [class.source-target]="isSourceTarget(right.row) && selectedFile()?.status !== 'deleted'"
                         [attr.tabindex]="pair.left?.index === right.index ? -1 : 0"
                         [attr.role]="pair.left?.index === right.index ? null : 'option'"
                         [attr.aria-selected]="pair.left?.index === right.index ? null : isRowSelected(right.index, right.row)"

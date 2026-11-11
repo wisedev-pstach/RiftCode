@@ -1,13 +1,10 @@
 {
-  "version": "0.8.1",
+  "version": "0.8.2",
   "releaseNotes": [
-    "Agent workspace with retained native Claude Code, OpenCode and Codex sessions, including named conversation resume.",
-    "Dock Agent or the independent Review session below file review; resize or unpin without restarting the session.",
-    "Slim dock toolbar with separated compact controls and actual 11px terminal text; undocking restores normal sizing.",
-    "Direct notes and selection insertion without Enter, plus repository file-and-line navigation from terminal output.",
-    "Track individual prompts with working-tree checkpoints, change summaries and exact per-prompt review diffs.",
-    "Dedicated scoped review requests, custom instructions and follow-ups, with immediate review-brief collapse while sending.",
-    "Search branches inside comparison selectors; improved startup geometry, Windows PTY metadata and retained scroll anchors.",
-    "Available through the normal update manifest and installers; isolated preview profiles intentionally keep updates disabled."
+    "Review now uses the full workspace; Agent alone retains bottom docking and its live session.",
+    "Compact review brief with aligned Run/Rerun controls, expandable instructions and inspectable sent requests.",
+    "Review references open focused, syntax-coloured Changes diffs or unchanged source with a distinct From Review marker.",
+    "Follow-ups are typed directly in the native CLI; the redundant app-level composer is removed.",
+    "Refreshed repository welcome screen with one clear primary action, friendly Git errors and optional technical details."
   ]
 }

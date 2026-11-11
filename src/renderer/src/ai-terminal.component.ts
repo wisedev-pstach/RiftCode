@@ -13,21 +13,21 @@ export class AiTerminalComponent implements AfterViewInit, OnDestroy {
   readonly slot:'terminal'|'review'='terminal';
   @Input() reviewContext:ReviewContext|null=null;
   private dockedValue=false;
-  @Input() set docked(value:boolean){this.dockedValue=value;if(this.terminal)this.scheduleFit();}
+  @Input() set docked(value:boolean){this.dockedValue=value&&!this.reviewWorkbench;if(this.terminal)this.scheduleFit();}
   get docked():boolean{return this.dockedValue;}
   @Output() readonly dock=new EventEmitter<void>();
   @Output() readonly closeDock=new EventEmitter<void>();
   @Output() readonly switchDock=new EventEmitter<void>();
   readonly briefCollapsed=signal(false);
-  readonly reviewScope=signal<ReviewScope>('comparison');readonly instructions=signal('');readonly reviewTone=signal<'professional'|'honest'>('professional');readonly followUp=signal('');readonly reviewSending=signal(false);readonly reviewRuns=signal(0);readonly lastReview=signal('');
-  async runReviewRequest(followUp=false):Promise<void>{
+  readonly reviewScope=signal<ReviewScope>('comparison');readonly instructions=signal('');readonly reviewTone=signal<'professional'|'honest'>('professional');readonly reviewSending=signal(false);readonly reviewRuns=signal(0);readonly lastReview=signal('');
+  async runReviewRequest():Promise<void>{
     const id=this.state()?.id,generation=this.generation;
     if(!this.reviewWorkbench||!id||!this.ready()||this.reviewSending())return;
     let text:string;
-    try{text=followUp?this.followUp():buildTerminalReview(this.reviewContext!,this.reviewScope(),this.instructions(),this.reviewTone());if(!text.trim())return;}catch(e){this.error.set(message(e));return;}
-    this.reviewSending.set(true);this.error.set('');if(!followUp)this.briefCollapsed.set(true);
-    try{await window.rift.terminalSubmitReview(id,text);if(this.destroyed||generation!==this.generation||id!==this.state()?.id)return;if(followUp){if(this.followUp()===text)this.followUp.set('');}else{this.reviewRuns.update(n=>n+1);this.lastReview.set(text);}this.terminal?.focus();}
-    catch(e){if(!this.destroyed&&generation===this.generation&&id===this.state()?.id){if(!followUp)this.briefCollapsed.set(false);this.error.set(message(e));}}
+    try{text=buildTerminalReview(this.reviewContext!,this.reviewScope(),this.instructions(),this.reviewTone());if(!text.trim())return;}catch(e){this.error.set(message(e));return;}
+    this.reviewSending.set(true);this.error.set('');this.briefCollapsed.set(true);
+    try{await window.rift.terminalSubmitReview(id,text);if(this.destroyed||generation!==this.generation||id!==this.state()?.id)return;this.reviewRuns.update(n=>n+1);this.lastReview.set(text);this.terminal?.focus();}
+    catch(e){if(!this.destroyed&&generation===this.generation&&id===this.state()?.id){this.briefCollapsed.set(false);this.error.set(message(e));}}
     finally{if(!this.destroyed&&generation===this.generation&&id===this.state()?.id)this.reviewSending.set(false);}
   }
   readonly root=signal(''); readonly paths=signal<string[]>([]); readonly dark=signal(true);
@@ -75,15 +75,29 @@ export class AiTerminalComponent implements AfterViewInit, OnDestroy {
   readonly choice=signal<'new'|'resume'>('new'); readonly resumeId=signal(''); readonly sessions=signal<AgentSession[]>([]); readonly loadingSessions=signal(false); readonly sessionError=signal(''); private listGeneration=0;
   readonly state=signal<TerminalState|null>(null); readonly starting=signal(false); readonly ready=signal(false);
   readonly error=signal(''); readonly pending=signal(''); readonly hasOutput=signal(false); readonly activeTitle=signal('');
+  readonly reviewReferences=signal<SourceLocation[]>([]);
+  private collectReviewReferences():void {
+    if(!this.reviewWorkbench || !this.terminal)return;
+    const buffer=this.terminal.buffer.active;
+    let text='';
+    for(let y=Math.max(0,buffer.length-120);y<buffer.length;y++){
+      const line=buffer.getLine(y);if(!line)continue;
+      text+=(line.isWrapped?'':' ')+line.translateToString(true);
+    }
+    const unique=new Map<string,SourceLocation>();
+    for(const link of sourceLinks(text.slice(-16384),this.paths(),this.root()))unique.set(`${link.path}:${link.line}:${link.column}`,link);
+    this.reviewReferences.set([...unique.values()].slice(-8));
+  }
   readonly available=!!window.rift?.terminalStart;
   private terminal?: Terminal; private fit=new FitAddon(); private observer?: ResizeObserver; private fitFrame?:number;
   private timer?: ReturnType<typeof setTimeout>; private cursor=0; private destroyed=false; private generation=0;
   private previousRoot=''; readonly disconnected=signal(false); private polling=false;
   constructor() {
+    effect(()=>{this.paths();this.collectReviewReferences();});
     effect(()=>{const tracking=(this.tracking()&&this.trackOpen())||this.reviewSending();if(this.terminal)this.terminal.options.disableStdin=tracking;});
     effect(()=>{this.root();this.provider();const choice=this.choice();this.resumeId.set('');this.sessions.set([]);this.sessionError.set('');this.listGeneration++;this.loadingSessions.set(false);if(choice==='resume')void this.loadSessions();});
     effect(() => { const dark=this.dark(); if(this.terminal) this.terminal.options.theme=dark?{background:'#0b0d10',foreground:'#d9dde5',cursor:'#c8ff63'}:{background:'#fafbfc',foreground:'#25313e',cursor:'#476a1c'}; });
-    effect(() => { const root=this.root(); if(this.previousRoot && root!==this.previousRoot) { this.reviewSending.set(false);this.reviewRuns.set(0);this.lastReview.set('');this.briefCollapsed.set(false);this.followUp.set(''); this.generation++;this.tracking.set(false);this.summaries.set([]);this.summaryRequest++;this.summaryLoading.set(false);this.summaryError.set(''); this.starting.set(false); this.state.set(null); this.error.set(''); this.disconnected.set(false); this.cursor=0; this.hasOutput.set(false); this.activeTitle.set(''); this.terminal?.reset(); this.setReady(false); } this.previousRoot=root; });
+    effect(() => { const root=this.root(); if(this.previousRoot && root!==this.previousRoot) { this.reviewSending.set(false);this.reviewRuns.set(0);this.lastReview.set('');this.briefCollapsed.set(false);this.reviewReferences.set([]);this.generation++;this.tracking.set(false);this.summaries.set([]);this.summaryRequest++;this.summaryLoading.set(false);this.summaryError.set(''); this.starting.set(false); this.state.set(null); this.error.set(''); this.disconnected.set(false); this.cursor=0; this.hasOutput.set(false); this.activeTitle.set(''); this.terminal?.reset(); this.setReady(false); } this.previousRoot=root; });
   }
   ngAfterViewInit(): void {
     this.terminal=new Terminal({fontSize:13,fontFamily:'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',scrollback:3000,convertEol:false,allowProposedApi:false,linkHandler:{activate:()=>{}},theme:this.dark()?{background:'#0b0d10',foreground:'#d9dde5',cursor:'#c8ff63'}:{background:'#fafbfc',foreground:'#25313e',cursor:'#476a1c'}});
@@ -157,7 +171,7 @@ export class AiTerminalComponent implements AfterViewInit, OnDestroy {
       this.fitVisible();
       const state=await window.rift.terminalStart(this.provider(),this.mode(),this.terminal.cols,this.terminal.rows,this.choice()==='resume'?this.resumeId():undefined,this.slot);
       if(this.destroyed||generation!==this.generation)return;
-      this.terminal.reset(); this.cursor=0; this.state.set(state);this.reviewRuns.set(0);this.lastReview.set('');this.briefCollapsed.set(false);this.summaries.set([]);this.summaryError.set('');if(!this.reviewWorkbench)this.checkpointReset.emit(); if(this.surface.nativeElement.checkVisibility())this.terminal.focus();
+      this.terminal.reset();this.reviewReferences.set([]); this.cursor=0; this.state.set(state);this.reviewRuns.set(0);this.lastReview.set('');this.briefCollapsed.set(false);this.summaries.set([]);this.summaryError.set('');if(!this.reviewWorkbench)this.checkpointReset.emit(); if(this.surface.nativeElement.checkVisibility())this.terminal.focus();
       if(!this.timer) void this.poll();
     } catch(e) { if(generation===this.generation)this.error.set(message(e)); }
     finally { if(generation===this.generation)this.starting.set(false); }
@@ -191,6 +205,7 @@ export class AiTerminalComponent implements AfterViewInit, OnDestroy {
       if(result.state){this.provider.set(result.state.provider);this.mode.set(result.state.mode);}
       if(result.data) await new Promise<void>(resolve=>this.terminal!.write((result.truncated?'\r\n[Earlier output truncated]\r\n':'')+result.data,resolve));
       if(this.destroyed||generation!==this.generation)return;
+      if(result.data)this.collectReviewReferences();
       // Wait for xterm's parser, not raw nonempty data: partial escape frames are not visible output.
       if(!this.hasOutput() && this.terminal) {
         const buffer=this.terminal.buffer.active;
@@ -218,7 +233,7 @@ export class AiTerminalComponent implements AfterViewInit, OnDestroy {
         text+=chars;
       }
     }
-    return sourceLinks(text,this.paths(),this.root()).map(link=>({text:text.slice(link.start,link.end),range:{start:positions[link.start],end:positions[link.end-1]},activate:(event:MouseEvent)=>{if(event.ctrlKey||event.metaKey)this.navigate.emit(link);},hover:()=>{this.surface.nativeElement.title=`Ctrl/Cmd+click: ${link.path}:${link.line}:${link.column}`;},leave:()=>{this.surface.nativeElement.title='';}}));
+    return sourceLinks(text,this.paths(),this.root()).map(link=>({text:text.slice(link.start,link.end),range:{start:positions[link.start],end:positions[link.end-1]},decorations:{underline:true,pointerCursor:true},activate:(event:MouseEvent)=>{if(event.ctrlKey||event.metaKey)this.navigate.emit(link);},hover:()=>{this.surface.nativeElement.title=`${this.reviewWorkbench?'Review reference · ':''}Ctrl/Cmd+click to inspect Changes: ${link.path}:${link.line}:${link.column}`;},leave:()=>{this.surface.nativeElement.title='';}}));
   }
   private setReady(value:boolean):void {this.ready.set(value);this.readyChange.emit(value);}
   private fail(e:unknown):void {this.disconnected.set(true);this.setReady(false);this.error.set(`Terminal connection unavailable: ${message(e)}. Use Stop, then Start to recover.`);}

@@ -596,8 +596,12 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly selectedRange = signal<SelectionRange | null>(null);
   readonly allChangesSelected = signal(false);
   readonly loading = signal(true);
+  readonly repositoryChoosing = signal(false);
   readonly comparisonChanging = signal(false);
   readonly error = signal<string | null>(null);
+  readonly repositoryErrorMessage = computed(() => /\bnot a git repository\b/i.test(this.error() ?? "")
+    ? "This folder is not a Git repository. Choose an existing checkout."
+    : "Could not open the repository. Try again or choose another checkout.");
   readonly reviewSidebarOpen = signal(false);
   readonly reviewPageOpen = signal(false);
   readonly toolsMenu = signal<ToolsMenu | null>(null);
@@ -652,6 +656,7 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly comparisonChoices = computed(() => this.repository()?.comparisons.map(option => ({value: option.id, label: option.label, detail: option.detail, pinned: option.id === 'working-tree' || option.id === 'current-branch'})) ?? []);
   // Renderer-lifetime preference only; neither layout transition touches session ownership.
   readonly terminalDocked = signal(false);
+  readonly agentDockVisible = computed(() => this.terminalDocked() && this.terminalOpen() && !this.reviewWorkbenchOpen());
   readonly dockHeight = signal(480);
   private readonly dockAreaHeight = signal(806);
   readonly dockMinimum = computed(() => Math.min(280, Math.floor(this.dockAreaHeight() * .45)));
@@ -684,16 +689,17 @@ export class AppComponent implements OnInit, OnDestroy {
     this.setDockHeight(event.key==='Home'?this.dockMinimum():event.key==='End'?this.dockMaximum():this.effectiveDockHeight()+(event.key==='ArrowUp'?20:-20));
   }
   readonly terminalOpen = signal(true);
-  dockTerminal():void { this.terminalDocked.set(true);this.terminalOpen.set(true); }
+  dockTerminal():void { if(this.reviewWorkbenchOpen())return; this.terminalDocked.set(true);this.terminalOpen.set(true); }
   closeTerminalDock():void { this.terminalDocked.set(false);this.terminalOpen.set(true); }
   readonly terminalReady = signal(false);
+  readonly terminalSourcePaths = computed(()=>[...new Set([...this.repositoryPaths(),...(this.repository()?.files.map(file=>file.path)??[])])]);
   readonly sourceTarget = signal<SourceLocation | null>(null);
   @ViewChild('aiTerminal') aiTerminal?: AiTerminalComponent;
   @ViewChild('reviewTerminal') reviewTerminal?: ReviewTerminalComponent;
   readonly reviewWorkbenchOpen=signal(false);readonly reviewVisited=signal(false);
   readonly terminalReviewContext=computed<ReviewContext>(()=>{const repo=this.repository();return {repository:repo?.name??'',comparison:repo?.comparisonLabel??'',startRevision:repo?.startRevision??'',endRevision:repo?.endRevision??null,files:repo?.files.map(file=>file.path)??[],currentPath:this.selectedPath()??'',notes:this.formatNotes(this.selectedNotes()),projectContext:this.workspaceContextSection([]).join('\n')};});
   private contextTerminal():AiTerminalComponent|undefined{return this.reviewWorkbenchOpen()?this.reviewTerminal:this.aiTerminal;}
-  openTerminal(): void { this.reviewWorkbenchOpen.set(false);this.terminalOpen.set(true); this.chatPageOpen.set(false); this.reviewPageOpen.set(false); void this.loadRepositoryPaths(); }
+  openTerminal(): void { this.repositoryViewRequest++;this.patchRequest++;this.highlightRequest++;this.repositoryFileLoading.set(false);this.reviewWorkbenchOpen.set(false);this.terminalOpen.set(true); this.chatPageOpen.set(false); this.reviewPageOpen.set(false); void this.loadRepositoryPaths(); }
   insertTerminalNotes(): void { const notes=this.selectedNotes(); if(notes.length) { if(!this.terminalOpen())this.openTerminal(); void this.contextTerminal()?.insert(this.formatNotes(notes)); } }
   insertTerminalSelection(): void {
     const context=this.selectedContext();
@@ -702,20 +708,57 @@ export class AppComponent implements OnInit, OnDestroy {
     void this.contextTerminal()?.insert(`Location: ${this.selectedPath()}:${context.startLine}-${context.endLine}\nSelected diff:\n\x60\x60\x60diff\n${context.diff}\n\x60\x60\x60`);
     this.toolsMenu.set(null);
   }
-  async navigateTerminalSource(location: SourceLocation): Promise<void> {
-    const root=this.repository()?.root;
-    const request=++this.repositoryViewRequest;
-    try {
-      // Main's known-file + realpath guard remains authoritative, including symlink rejection.
-      const file=await window.rift.readRepositoryViewFile(location.path);
-      if(this.repository()?.root!==root || request!==this.repositoryViewRequest)return;
-      this.promptReview.set(null);this.showDiff(); this.editMode.set(false); this.patchRequest++;
-      this.selectedPath.set(location.path); this.patch.set(null); this.highlightedRows.set(null);
-      this.repositoryFileError.set(null); this.repositoryFileLoading.set(false); this.repositoryFileView.set(file);
-      this.selectedRange.set(null); this.sourceTarget.set(location);
-      requestAnimationFrame(()=>this.diffScroll?.nativeElement.querySelector('.source-target')?.scrollIntoView({block:'center'}));
-    } catch(e) { if(this.repository()?.root===root && request===this.repositoryViewRequest)this.reviewMessage.set(e instanceof Error?e.message:String(e)); }
+  readonly sourceOrigin = signal<'review'|'agent'|null>(null);
+  isSourceTarget(row: DiffRow): boolean {
+    const target=this.sourceTarget();
+    if(!target || target.path!==this.selectedPath())return false;
+    const line=this.selectedFile()?.status==='deleted'?row.oldLine:row.newLine;
+    return line!==undefined && line>=target.line && line<=(target.endLine??target.line);
   }
+  async navigateTerminalSource(location: SourceLocation, origin:'review'|'agent'='agent'): Promise<void> {
+    this.pendingOrdinarySource = null;
+    const root=this.repository()?.root,token=this.repositoryToken;
+    const request=++this.repositoryViewRequest;
+    this.patchRequest++;this.highlightRequest++;
+    const current=()=>root===this.repository()?.root && token===this.repositoryToken && request===this.repositoryViewRequest;
+    const changed=this.repository()?.files.find(file=>file.path===location.path);
+    const hasTarget=()=>[location.line,location.endLine??location.line].every(line=>this.parsedRows().some(row=>this.targetLine(row,changed?.status==='deleted')===line));
+    this.sourceTarget.set(null);this.sourceOrigin.set(null);this.reviewMessage.set(null);this.error.set(null);
+    try {
+      // Existing-file references always pass main's known-file/realpath guard.
+      // Deleted references use the trusted comparison's historical patch instead.
+      const file=changed?.status==='deleted'?null:await window.rift.readRepositoryViewFile(location.path);
+      if(!current())return;
+      if(!changed && file?.truncated && (location.endLine??location.line)>=file.content.split('\n').length)throw new Error('Referenced line is unavailable in this truncated preview.');
+      this.promptReview.set(null);this.showDiff(false);this.terminalOpen.set(false);this.reviewWorkbenchOpen.set(false);
+      this.sidebarView.set('changes');this.fileFilter.set('');this.hideReviewed.set(false);
+      this.editMode.set(false);this.patchRequest++;this.highlightRequest++;
+      this.selectedPath.set(location.path);this.selectedRange.set(null);this.allChangesSelected.set(false);
+      this.patch.set(null);this.highlightedRows.set(null);this.repositoryFileView.set(null);
+      this.repositoryFileError.set(null);this.repositoryFileLoading.set(false);
+      if(changed){
+        await this.loadPatch(location.path);
+        if(!current())return;
+        if(!this.patch())throw new Error('The referenced diff is unavailable.');
+        if(!hasTarget()){
+          this.fullFile.set(true);await this.loadPatch(location.path);
+          if(!current())return;
+        }
+      }else if(file){
+        if(file.binary)throw new Error('The referenced file is binary.');
+        this.repositoryFileView.set(file);this.requestHighlighting();
+      }
+      if(!hasTarget())throw new Error('Referenced line is unavailable in this preview.');
+      if(!current())return;
+      this.sourceTarget.set(location);this.sourceOrigin.set(origin);
+      requestAnimationFrame(()=>{
+        if(!current() || this.sourceTarget()!==location)return;
+        const row=this.diffScroll?.nativeElement.querySelector<HTMLElement>('.source-target');
+        row?.scrollIntoView({block:'center'});row?.focus({preventScroll:true});
+      });
+    } catch(e) { if(current()){this.sourceTarget.set(null);this.sourceOrigin.set(null);const message=e instanceof Error?e.message:String(e);this.reviewMessage.set(message);this.error.set(message);} }
+  }
+  private targetLine(row:DiffRow,deleted=false):number|undefined {return deleted?row.oldLine:row.newLine;}
   readonly activeQuestion = signal("");
   readonly conversations = signal<Conversation[]>([]);
   readonly repositoryConversations = computed(() => {
@@ -807,7 +850,9 @@ export class AppComponent implements OnInit, OnDestroy {
   });
   readonly selectedAgentOption = computed(() => this.agents().find((agent) => agent.id === this.selectedAgent()));
   readonly detectedLanguage = computed(() => detectLanguage(this.selectedPath()));
-  readonly parsedRows = computed(() => parsePatch(this.patch()?.patch ?? ""));
+  readonly parsedRows = computed<DiffRow[]>(() => this.repositoryFileView()
+    ? this.repositoryFileLines().map((content,index)=>({kind:'context',content,newLine:index+1,oldLine:index+1}))
+    : parsePatch(this.patch()?.patch ?? ""));
   readonly highlightedRows = signal<DiffRow[] | null>(null);
   readonly rows = computed(() => this.highlightedRows() ?? this.parsedRows());
   readonly splitRows = computed(() => pairSplitRows(this.rows()));
@@ -939,6 +984,7 @@ export class AppComponent implements OnInit, OnDestroy {
   private repositorySearchRequest = 0;
   private searchHighlightRequest = 0;
   private repositoryViewRequest = 0;
+  private pendingOrdinarySource: { path: string; root: string | undefined; token: number } | null = null;
   private repositoryPathsRequest = 0;
   private repositoryToken = 0;
   private repositorySearchTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1092,6 +1138,7 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   ngOnDestroy(): void {
+    this.repositoryViewRequest++;this.patchRequest++;this.highlightRequest++;this.repositoryToken++;
     this.dockObserver?.disconnect();
     this.removeRepositoryListener?.();
     this.removeAgentListener?.();
@@ -1104,6 +1151,7 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   async retryRepository(): Promise<void> {
+    if (this.repositoryChoosing()) return;
     const request=++this.repositoryRequest;
     this.loading.set(true);this.error.set(null);
     try { const repository=await window.rift.openRepository();if(request===this.repositoryRequest)this.acceptRepository(repository); }
@@ -1112,6 +1160,8 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   async chooseRepository(): Promise<void> {
+    if (this.repositoryChoosing() || this.loading()) return;
+    this.repositoryChoosing.set(true);
     const request = ++this.repositoryRequest;
     try {
       const repository = await window.rift.chooseRepository();
@@ -1120,6 +1170,8 @@ export class AppComponent implements OnInit, OnDestroy {
       if (request === this.repositoryRequest) {
         this.error.set(reason instanceof Error ? reason.message : String(reason));
       }
+    } finally {
+      this.repositoryChoosing.set(false);
     }
   }
 
@@ -1547,6 +1599,8 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   selectFile(path: string): void {
+    this.pendingOrdinarySource = null;
+    this.reviewWorkbenchOpen.set(false);this.sourceOrigin.set(null);
     this.terminalOpen.set(this.terminalDocked()); this.sourceTarget.set(null);
     this.fileToolsMenu.set(null);
     this.chatPageOpen.set(false);
@@ -1556,7 +1610,7 @@ export class AppComponent implements OnInit, OnDestroy {
     this.repositoryFileView.set(null);
     this.repositoryFileLoading.set(false);
     this.repositoryFileError.set(null);
-    if (path === this.selectedPath() && !wasRepositoryView) return;
+    if (path === this.selectedPath() && !wasRepositoryView && this.patch()) return;
     this.selectedPath.set(path);
     this.selectedRange.set(null);
     this.allChangesSelected.set(false);
@@ -1799,6 +1853,9 @@ export class AppComponent implements OnInit, OnDestroy {
       return;
     }
     const request = ++this.repositoryViewRequest;
+    const root = this.repository()?.root, token = this.repositoryToken;
+    this.pendingOrdinarySource = { path, root, token };
+    this.highlightRequest++;
     this.chatPageOpen.set(false);
     this.reviewPageOpen.set(false);
     this.editMode.set(false);
@@ -1814,11 +1871,17 @@ export class AppComponent implements OnInit, OnDestroy {
     this.resetHorizontalScroll();
     try {
       const file = await window.rift.readRepositoryViewFile(path);
-      if (request === this.repositoryViewRequest && this.selectedPath() === path) this.repositoryFileView.set(file);
+      if (request === this.repositoryViewRequest && root === this.repository()?.root && token === this.repositoryToken && this.selectedPath() === path) {
+        this.repositoryFileView.set(file);
+        this.requestHighlighting();
+      }
     } catch (reason) {
       if (request === this.repositoryViewRequest) this.repositoryFileError.set(reason instanceof Error ? reason.message : String(reason));
     } finally {
-      if (request === this.repositoryViewRequest) this.repositoryFileLoading.set(false);
+      if (request === this.repositoryViewRequest) {
+        this.repositoryFileLoading.set(false);
+        this.pendingOrdinarySource = null;
+      }
     }
   }
 
@@ -2310,6 +2373,8 @@ export class AppComponent implements OnInit, OnDestroy {
 
   prepareTerminalReview():void {
     if(!this.repository())return;
+    this.repositoryViewRequest++;this.patchRequest++;this.highlightRequest++;
+    this.repositoryFileLoading.set(false);
     this.terminalOpen.set(true);this.chatPageOpen.set(false);this.reviewPageOpen.set(false);this.reviewVisited.set(true);this.reviewWorkbenchOpen.set(true);void this.loadRepositoryPaths();
   }
 
@@ -2435,7 +2500,20 @@ export class AppComponent implements OnInit, OnDestroy {
     }
   }
 
-  showDiff(): void {
+  showDiff(invalidateSource=true): void {
+    // Retain only the intent, never a canceled reply. A newer reference, selection
+    // or repository/comparison must not revive the old ordinary-source path.
+    const pendingSource = this.pendingOrdinarySource;
+    const reloadSource = invalidateSource && this.terminalOpen() && pendingSource
+      && pendingSource.root === this.repository()?.root && pendingSource.token === this.repositoryToken
+      && pendingSource.path === this.selectedPath() && !this.selectedFile()
+      && !this.promptReview() && !this.repositoryFileView() && !this.patch()
+      ? pendingSource.path : null;
+    const reloadPath = invalidateSource && this.terminalOpen() && !this.patch()
+      && !this.repositoryFileView() && !this.repositoryFileLoading() && this.selectedFile()
+      ? this.selectedPath() : null;
+    if(invalidateSource){this.repositoryViewRequest++;this.patchRequest++;}
+    this.reviewWorkbenchOpen.set(false);
     this.terminalOpen.set(this.terminalDocked());
     this.chatPageOpen.set(false);
     this.reviewPageOpen.set(false);
@@ -2444,6 +2522,8 @@ export class AppComponent implements OnInit, OnDestroy {
     this.fileToolsMenu.set(null);
     this.questionComposerOpen.set(false);
     this.pendingProviderSessionId = undefined;
+    if (reloadPath) void this.loadPatch(reloadPath);
+    else if (reloadSource) void this.openRepositoryPath(reloadSource);
   }
 
   openInlineNote(note: ReviewNote): void {
@@ -3128,6 +3208,7 @@ export class AppComponent implements OnInit, OnDestroy {
       || previousBranch !== repository.branch
       || previousComparison !== repository.comparisonId
       || previousTargetBranch !== repository.targetBranch;
+    if(comparisonChanged){this.pendingOrdinarySource=null;this.sourceTarget.set(null);this.sourceOrigin.set(null);this.highlightRequest++;this.patchRequest++;}
     this.repository.set(repository);
     if (previousRoot !== repository.root) {
       this.repositoryToken += 1;
@@ -3259,7 +3340,7 @@ export class AppComponent implements OnInit, OnDestroy {
       const patch = checkpoint ? await window.rift.promptPatch(checkpoint.id,path,checkpoint.viewId) : await window.rift.getFilePatch(path, this.fullFile());
       if (current()) {
         if (
-          previousPatch?.path === patch.path
+          preserveSelection && previousPatch?.path === patch.path
           && previousPatch.patch === patch.patch
           && previousPatch.binary === patch.binary
         ) return;

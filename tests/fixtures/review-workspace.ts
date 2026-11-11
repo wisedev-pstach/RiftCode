@@ -20,7 +20,7 @@ process.stdin.on('data',d=>{
  fs.appendFileSync('input.bin',d);buffer+=d.toString();
  const end=buffer.indexOf('\x1b[201~');
  if(end>=0){draft+=buffer.slice(buffer.indexOf('\x1b[200~')+6,end);buffer=buffer.slice(end+6).replace(/\r/g,'');}
- else if(buffer==='\r'){accepted.push(draft);fs.writeFileSync('accepted.json',JSON.stringify(accepted));console.log('\r\nREQUEST_ACCEPTED='+accepted.length+' Inspect src/changed.ts:2:1');draft='';buffer='';}
+ else if(buffer.endsWith('\r')){accepted.push(draft+buffer.slice(0,-1));fs.writeFileSync('accepted.json',JSON.stringify(accepted));console.log('\r\nREQUEST_ACCEPTED='+accepted.length+' Inspect src/changed.ts:2:1');draft='';buffer='';}
 });`,{mode:0o755});
  const workspace=new TerminalWorkspace(async()=>command);const starts:{slot:string;mode:string}[]=[];
  return {root,workspace,starts,

@@ -4,13 +4,13 @@ import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 import ts from 'typescript';
 const read=(path:string)=>JSON.parse(readFileSync(new URL('../'+path,import.meta.url),'utf8'));
-test('official version is 0.8.1 across package, lock and display manifest',()=>{
- assert.equal(read('package.json').version,'0.8.1');
- assert.equal(read('package-lock.json').version,'0.8.1');
- assert.equal(read('package-lock.json').packages[''].version,'0.8.1');
- assert.equal(read('version.json').version,'0.8.1');
+test('candidate version is 0.8.2 across package, lock and display manifest',()=>{
+ assert.equal(read('package.json').version,'0.8.2');
+ assert.equal(read('package-lock.json').version,'0.8.2');
+ assert.equal(read('package-lock.json').packages[''].version,'0.8.2');
+ assert.equal(read('version.json').version,'0.8.2');
 });
-test('production updater recognizes the official version above old release and preview',()=>{
+test('production updater recognizes the candidate above old release and preview',()=>{
  const source=readFileSync(new URL('../src/main/index.ts',import.meta.url),'utf8');
  const ast=ts.createSourceFile('index.ts',source,ts.ScriptTarget.Latest,true);
  const names=['versionParts','isNewerVersion'];
@@ -21,6 +21,7 @@ test('production updater recognizes the official version above old release and p
  const version=read('version.json').version;
  assert.equal(newer(version,'0.7.3'),true);
  assert.equal(newer(version,'0.8.0'),true);
+ assert.equal(newer(version,'0.8.1'),true);
  assert.equal(newer(version,version),false);
  assert.equal(newer('0.7.3',version),false);
  assert.ok(source.includes('https://raw.githubusercontent.com/wisedev-pstach/RiftCode/main/version.json'));
