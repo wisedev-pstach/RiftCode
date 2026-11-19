@@ -211,21 +211,24 @@ button { color: inherit; font: inherit; }
 .explorer-tool-button:hover:not(:disabled) { color: #b8c4ce; border-color: #52606d; }
 .explorer-tool-button:disabled { cursor: not-allowed; opacity: .4; }
 .explorer-tree { min-height: 0; flex: 1; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 7px 5px 16px; }
-.explorer-row { width: 100%; height: 27px; min-width: 0; display: flex; align-items: center; gap: 6px; border: 0; border-radius: 4px; padding-block: 3px; padding-right: 6px; color: #aeb7c1; background: transparent; text-align: left; cursor: pointer; }
+.explorer-row { width: 100%; height: 27px; min-width: 0; display: flex; align-items: center; gap: 6px; border: 0; border-radius: 4px; padding-block: 3px; padding-inline: 4px 6px; color: #aeb7c1; background: transparent; text-align: left; cursor: pointer; }
 .explorer-row:hover { color: #d7dde4; background: #181d23; }
 .explorer-row:focus-visible { outline: 1px solid #71804f; outline-offset: -1px; }
 .explorer-file-row.selected { color: #e0e6ec; background: #222831; box-shadow: inset 2px 0 #c8ff63; }
-.explorer-file-row.reviewed { opacity: .65; }
+.explorer-file-row.reviewed .explorer-file-open { opacity: .65; }
+.explorer-file-open { min-width: 0; height: 100%; flex: 1; display: flex; align-items: center; gap: 6px; border: 0; padding: 0; color: inherit; background: transparent; text-align: left; cursor: pointer; }
+.explorer-file-open:focus-visible { outline: 1px solid #71804f; outline-offset: 1px; }
 .explorer-chevron { width: 10px; flex: none; color: #727d88; font: 16px/1 ui-monospace, monospace; transform-origin: center; transition: transform 100ms ease; }
 .explorer-chevron.expanded { transform: rotate(90deg); }
 .explorer-folder-icon { width: 17px; height: 15px; flex: none; overflow: visible; fill: #b58a43; stroke: #d4ad67; stroke-linejoin: round; stroke-width: 1; }
 .explorer-folder-toggle { min-width: 0; flex: 1; display: flex; align-items: center; gap: 6px; border: 0; padding: 0; color: inherit; background: transparent; text-align: left; cursor: pointer; }
 .explorer-folder-toggle:focus-visible { outline: 1px solid #71804f; outline-offset: 1px; }
 .explorer-folder-count { flex: none; min-width: 16px; padding: 1px 4px; border-radius: 8px; color: #8d98a4; background: #1f252c; font: 650 8px/1.4 ui-monospace, monospace; text-align: center; }
-.explorer-folder-review { width: 19px; height: 19px; flex: none; display: grid; place-items: center; border: 1px solid transparent; border-radius: 50%; padding: 0; color: #66727e; background: transparent; font: 750 9px ui-monospace, monospace; cursor: pointer; }
-.explorer-folder-review:hover { color: #c8ff63; border-color: #607b3f; background: rgba(200, 255, 99, .07); }
-.explorer-folder-review.partial { color: #d7af65; border-color: #665536; }
-.explorer-folder-review.reviewed { color: #182014; border-color: #78a466; background: #87bd78; }
+.explorer-review-slot { width: 15px; height: 15px; flex: none; display: grid; place-items: center; }
+.explorer-review { width: 15px; height: 15px; display: grid; place-items: center; border: 1px solid #4a5560; border-radius: 4px; padding: 0; color: #66727e; background: transparent; font: 750 9px ui-monospace, monospace; cursor: pointer; }
+.explorer-review:hover { color: #c8ff63; border-color: #607b3f; background: rgba(200, 255, 99, .07); }
+.explorer-review.partial { color: #d7af65; border-color: #665536; }
+.explorer-review.reviewed { color: #182014; border-color: #78a466; background: #87bd78; }
 .explorer-entry-name { min-width: 0; overflow: hidden; font-size: 11px; font-weight: 540; text-overflow: ellipsis; white-space: nowrap; }
 .explorer-file-icon { position: relative; width: 15px; height: 18px; flex: none; display: grid; place-items: center; clip-path: polygon(0 0, 10px 0, 15px 5px, 15px 18px, 0 18px); color: #aeb7c1; background: #53606d; }
 .explorer-file-icon::after { position: absolute; top: 0; right: 0; width: 5px; height: 5px; background: rgba(255, 255, 255, .25); content: ""; }
@@ -1121,10 +1124,10 @@ button { color: inherit; font: inherit; }
 :root[data-theme="light"] .explorer-tool-button { color: #65717c; border-color: #bdc6ce; }
 :root[data-theme="light"] .explorer-tool-button:hover:not(:disabled) { color: #303a44; border-color: #8e9aa5; background: #edf1f4; }
 :root[data-theme="light"] .explorer-folder-count { color: #66727e; background: #e2e6ea; }
-:root[data-theme="light"] .explorer-folder-review { color: #77828c; }
-:root[data-theme="light"] .explorer-folder-review:hover { color: #496b18; border-color: #86a55c; background: #eef6e5; }
-:root[data-theme="light"] .explorer-folder-review.partial { color: #8a672c; border-color: #cfb67f; }
-:root[data-theme="light"] .explorer-folder-review.reviewed { color: #fff; border-color: #6f955e; background: #78a869; }
+:root[data-theme="light"] .explorer-review { color: #77828c; border-color: #b4bcc4; }
+:root[data-theme="light"] .explorer-review:hover { color: #496b18; border-color: #86a55c; background: #eef6e5; }
+:root[data-theme="light"] .explorer-review.partial { color: #8a672c; border-color: #cfb67f; }
+:root[data-theme="light"] .explorer-review.reviewed { color: #fff; border-color: #6f955e; background: #78a869; }
 :root[data-theme="light"] .review-file-button { color: #65717c; border-color: #c2cad1; }
 :root[data-theme="light"] .review-file-button:hover { color: #36414b; border-color: #929da7; background: #edf1f4; }
 :root[data-theme="light"] .review-file-button.reviewed { color: #4f7148; border-color: #9bb194; background: #edf5ea; }

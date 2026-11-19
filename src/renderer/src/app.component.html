@@ -169,12 +169,24 @@
                 @if (entry.kind === "folder") {
                   <div
                     class="explorer-row explorer-folder-row"
-                    [style.padding-left.px]="7 + entry.depth * 14"
                     [title]="entry.path"
                     (contextmenu)="openExplorerEntryTools(entry, $event)"
                   >
+                    <span class="explorer-review-slot">
+                      @if (explorerFolderReviewStates().get(entry.path); as reviewState) {
+                        <button
+                          class="explorer-review"
+                          [class.reviewed]="reviewState.reviewed === reviewState.total"
+                          [class.partial]="reviewState.reviewed > 0 && reviewState.reviewed < reviewState.total"
+                          [attr.aria-label]="reviewState.reviewed === reviewState.total ? 'Mark folder unreviewed' : 'Mark folder reviewed'"
+                          [title]="reviewState.reviewed === reviewState.total ? 'Mark all changed files unreviewed' : 'Mark all changed files reviewed'"
+                          (click)="toggleFolderReviewed(entry.path, $event)"
+                        >{{ reviewState.reviewed === reviewState.total ? "✓" : reviewState.reviewed > 0 ? "−" : "" }}</button>
+                      }
+                    </span>
                     <button
                       class="explorer-folder-toggle"
+                      [style.margin-left.px]="entry.depth * 14"
                       [attr.data-explorer-path]="entry.path"
                       data-explorer-kind="folder"
                       [attr.aria-expanded]="isExplorerFolderExpanded(entry.path)"
@@ -186,34 +198,41 @@
                     </button>
                     @if (explorerFolderReviewStates().get(entry.path); as reviewState) {
                       <span class="explorer-folder-count" [title]="reviewState.total + (reviewState.total === 1 ? ' changed file' : ' changed files') + ', ' + reviewState.reviewed + ' reviewed'">{{ reviewState.total }}</span>
-                      <button
-                        class="explorer-folder-review"
-                        [class.reviewed]="reviewState.reviewed === reviewState.total"
-                        [class.partial]="reviewState.reviewed > 0 && reviewState.reviewed < reviewState.total"
-                        [attr.aria-label]="reviewState.reviewed === reviewState.total ? 'Mark folder unreviewed' : 'Mark folder reviewed'"
-                        [title]="reviewState.reviewed === reviewState.total ? 'Mark all changed files unreviewed' : 'Mark all changed files reviewed'"
-                        (click)="toggleFolderReviewed(entry.path, $event)"
-                      >{{ reviewState.reviewed === reviewState.total ? "✓" : reviewState.reviewed > 0 ? "−" : "○" }}</button>
                     }
                   </div>
                 } @else {
-                  <button
+                  <div
                     class="explorer-row explorer-file-row"
                     [class.selected]="entry.path === selectedPath()"
                     [class.reviewed]="entry.changedFile && isFileReviewed(entry.path)"
-                    [style.padding-left.px]="25 + entry.depth * 14"
                     [title]="entry.path"
-                    [attr.data-explorer-path]="entry.path"
-                    data-explorer-kind="file"
-                    (click)="openExplorerFile(entry.path)"
                     (contextmenu)="openExplorerEntryTools(entry, $event)"
                   >
-                    <span class="explorer-file-icon {{ explorerFileIcon(entry.path) }}" aria-hidden="true"><small>{{ explorerFileIconLabel(entry.path) }}</small></span>
-                    <span class="explorer-entry-name">{{ entry.name }}</span>
-                    @if (entry.changedFile; as changedFile) {
-                      <span class="explorer-status status-{{ changedFile.status }}">{{ statusLabel(changedFile) }}</span>
-                    }
-                  </button>
+                    <span class="explorer-review-slot">
+                      @if (entry.changedFile) {
+                        <button
+                          class="explorer-review"
+                          [class.reviewed]="isFileReviewed(entry.path)"
+                          [attr.aria-label]="isFileReviewed(entry.path) ? 'Mark ' + entry.name + ' unreviewed' : 'Mark ' + entry.name + ' reviewed'"
+                          [title]="isFileReviewed(entry.path) ? 'Mark unreviewed' : 'Mark reviewed'"
+                          (click)="toggleFileReviewed(entry.path)"
+                        >{{ isFileReviewed(entry.path) ? "✓" : "" }}</button>
+                      }
+                    </span>
+                    <button
+                      class="explorer-file-open"
+                      [style.margin-left.px]="18 + entry.depth * 14"
+                      [attr.data-explorer-path]="entry.path"
+                      data-explorer-kind="file"
+                      (click)="openExplorerFile(entry.path)"
+                    >
+                      <span class="explorer-file-icon {{ explorerFileIcon(entry.path) }}" aria-hidden="true"><small>{{ explorerFileIconLabel(entry.path) }}</small></span>
+                      <span class="explorer-entry-name">{{ entry.name }}</span>
+                      @if (entry.changedFile; as changedFile) {
+                        <span class="explorer-status status-{{ changedFile.status }}">{{ statusLabel(changedFile) }}</span>
+                      }
+                    </button>
+                  </div>
                 }
               } @empty {
                 <p class="empty-copy">{{ explorerFilter() ? "No files match the filter." : "No repository files found." }}</p>
