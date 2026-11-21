@@ -163,4 +163,3 @@ export function parseFactoryProviderOutput(provider:FactoryProvider,capture:Fact
   if(!terminal||!sessionId)return finish('blocked','No verified terminal result/session; use manual native session.');
   return finish('candidate','Provider completion candidate only; independent diff and execution receipts are required.');
 }
-

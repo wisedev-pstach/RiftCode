@@ -36,7 +36,7 @@ export function createProviderRuntime(options:ProviderRuntimeOptions){
   // Include native observers in pending settlement, not merely child close.
   const promise=(async()=>{try{const receipt=await runner.run(command,{signal,isCurrent:()=>!disposed&&isCurrent(),stdin});if(receipt.cleanup==='failed'||receipt.reason==='cleanup-failed'){cleanupFailure='Provider owned process cleanup could not be confirmed; manual recovery required.';options.observeCleanupFailure?.(cleanupFailure);throw new Error(cleanupFailure);}return receipt;}
    finally{try{await options.observeSettlement?.();}finally{active.delete(runner);runner.dispose();}}
-  })();pending.add(promise);try{return await promise;}finally{pending.delete(promise);} 
+  })();pending.add(promise);try{return await promise;}finally{pending.delete(promise);}
  };
  const plan=(resolved:ResolvedProvider,prompt:string,timeoutMs:number)=>planFactoryProvider({provider:resolved.provider,version:resolved.version,executable:resolved.executable,platform:process.platform as 'linux'|'win32'|'darwin',cwd:options.root,prompt,consents:resolved.consents,verification:resolved.verification,limits:{timeoutMs:Math.max(1,Math.min(timeoutMs,600000)),maxOutputBytes:1024*1024,maxRetries:0,maxTurns:8}});
  return {
