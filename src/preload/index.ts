@@ -2,6 +2,18 @@ import { contextBridge, ipcRenderer } from "electron";
 import type { RiftApi } from "../shared/contracts";
 
 const api: RiftApi = {
+  factory: {
+    load:()=>ipcRenderer.invoke('factory:load'),
+    saveDraft:input=>ipcRenderer.invoke('factory:save-draft',input),
+    generate:input=>ipcRenderer.invoke('factory:generate',input),
+    approve:input=>ipcRenderer.invoke('factory:approve',input),
+    start:()=>ipcRenderer.invoke('factory:start'),
+    stop:()=>ipcRenderer.invoke('factory:stop'),
+    review:input=>ipcRenderer.invoke('factory:review',input),
+    rework:id=>ipcRenderer.invoke('factory:rework',id),
+    readRevision:id=>ipcRenderer.invoke('factory:revision',id),
+    readArtifact:id=>ipcRenderer.invoke('factory:artifact',id)
+  },
   platform: process.platform as RiftApi["platform"],
   terminalSendTracked:(id,text)=>ipcRenderer.invoke('terminal:send-tracked',id,text),
   promptSummaries:()=>ipcRenderer.invoke('prompt:summaries'),

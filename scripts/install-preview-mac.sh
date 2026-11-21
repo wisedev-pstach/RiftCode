@@ -42,9 +42,9 @@ main() {
   fi
   git -C "$checkout" -c core.hooksPath=/dev/null checkout -q --detach "$actual"
   [[ "$(git -C "$checkout" rev-parse HEAD)" == "$actual" ]] || return 1
-  printf 'Building Rift 0.8 preview from %s (%s)\n' "$ref" "$actual"
+  printf 'Building Rift preview from %s (%s)\n' "$ref" "$actual"
   cd -- "$checkout"
-  node -e 'const p=require("./package.json"); if(p.name!=="rift" || !/^0\.8\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(p.version)) throw Error("Expected Rift 0.8 source"); if(p.build?.beforePack!=="build/before-pack.cjs") throw Error("Expected reviewed native-prebuild packaging hook");'
+  node -e 'const p=require("./package.json"); if(p.name!=="rift" || !/^0\.(?:8|9)\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(p.version)) throw Error("Expected Rift 0.8 or 0.9 source"); if(p.build?.beforePack!=="build/before-pack.cjs") throw Error("Expected reviewed native-prebuild packaging hook");'
   # Preserve node-pty shipped prebuilds. Never run its compiler/install scripts.
   npm ci --ignore-scripts --no-audit --no-fund
   # Electron itself requires this explicit download after ignored lifecycle scripts.

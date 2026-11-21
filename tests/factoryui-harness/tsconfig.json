@@ -1,0 +1,1 @@
+{"extends":"../../tsconfig.json","compilerOptions":{"noEmit":true,"types":[]},"angularCompilerOptions":{"strictTemplates":true},"include":[],"files":["../../src/renderer/src/factory-workbench.component.ts","../../src/renderer/src/factory-documents.component.ts"]}

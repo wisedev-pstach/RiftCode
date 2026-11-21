@@ -56,7 +56,7 @@ function inspect(app, tools, preview=false) {
   if(pkg.name !== 'rift' || pkg.main !== 'app-out/main/index.js' ||
       (pkg.build?.appId !== undefined && pkg.build.appId !== 'dev.wise.rift') ||
       (pkg.appId !== undefined && pkg.appId !== 'dev.wise.rift')) throw new Error('Unrecognized archive Rift identity');
-  if(preview && !/^0\.8\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(pkg.version)) throw new Error('Expected a Rift 0.8 preview bundle');
+  if(preview && !/^0\.(?:8|9)\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(pkg.version)) throw new Error('Expected a Rift 0.8 or 0.9 preview bundle');
   return pkg;
 }
 // Include the whole bundle, not only its manifest: another valid Rift build
@@ -130,8 +130,8 @@ function deploy(source, home, adapters={}) {
       }
       throw error;
     }
-    inspect(destination,tools,true);
-    tools.log(`Installed Rift 0.8 preview: ${destination}`);
+    const installed=inspect(destination,tools,true);
+    tools.log(`Installed Rift ${installed.version} preview: ${destination}`);
     if(backup) tools.log(`Previous Rift retained: ${backup}`);
     tools.log('Your settings and CLI links were not changed. Open Rift yourself when ready.');
     return {destination,backup};
