@@ -14,6 +14,7 @@ import { marked } from "marked";
 import {ReviewTerminalComponent} from './review-terminal.component';
 import type {ReviewContext} from '../../shared/review-request';
 import { AiTerminalComponent } from './ai-terminal.component';
+import { FactoryWorkbench } from './factory-workbench.component';
 import { SearchableSelectComponent } from './searchable-select.component';
 import type { SourceLocation } from '../../shared/terminal';
 import type { AgentConversationHistory, AgentId, AgentMode, AgentOption, AgentRunResult, AgentSession, AgentStreamEvent, AgentToolEvent, ChangedFile, ContextResourcePath, FilePatch, GitHubAuthStatus, RepositoryFileView, RepositorySearchResult, RepositorySnapshot, UpdateStatus } from "../../shared/contracts";
@@ -536,11 +537,49 @@ function buildExplorerEntries(
 @Component({
   selector: "rift-root",
   standalone: true,
-  imports: [ReviewTerminalComponent, AiTerminalComponent, SearchableSelectComponent],
+  imports: [ReviewTerminalComponent, AiTerminalComponent, SearchableSelectComponent, FactoryWorkbench],
   templateUrl: "./app.component.html",
+  styles: [`
+    /* Never destroy or reparent retained workspaces on a workflow transition. */
+    .retained-review { display:contents; }
+    [hidden] { display:none !important; }
+    .workflow-home,.creation-surface { grid-column:1;grid-row:2 / -1;min-height:0;min-width:0;color:var(--ws-text); }
+    .creation-surface { overflow:hidden; }
+    .workflow-home { overflow:auto;padding:clamp(32px,7vh,80px) clamp(24px,8vw,120px); }
+    .workflow-intro,.workflow-choices,.workflow-footnote { max-width:980px;margin-left:auto;margin-right:auto; }
+    .workflow-eyebrow,.workflow-number { font:11px ui-monospace,SFMono-Regular,monospace;letter-spacing:.1em;color:var(--ws-muted); }
+    .workflow-intro h1 { font-size:clamp(28px,3vw,38px);font-weight:550;letter-spacing:-1.2px;margin:20px 0 12px; }
+    .workflow-intro p { color:var(--ws-muted);font-size:14px;margin:0 0 36px;line-height:1.7; }
+    .workflow-choices { display:grid;grid-template-columns:1fr 1fr;gap:20px; }
+    .workflow-card { display:flex;flex-direction:column;padding:28px;border:1px solid var(--ws-line);border-radius:10px;background:var(--ws-surface); }
+    .workflow-card h2 { font-size:25px;font-weight:550;letter-spacing:-.6px;margin:26px 0 10px; }
+    .workflow-card p,.workflow-card li { color:var(--ws-muted);font-size:13px;line-height:1.8; }
+    .workflow-card p { margin:0 0 14px; }
+    .workflow-card ul { padding-left:17px;margin:0 0 30px;flex:1; }
+    .workflow-card button { -webkit-app-region:no-drag;display:flex;justify-content:space-between;align-items:center;min-height:40px;width:100%;padding:0 14px;border-radius:5px;font-size:13px;cursor:pointer; }
+    .workflow-card .primary-button { color:var(--ws-accent-ink);background:var(--ws-accent);border:1px solid var(--ws-accent); }
+    .workflow-review-button { background:transparent;border:1px solid var(--ws-line);color:var(--ws-text); }
+    .workflow-review-button:hover { background:var(--ws-hover); }
+    .workflow-footnote { color:var(--ws-muted);font-size:12px;line-height:1.7;margin-top:24px; }
+    .workflow-switcher,.workflow-running { -webkit-app-region:no-drag;min-height:30px;border:1px solid var(--ws-line);border-radius:5px;background:transparent;color:var(--ws-muted);padding:0 10px;font-size:12px;cursor:pointer;white-space:nowrap; }
+    .workflow-switcher:hover,.workflow-switcher[aria-current],.workflow-running { background:var(--ws-hover);color:var(--ws-text); }
+    .workflow-running { color:var(--ws-accent); }
+    .workflow-home button:focus-visible,.workflow-switcher:focus-visible,.workflow-running:focus-visible { outline:2px solid var(--ws-accent);outline-offset:3px; }
+    @media(max-width:700px) { .workflow-choices { grid-template-columns:1fr; }.workflow-card { padding:20px; }.workflow-home { padding:24px; }.app-actions { gap:8px; } }
+  `],
   changeDetection: ChangeDetectionStrategy.OnPush
 })
 export class AppComponent implements OnInit, OnDestroy {
+  // A workflow changes visibility only; retained terminals and native runs own their lifetimes.
+  readonly factoryApi = window.rift.factory;
+  readonly workflow = signal<'home' | 'creation' | 'review'>(this.factoryApi ? 'home' : 'review');
+  readonly factoryVisited = signal(false);
+  @ViewChild(FactoryWorkbench) factoryWorkbench?: FactoryWorkbench;
+  selectWorkflow(mode: 'home' | 'creation' | 'review'): void {
+    if (!this.factoryApi && mode !== 'review') return;
+    if (mode === 'creation') this.factoryVisited.set(true);
+    this.workflow.set(mode);
+  }
   readonly platform = window.rift.platform;
   readonly appVersion = versionManifest.version;
   readonly updateStatus = signal<UpdateStatus | null>(null);

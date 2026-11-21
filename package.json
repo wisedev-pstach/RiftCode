@@ -1,6 +1,6 @@
 {
   "name": "rift",
-  "version": "0.8.2",
+  "version": "0.9.0",
   "description": "A visual, AI-native code review workspace focused on branch diffs.",
   "license": "MIT",
   "main": "app-out/main/index.js",
@@ -31,6 +31,13 @@
     "directories": {
       "output": "release"
     },
+    "extraResources": [
+      {
+        "from": "resources/factory-skills",
+        "to": "factory-skills",
+        "filter": ["**/SKILL.md"]
+      }
+    ],
     "files": [
       "app-out/**/*",
       "package.json",

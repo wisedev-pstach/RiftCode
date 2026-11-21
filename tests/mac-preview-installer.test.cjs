@@ -9,14 +9,14 @@ const asar=require('@electron/asar');
 const plist=require('plist');
 const helper=path.resolve(__dirname,'../scripts/preview-deploy-mac.cjs');
 const scratch=process.env.TMPDIR || os.tmpdir();
-async function fixture(t) {
+async function fixture(t,version='0.8.0') {
   const root=fs.mkdtempSync(path.join(scratch,'rift-preview-test-'));
   t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
   const home=path.join(root,'Home with spaces; literal'); fs.mkdirSync(home);
   const source=path.join(root,'source'); fs.mkdirSync(source);
-  fs.writeFileSync(path.join(source,'package.json'),JSON.stringify({name:'rift',version:'0.8.0'}));
+  fs.writeFileSync(path.join(source,'package.json'),JSON.stringify({name:'rift',version}));
   const app=path.join(source,'release/mac-arm64/Rift.app');
-  await bundle(app,root,'0.8.0');
+  await bundle(app,root,version);
   return {root,home,source,app,destination:path.join(home,'Applications/Rift.app')};
 }
 async function bundle(app,root,version='0.7.0') {
@@ -64,14 +64,14 @@ function checked(file,args,options={}) {
   const r=spawnSync(file,args,{encoding:'utf8',...options});
   assert.equal(r.status,0,r.stderr); return r.stdout.trim();
 }
-async function bootstrapFixture(t) {
-  const f=await fixture(t);
+async function bootstrapFixture(t,version='0.8.0') {
+  const f=await fixture(t,version);
   const bin=path.join(f.root,'bin'); fs.mkdirSync(bin);
   const repo=path.join(f.root,'repo'); fs.mkdirSync(repo);
   fs.mkdirSync(path.join(repo,'scripts')); fs.mkdirSync(path.join(repo,'build'));
   fs.copyFileSync(helper,path.join(repo,'scripts/preview-deploy-mac.cjs'));
   fs.writeFileSync(path.join(repo,'build/before-pack.cjs'),'');
-  fs.writeFileSync(path.join(repo,'package.json'),JSON.stringify({name:'rift',version:'0.8.0',build:{beforePack:'build/before-pack.cjs'}}));
+  fs.writeFileSync(path.join(repo,'package.json'),JSON.stringify({name:'rift',version,build:{beforePack:'build/before-pack.cjs'}}));
   checked('/usr/bin/git',['init','-q',repo]);
   checked('/usr/bin/git',['-C',repo,'add','.']);
   checked('/usr/bin/git',['-C',repo,'-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','-qm','fixture']);
@@ -102,6 +102,21 @@ test('bootstrap checks out exact requested commit, builds safely, installs and c
   assert.ok(calls.some(a=>JSON.stringify(a)===JSON.stringify(['npm','ci','--ignore-scripts','--no-audit','--no-fund'])));
   assert.ok(calls.some(a=>a[0]==='node' && a[1]==='node_modules/electron/install.js'));
   assert.ok(!calls.some(a=>a.includes('main')));
+});
+
+test('0.9 factory preview installs and reports the actual bundle version',async t=>{
+  const f=await fixture(t,'0.9.0');const messages=[];
+  require(helper).deploy(f.source,f.home,runtime({log:line=>messages.push(line)}));
+  assert.ok(fs.existsSync(f.destination));
+  assert.ok(messages.some(line=>line.includes('Installed Rift 0.9.0 preview:')));
+});
+
+test('0.9 factory bootstrap accepts a pinned feature source without compiler fallback',async t=>{
+  const f=await bootstrapFixture(t,'0.9.0');
+  const r=spawnSync('/bin/bash',[script,'--ref',f.sha],{encoding:'utf8',env:f.env});
+  assert.equal(r.status,0,r.stderr);
+  assert.ok(fs.existsSync(f.destination));
+  assert.match(r.stdout,/Installed Rift 0\.9\.0 preview:/);
 });
 
 test('deployment resolves ASAR and plist from the actual installed hoisted dependency tree',async t=>{

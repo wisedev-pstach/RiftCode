@@ -61,6 +61,7 @@
         <button class="repository-switcher" (click)="chooseRepository()" [title]="repository()!.root">
           {{ repository()!.name }}
         </button>
+         @if (workflow() === 'review') {
          <span class="comparison-arrow">/</span>
          @if (repository()!.targetBranches.length > 0) {
            <rift-searchable-select id="target" label="Select target comparison branch" searchLabel="Search target branches" prefix="vs"
@@ -71,14 +72,39 @@
          <rift-searchable-select id="comparison" label="Select comparison" searchLabel="Search comparisons"
            [options]="comparisonChoices()" [value]="repository()!.comparisonId" [disabled]="comparisonChanging()"
            (valueChange)="selectComparison($event)" />
+         }
 
        </div>
       <div class="app-actions">
+        @if (factoryApi) {
+          @if (workflow() !== 'creation' && factoryWorkbench?.running()) {
+            <button class="workflow-running" (click)="selectWorkflow('creation')" aria-label="Open running Creation">Creation running · View</button>
+          }
+          <button class="workflow-switcher" (click)="selectWorkflow('home')" [attr.aria-current]="workflow() === 'home' ? 'page' : null" title="Choose Creation or Review">Workflows</button>
+        }
 
-        <button class="project-context-button" (click)="openContextDialog()" title="Project context and knowledge" aria-label="Project context"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h6l2 2h10v12H3Z"/></svg><span>Context</span>@if (contextItemCount()) { <small>{{ contextItemCount() }}</small> }</button>
+        <button class="project-context-button" [hidden]="workflow() !== 'review'" (click)="openContextDialog()" title="Project context and knowledge" aria-label="Project context"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h6l2 2h10v12H3Z"/></svg><span>Context</span>@if (contextItemCount()) { <small>{{ contextItemCount() }}</small> }</button>
       </div>
     </header>
 
+    <section class="workflow-home" [hidden]="workflow() !== 'home'" [attr.inert]="workflow() !== 'home' ? '' : null" aria-labelledby="workflow-title">
+      <div class="workflow-intro"><span class="workflow-eyebrow">YOUR WORKSPACE / {{ repository()!.name }}</span><h1 id="workflow-title">Choose your workflow</h1><p>Build something new. Or take a closer look at what changed.</p></div>
+      <div class="workflow-choices">
+        <section aria-labelledby="creation-title" class="workflow-card">
+          <span class="workflow-number" aria-hidden="true">01 / CREATE</span><h2 id="creation-title">Creation</h2><p>A software factory, from requirements to tested changes.</p><ul><li>Shape requirements and acceptance criteria</li><li>Plan architecture, diagrams and scoped tasks</li><li>Implement, verify and queue code for your review</li></ul><button class="primary-button" (click)="selectWorkflow('creation')">Open Creation <span aria-hidden="true">↗</span></button>
+        </section>
+        <section aria-labelledby="review-title" class="workflow-card">
+          <span class="workflow-number" aria-hidden="true">02 / REVIEW</span><h2 id="review-title">Review</h2><p>Your existing code-review workspace, unchanged.</p><ul><li>Explore branches, files and exact diffs</li><li>Keep Notes and retained Agent / Review sessions</li><li>Return anytime without stopping your work</li></ul><button class="workflow-review-button" (click)="selectWorkflow('review')">Open Review <span aria-hidden="true">→</span></button>
+        </section>
+      </div>
+      <p class="workflow-footnote">Switching workflows does not stop a running session. Creation runs only after explicit approval and Start.</p>
+    </section>
+    @if (factoryApi && factoryVisited()) {
+      <section class="creation-surface" [hidden]="workflow() !== 'creation'" [attr.inert]="workflow() !== 'creation' ? '' : null" aria-label="Creation workspace">
+        <rift-factory-workbench [api]="factoryApi" [root]="repository()!.root" [repositoryLabel]="repository()!.name" (exit)="selectWorkflow($event)" />
+      </section>
+    }
+    <div class="retained-review" [hidden]="workflow() !== 'review'" [attr.inert]="workflow() !== 'review' ? '' : null">
     <section #workspace class="workspace" [style.--dock-height]="effectiveDockHeight() + 'px'" [class.terminal-docked]="agentDockVisible()" [class.review-open]="reviewSidebarOpen()" [class.resizing-changes]="changesPanelResizing()" [style.--changes-width]="effectiveChangesPanelWidth() + 'px'">
       <aside class="changes-panel">
         <div class="panel-title">
@@ -761,5 +787,6 @@
       <span class="status-spacer"></span>
       <span>{{ comparisonChanging() ? "Changing comparison..." : "Watching repository" }}</span>
     </footer>
+    </div>
   </main>
 }

@@ -1697,7 +1697,9 @@ test('deleted comparison paths remain discoverable as Review references when abs
 
 for(const theme of ['dark','light'])test(`source location metadata uses readable theme text ${theme}`,async({page})=>{
  if(theme==='light')await page.getByRole('button',{name:'Use light theme',exact:true}).click();
- await page.getByRole('button',{name:'Open code review',exact:true}).click();await page.evaluate(()=>(window as any).ng.getComponent(document.querySelector('rift-review-terminal')).navigate.emit({path:'src/my file.ts',line:12,column:3}));
+ await page.getByRole('button',{name:'Open code review',exact:true}).click();
+ await expect(page.locator('rift-review-terminal')).toBeVisible();
+ await page.evaluate(()=>(window as any).ng.getComponent(document.querySelector('rift-review-terminal')).navigate.emit({path:'src/my file.ts',line:12,column:3}));
  const location=page.locator('.source-location');await expect(location).toBeVisible();
  const muted=await page.evaluate(()=>{const span=document.createElement('span');span.style.color='var(--ws-muted)';document.body.append(span);const value=getComputedStyle(span).color;span.remove();return value;});
  await expect(location).toHaveCSS('color',muted);

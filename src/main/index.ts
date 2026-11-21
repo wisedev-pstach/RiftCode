@@ -17,6 +17,8 @@ import type { TerminalProvider } from '../shared/terminal';
 import { assertTerminalProvider, providerArgs, openCodeInteractiveArgs } from '../shared/terminal';
 import { listTerminalSessions, listOpenCodeSessions } from './terminal-sessions';
 import { previewUserData } from './preview';
+import {FactoryManager} from './factory/manager';
+import {registerFactoryIpc} from './factory/ipc';
 const previewDirectory = previewUserData(process.argv, app.getPath('appData'));
 if (previewDirectory) { mkdirSync(previewDirectory, {recursive:true}); app.setPath('userData',previewDirectory); app.setName('Rift Preview'); }
 async function resolveTerminalCommand(provider:TerminalProvider):Promise<string|null> {
@@ -72,6 +74,23 @@ let activeTargetBranch = "auto";
 let repositoryLoadQueue = Promise.resolve();
 let repositoryGeneration = 0;
 let currentRepositoryPath: string | null = null;
+let factoryGeneration = 0;
+const factoryManager = new FactoryManager(() => {
+  const environment:Record<string,string> = {};
+  for (const key of ['PATH','HOME','USERPROFILE','SYSTEMROOT','WINDIR','TMP','TEMP','TMPDIR','LANG','LC_ALL','CI','TERM','PATHEXT']) {
+    const value=process.env[key];if(value!==undefined)environment[key]=value;
+  }
+  return {
+    root:snapshot?.root===currentRepositoryPath?snapshot!.root:'',
+    userData:app.getPath('userData'),
+    resourcesRoot:app.isPackaged?process.resourcesPath:join(app.getAppPath(),'resources'),
+    environment,epoch:factoryGeneration
+  };
+});
+function closeFactoryForRenderer():void {
+  factoryGeneration++;
+  void factoryManager.close().catch(error=>console.error('Factory cleanup failed:',error));
+}
 let activeAgentProcess: ChildProcess | null = null;
 let agentStopReason: "cancelled" | "interrupted" | null = null;
 let activePatchController: AbortController | null = null;
@@ -832,6 +851,8 @@ async function openRepository(path: string): Promise<RepositorySnapshot> {
   const previousComparisonId = activeComparisonId;
   const previousTargetBranch = activeTargetBranch;
   const generation = ++repositoryGeneration;
+  factoryGeneration++;
+  await factoryManager.close();
   currentRepositoryPath = path;
   activeComparisonId = "auto";
   activeTargetBranch = "auto";
@@ -854,6 +875,7 @@ async function openRepository(path: string): Promise<RepositorySnapshot> {
 }
 
 function registerIpc(): void {
+  registerFactoryIpc(ipcMain,()=>factoryManager.get(),event=>assertTrustedSender(event as IpcMainInvokeEvent),()=>factoryGeneration);
   ipcMain.handle('terminal:sessions', async (event, provider) => {
     assertTrustedSender(event);
     if (!snapshot || snapshot.root !== currentRepositoryPath) throw new Error('Open a repository first.');
@@ -1196,10 +1218,10 @@ function createWindow(): void {
       sandbox: true
     }
   });
-  mainWindow.webContents.on('render-process-gone', () => terminals.reset());
-  mainWindow.webContents.on('destroyed', () => terminals.reset());
-  mainWindow.webContents.on('did-start-navigation', (_event, _url, _inPlace, isMainFrame) => { if (isMainFrame) terminals.reset(); });
-  mainWindow.on('closed', () => terminals.reset());
+  mainWindow.webContents.on('render-process-gone', () => {terminals.reset();closeFactoryForRenderer();});
+  mainWindow.webContents.on('destroyed', () => {terminals.reset();closeFactoryForRenderer();});
+  mainWindow.webContents.on('did-start-navigation', (_event, _url, _inPlace, isMainFrame) => { if (isMainFrame) {terminals.reset();closeFactoryForRenderer();} });
+  mainWindow.on('closed', () => {terminals.reset();closeFactoryForRenderer();});
   mainWindow.setMenuBarVisibility(false);
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   mainWindow.webContents.on("will-navigate", (event) => event.preventDefault());
@@ -1248,8 +1270,20 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
 
-app.on("before-quit", () => {
+let factoryQuitCleanupComplete=false;
+app.on("before-quit", event => {
   terminals.reset();
+  if(!factoryQuitCleanupComplete){
+    event.preventDefault();factoryGeneration++;
+    void factoryManager.close().then(()=>{factoryQuitCleanupComplete=true;app.quit();},error=>console.error('Factory quit cleanup failed; quit cancelled:',error));
+    return;
+  }
+  // Keep repository observation and attachments intact if factory disposal cancels quit.
   watcher?.close();
-  if (attachmentDirectory) void rm(attachmentDirectory, { recursive: true, force: true });
+  watcher = null;
+  watchedRoot = null;
+  if (attachmentDirectory) {
+    void rm(attachmentDirectory, { recursive: true, force: true });
+    attachmentDirectory = null;
+  }
 });
