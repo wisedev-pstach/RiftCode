@@ -17,6 +17,10 @@ import type { TerminalProvider } from '../shared/terminal';
 import { assertTerminalProvider, providerArgs, openCodeInteractiveArgs } from '../shared/terminal';
 import { listTerminalSessions, listOpenCodeSessions } from './terminal-sessions';
 import { previewUserData } from './preview';
+import {FactoryManager} from './factory/manager';
+import {createLocalRepository} from './create-repository';
+import {assertRepositoryName} from '../shared/repository-name';
+import {registerFactoryIpc} from './factory/ipc';
 const previewDirectory = previewUserData(process.argv, app.getPath('appData'));
 if (previewDirectory) { mkdirSync(previewDirectory, {recursive:true}); app.setPath('userData',previewDirectory); app.setName('Rift Preview'); }
 async function resolveTerminalCommand(provider:TerminalProvider):Promise<string|null> {
@@ -71,7 +75,25 @@ let activeComparisonId = "auto";
 let activeTargetBranch = "auto";
 let repositoryLoadQueue = Promise.resolve();
 let repositoryGeneration = 0;
+let repositoryCreationGeneration = 0;
 let currentRepositoryPath: string | null = null;
+let factoryGeneration = 0;
+const factoryManager = new FactoryManager(() => {
+  const environment:Record<string,string> = {};
+  for (const key of ['PATH','HOME','USERPROFILE','SYSTEMROOT','WINDIR','TMP','TEMP','TMPDIR','LANG','LC_ALL','CI','TERM','PATHEXT']) {
+    const value=process.env[key];if(value!==undefined)environment[key]=value;
+  }
+  return {
+    root:snapshot?.root===currentRepositoryPath?snapshot!.root:'',
+    userData:app.getPath('userData'),
+    resourcesRoot:app.isPackaged?process.resourcesPath:join(app.getAppPath(),'resources'),
+    environment,epoch:factoryGeneration
+  };
+});
+function closeFactoryForRenderer():void {
+  factoryGeneration++;
+  void factoryManager.close().catch(error=>console.error('Factory cleanup failed:',error));
+}
 let activeAgentProcess: ChildProcess | null = null;
 let agentStopReason: "cancelled" | "interrupted" | null = null;
 let activePatchController: AbortController | null = null;
@@ -805,10 +827,11 @@ function watchRepository(root: string): void {
   }
 }
 
-function queueRepositoryLoad(path: string, comparisonId: string, targetBranch: string, generation: number): Promise<RepositorySnapshot> {
-  const load = repositoryLoadQueue.then(() => loadRepository(path, comparisonId, targetBranch));
+function queueRepositoryLoad(path: string, comparisonId: string, targetBranch: string, generation: number, assertCurrent?:()=>void): Promise<RepositorySnapshot> {
+  const load = repositoryLoadQueue.then(() => { assertCurrent?.();return loadRepository(path, comparisonId, targetBranch); });
   repositoryLoadQueue = load.then(() => undefined, () => undefined);
   return load.then((loaded) => {
+    assertCurrent?.();
     if (repositoryGeneration === generation) {
       snapshot = loaded;
       currentRepositoryPath = loaded.root;
@@ -826,17 +849,22 @@ function repositoryFilePath(path: unknown): string {
   return join(snapshot.root, ...path.split("/"));
 }
 
-async function openRepository(path: string): Promise<RepositorySnapshot> {
+async function openRepository(path: string, assertCurrent?:()=>void): Promise<RepositorySnapshot> {
   terminals.reset();terminal.checkpoints.clear();
   const previousPath = currentRepositoryPath;
   const previousComparisonId = activeComparisonId;
   const previousTargetBranch = activeTargetBranch;
   const generation = ++repositoryGeneration;
+  factoryGeneration++;
+  await factoryManager.close();
+  assertCurrent?.();
+  if(repositoryGeneration!==generation)throw Error('Repository changed while opening.');
   currentRepositoryPath = path;
   activeComparisonId = "auto";
   activeTargetBranch = "auto";
   try {
-    const loaded = await queueRepositoryLoad(path, activeComparisonId, activeTargetBranch, generation);
+    const loaded = await queueRepositoryLoad(path, activeComparisonId, activeTargetBranch, generation, assertCurrent);
+    assertCurrent?.();
     if (repositoryGeneration === generation) {
       if (refreshTimer) clearTimeout(refreshTimer);
       refreshTimer = null;
@@ -854,6 +882,34 @@ async function openRepository(path: string): Promise<RepositorySnapshot> {
 }
 
 function registerIpc(): void {
+  ipcMain.handle('repository:create', async (event, ...args:unknown[]) => {
+    assertTrustedSender(event);
+    if(args.length!==1)throw Error('Expected one project name.');
+    const name=args[0];assertRepositoryName(name);
+    const window=mainWindow!,frame=event.senderFrame;
+    const operation=++repositoryCreationGeneration;
+    let repositoryEpoch=repositoryGeneration,factoryEpoch=factoryGeneration;
+    const assertCurrent=():void=>{
+      assertTrustedSender(event);
+      if(mainWindow!==window||window.isDestroyed()||event.sender.isDestroyed()||event.senderFrame!==frame
+        ||event.sender.mainFrame!==frame||operation!==repositoryCreationGeneration
+        ||repositoryEpoch!==repositoryGeneration||factoryEpoch!==factoryGeneration)throw Error('Repository creation is no longer current.');
+    };
+    return createLocalRepository(name,{
+      assertCurrent,
+      chooseParent:async()=>{
+        const result=await dialog.showOpenDialog(window,{title:`Create "${name}": choose parent folder`,buttonLabel:'Create here',properties:['openDirectory']});
+        return result.canceled||!result.filePaths[0]?null:result.filePaths[0];
+      },
+      openRepository:root=>{
+        assertCurrent();
+        // Rebase only for the generation increments performed synchronously by our own open.
+        repositoryEpoch++;factoryEpoch++;
+        return openRepository(root,assertCurrent);
+      }
+    });
+  });
+  registerFactoryIpc(ipcMain,()=>factoryManager.get(),event=>assertTrustedSender(event as IpcMainInvokeEvent),()=>factoryGeneration);
   ipcMain.handle('terminal:sessions', async (event, provider) => {
     assertTrustedSender(event);
     if (!snapshot || snapshot.root !== currentRepositoryPath) throw new Error('Open a repository first.');
@@ -1196,10 +1252,10 @@ function createWindow(): void {
       sandbox: true
     }
   });
-  mainWindow.webContents.on('render-process-gone', () => terminals.reset());
-  mainWindow.webContents.on('destroyed', () => terminals.reset());
-  mainWindow.webContents.on('did-start-navigation', (_event, _url, _inPlace, isMainFrame) => { if (isMainFrame) terminals.reset(); });
-  mainWindow.on('closed', () => terminals.reset());
+  mainWindow.webContents.on('render-process-gone', () => {terminals.reset();closeFactoryForRenderer();});
+  mainWindow.webContents.on('destroyed', () => {terminals.reset();closeFactoryForRenderer();});
+  mainWindow.webContents.on('did-start-navigation', (_event, _url, _inPlace, isMainFrame) => { if (isMainFrame) {terminals.reset();closeFactoryForRenderer();} });
+  mainWindow.on('closed', () => {terminals.reset();closeFactoryForRenderer();});
   mainWindow.setMenuBarVisibility(false);
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   mainWindow.webContents.on("will-navigate", (event) => event.preventDefault());
@@ -1248,8 +1304,20 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
 
-app.on("before-quit", () => {
+let factoryQuitCleanupComplete=false;
+app.on("before-quit", event => {
   terminals.reset();
+  if(!factoryQuitCleanupComplete){
+    event.preventDefault();factoryGeneration++;
+    void factoryManager.close().then(()=>{factoryQuitCleanupComplete=true;app.quit();},error=>console.error('Factory quit cleanup failed; quit cancelled:',error));
+    return;
+  }
+  // Keep repository observation and attachments intact if factory disposal cancels quit.
   watcher?.close();
-  if (attachmentDirectory) void rm(attachmentDirectory, { recursive: true, force: true });
+  watcher = null;
+  watchedRoot = null;
+  if (attachmentDirectory) {
+    void rm(attachmentDirectory, { recursive: true, force: true });
+    attachmentDirectory = null;
+  }
 });

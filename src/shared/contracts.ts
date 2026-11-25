@@ -144,6 +144,8 @@ export interface GitHubIssueResult {
 
 export interface PromptSummary {number:number;id:string;viewId:string;label:string;live:boolean;files:ChangedFile[];additions:number;deletions:number;}
 export interface RiftApi {
+  /** Optional only for older or explicitly synthetic browser bridges. Native desktop exposes it. */
+  factory?: import('./factory-api').FactoryApi;
   terminalSendTracked(id:string,text:string):Promise<void>;
   promptSummaries():Promise<PromptSummary[]>;
   promptPatch(id:string,path:string,viewId:string):Promise<FilePatch>;
@@ -163,6 +165,7 @@ export interface RiftApi {
   readRepositoryFile(path: string): Promise<string>;
   writeRepositoryFile(path: string, content: string, repositoryRoot: string): Promise<void>;
   openRepository(path?: string): Promise<RepositorySnapshot>;
+  createRepository?(name: string): Promise<RepositorySnapshot | null>;
   refreshRepository(): Promise<RepositorySnapshot>;
   getFilePatch(path: string, fullFile: boolean): Promise<FilePatch>;
   listRepositoryFiles(): Promise<string[]>;

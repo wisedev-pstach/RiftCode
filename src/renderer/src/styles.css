@@ -945,6 +945,14 @@ button { color: inherit; font: inherit; }
 .welcome-retry:hover:not(:disabled) { background:var(--ws-hover); }
 .repository-welcome-actions .primary-button:hover:not(:disabled) { filter:brightness(.94); }
 .repository-welcome :is(button,summary):focus-visible { outline:2px solid var(--ws-accent); outline-offset:4px; }
+.repository-create-form { margin-top:24px; display:grid; gap:10px; }
+.repository-create-form label { font-size:13px; font-weight:600; }
+.repository-create-form input { width:100%; min-width:0; height:40px; padding:0 12px; border:1px solid var(--ws-line); border-radius:6px; background:var(--ws-surface); color:var(--ws-text); font:14px ui-monospace,monospace; }
+.repository-create-form input:focus-visible { outline:2px solid var(--ws-accent); outline-offset:2px; }
+.repository-create-form #creation-hint { font-size:12px; }
+.repository-create-form .creation-error { color:var(--ws-text); border-left:2px solid var(--ws-accent); padding-left:10px; overflow-wrap:anywhere; max-height:100px; overflow:auto; }
+.repository-create-form .creation-progress { font-size:12px; }
+.repository-create-form .repository-welcome-actions { margin-top:8px; }
 .repository-error-details { margin-top:22px; color:var(--ws-muted); font-size:12px; }
 .repository-error-details summary { width:fit-content; padding:3px 0; cursor:pointer; }
 .repository-error-details pre { max-height:132px; overflow:auto; margin:12px 0 0; padding:12px; border:1px solid var(--ws-line); border-radius:6px; background:var(--ws-surface); color:var(--ws-muted); font:11px/1.6 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; white-space:pre-wrap; overflow-wrap:anywhere; }

@@ -1,0 +1,118 @@
+<header><strong>RIFT</strong><span class="muted">/ Creation</span><span class="grow path">{{repositoryLabel || state()?.repositoryRoot || 'Opening repository…'}}</span><button (click)="exit.emit('home')">Workspace</button><button (click)="exit.emit('review')">Review mode</button></header>
+<nav aria-label="Factory stages">@for(stage of stages;track stage){<button [class.selected]="step()===stage" (click)="step.set(stage)">{{stage==='review'?'Review queue':stage.charAt(0).toUpperCase()+stage.slice(1)}}</button>}<span class="grow"></span><small>{{loading()?'Loading…':state()?.runState}}</small><button aria-label="Refresh factory state" [disabled]="!!pending() || loading()" (click)="refresh()">↻</button></nav>
+@if(error()){<div role="alert" class="error">{{error()}}</div>}
+<div class="body"><main class="scroll">@if(state()){
+@switch(step()){
+@case('requirements'){
+<h1>Requirements</h1><p class="muted">Start with a clear brief. Manual planning needs no provider.</p>
+<label>Project title<input aria-label="Project title" [value]="draft().title" (input)="edit('title',$event)" [disabled]="!!pending() || running()"></label>
+<label>Requirements<textarea class="large" aria-label="Requirements" [value]="draft().requirements" (input)="edit('requirements',$event)" [disabled]="!!pending() || running()"></textarea></label>
+}
+@case('architecture'){
+<h1>Architecture</h1><p class="muted">Describe boundaries, trade-offs and the verification approach.</p>
+<label>Architecture document<textarea class="large" [value]="draft().architecture" (input)="edit('architecture',$event)" [disabled]="!!pending() || running()"></textarea></label>
+<label>Diagram source<textarea class="mono" [value]="draft().diagram" (input)="edit('diagram',$event)" [disabled]="!!pending() || running()"></textarea></label>
+<rift-factory-documents [content]="draft().diagram" kind="mermaid" />
+}
+@case('plan'){
+<div class="row"><h1 class="grow">Task plan</h1><button [disabled]="!!pending() || running()" (click)="addTask()">Add task</button></div>
+<p class="muted">Tasks execute sequentially, respecting dependencies. Review is queued, not an execution gate.</p>
+@for(task of draft().tasks;track $index;let i=$index){<details open><summary>{{task.id}} · {{task.title}}</summary>
+<div class="columns"><label>Task ID<input [value]="task.id" (input)="editTask(i,'id',$event)" [disabled]="!!pending() || running()"></label><label>Task title<input [value]="task.title" (input)="editTask(i,'title',$event)" [disabled]="!!pending() || running()"></label></div>
+<label>Description<textarea [value]="task.description" (input)="editTask(i,'description',$event)" [disabled]="!!pending() || running()"></textarea></label>
+<label>Acceptance criteria · one per line<textarea [value]="task.acceptanceCriteria.join('\n')" (input)="editTask(i,'acceptanceCriteria',$event,true)" [disabled]="!!pending() || running()"></textarea></label>
+<details><summary>Dependencies, path scope &amp; check IDs</summary>
+<label>Dependency task IDs · one per line<textarea [value]="task.dependencies.join('\n')" (input)="editTask(i,'dependencies',$event,true)" [disabled]="!!pending() || running()"></textarea></label>
+<label>Allowed paths · one per line<textarea [value]="task.pathScope.join('\n')" (input)="editTask(i,'pathScope',$event,true)" [disabled]="!!pending() || running()"></textarea></label>
+<label>Verification command IDs · one per line<textarea [value]="task.testCommandIds.join('\n')" (input)="editTask(i,'testCommandIds',$event,true)" [disabled]="!!pending() || running()"></textarea></label></details>
+<button [disabled]="!!pending() || running()" (click)="removeTask(i)">Remove task</button></details>}
+@if(!draft().tasks.length){<p class="muted">No tasks yet. Add a scoped task or ask an available provider to plan.</p>}
+<div class="row"><h2 class="grow">Approved command definitions</h2><button [disabled]="!!pending() || running()" (click)="addCommand()">Add command</button></div>
+<p class="muted">Exact executable and argument array, not a shell command. Native validation remains authoritative. Commands can access the OS and network with your permissions.</p>
+@for(command of draft().commands;track $index;let i=$index){<details open><summary>{{command.commandId}} · {{command.executable || 'Choose an absolute executable'}}</summary>
+<label>Command ID<input [value]="command.commandId" (input)="editCommand(i,'commandId',$event)" [disabled]="!!pending() || running()"></label>
+<label>Absolute executable<input class="mono" [value]="command.executable" (input)="editCommand(i,'executable',$event)" [disabled]="!!pending() || running()"></label>
+<label>Arguments · one JSON string per line<textarea aria-label="Arguments · one JSON string per line" class="mono" [value]="commandArgs(command,i)" (input)="editCommand(i,'args',$event,'args')" [disabled]="!!pending() || running()"></textarea><small>Example: "--test" then "tests/example.test.ts" on the next line. Use "" for an empty argument. No shell interpolation. Invalid JSON remains editable and blocks saving; no different argument array is silently saved.</small></label>
+<label>Working directory relative to repository<input [value]="command.cwdRelative" (input)="editCommand(i,'cwdRelative',$event)" [disabled]="!!pending() || running()"></label>
+<div class="columns"><label>Timeout (ms)<input type="number" min="1" max="600000" [value]="command.timeoutMs" (input)="editCommand(i,'timeoutMs',$event,'number')" [disabled]="!!pending() || running()"></label><label>stdout limit (bytes)<input type="number" min="1" max="16777216" [value]="command.stdoutBytes" (input)="editCommand(i,'stdoutBytes',$event,'number')" [disabled]="!!pending() || running()"></label><label>stderr limit (bytes)<input type="number" min="1" max="16777216" [value]="command.stderrBytes" (input)="editCommand(i,'stderrBytes',$event,'number')" [disabled]="!!pending() || running()"></label></div>
+<label>Environment key allowlist · names only, one per line<textarea [value]="command.environmentKeys.join('\n')" (input)="editCommand(i,'environmentKeys',$event,'lines')" [disabled]="!!pending() || running()"></textarea></label><button [disabled]="!!pending() || running()" (click)="removeCommand(i)">Remove command</button></details>}
+<h2>Bounded execution</h2><div class="columns"><label>Maximum attempts per task<input type="number" min="1" max="5" [value]="attempts()" (input)="attempts.set(number($event))" [disabled]="!!pending() || running()"></label><label>Maximum run duration (ms)<input type="number" min="100" max="3600000" [value]="runMs()" (input)="runMs.set(number($event))" [disabled]="!!pending() || running()"></label></div>
+<p class="muted">Approve only this saved draft revision. Starting the run is a separate action. Editing the plan requires saving and approving again.</p>
+}
+@case('run'){
+<h1>Run</h1><p>Run state: {{state()!.runState}}</p><p class="muted">{{state()!.message || 'Start when you are ready. Completed task revisions remain available independently of execution.'}}</p>
+@if(pending()){<p role="status">{{pending()}}</p>}
+@for(task of state()!.tasks;track task.id){<div class="status-row"><div><strong>{{task.id}} · {{task.title}}</strong><div class="muted">{{task.message}}</div></div><div>{{task.status}}<small> · attempts {{task.attempts}}</small></div></div>}
+@if(!state()!.tasks.length){<p class="muted">No execution progress recorded.</p>}
+<h2 style="margin-top:24px">Review whenever you choose</h2><p>{{state()!.reviews.length}} saved revisions. Ready for review does not mean accepted or merged.</p><button (click)="step.set('review')">Open review queue</button>
+@if(state()!.approval){<details><summary>Saved execution approval</summary><pre>{{state()!.approval!.provider}} · draft r{{state()!.approval!.draftRevision}}
+{{state()!.approval!.maxTaskAttempts}} attempts · {{state()!.approval!.maxRunMs}} ms
+{{state()!.approval!.consents.join('\n')}}</pre></details>}
+}
+@case('review'){
+<h1>Review queue</h1><p class="muted">Immutable code, check and document snapshots. Acceptance records a review decision only; it does not commit or merge.</p>
+<div class="queue"><section class="queue-list" aria-label="Saved revisions">
+@for(group of reviewGroups;track group){<h3>{{groupLabel(group)}} ({{reviews(group).length}})</h3>@for(review of reviews(group);track review.id){<button class="artifact" [class.selected]="selectedId()===review.id" (click)="openRevision(review.id)">{{review.title}}<small>{{review.id}} · {{review.files}} files</small><small>{{review.checksPassed?'Checks passed':'Checks not passed'}} · {{review.createdAt}}</small></button>}}
+@if(!state()!.reviews.length){<p class="muted">No saved revisions yet.</p>}
+</section><section aria-label="Revision detail">
+@if(reviewLoading()){<p role="status">Loading immutable revision…</p>}
+@if(selectedReview();as view){
+<div class="review-head"><h2>{{view.summary.title}}</h2><span class="pill">{{currentDecision()}}</span><p class="mono">{{view.revision.id}}<br>{{view.revision.beforeSnapshotId}} → {{view.revision.afterSnapshotId}}<br>Source fingerprint: {{view.revision.sourceFingerprint}}</p>@if(view.revision.previousRevisionId){<small>Rework of {{view.revision.previousRevisionId}}</small>}</div>
+<div class="tabs" aria-label="Revision evidence tabs">@for(t of ['code','checks','documents','diagrams','all artifacts'];track t){<button [class.selected]="tab()===t" (click)="chooseTab(t)">{{t.charAt(0).toUpperCase()+t.slice(1)}}</button>}</div>
+@switch(tab()){
+@case('code'){
+<h3>Saved changed paths</h3>
+@for(change of view.changes;track change.path){<button class="artifact" [attr.aria-label]="change.path" [class.selected]="file()?.path===change.path" (click)="selectFile(change)">{{change.path}}<small>{{change.status}} {{change.binary?'· binary content':''}} · mode {{change.beforeMode}} → {{change.afterMode}}</small></button>}
+@if(!view.changes.length){<p class="muted">This revision contains no code changes.</p>}
+@if(file();as change){<div class="row">@if(change.beforeSourceId){<button (click)="readArtifact(change.beforeSourceId)">Before source</button>}@if(change.afterSourceId){<button (click)="readArtifact(change.afterSourceId)">After source</button>}<button (click)="readArtifact(change.patchArtifactId)">Saved patch</button></div>@if(change.binary){<p>Binary change · no text comparison. Inspect recorded paths, modes and snapshot identity.</p>}}
+@if(artifact();as a){<p class="source-label">{{a.record.id}} · {{a.record.sha256}}</p>@if(a.record.kind==='patch'){<pre class="patch" aria-label="Saved immutable patch">@for(line of patchLines();track $index){<span [class]="line.kind">{{line.text || ' '}}</span>}</pre>}@else{<rift-factory-documents [content]="a.content" [kind]="a.record.kind" />}}
+}
+@case('checks'){
+@if(!view.receipts.length){<p>No independent test receipts were recorded for this revision. Provider prose is not evidence.</p>}
+@for(receipt of view.receipts;track receipt.receiptId){<details open><summary>{{receipt.process.commandId}} · {{receipt.checksPassed?'Passed':'Not passed'}}{{receipt.stale?' · STALE':''}}</summary>
+<p class="mono">Receipt {{receipt.receiptId}} · {{receipt.evidenceType}}<br>Task revision {{receipt.taskRevision}}<br>Source before: {{receipt.before.fingerprint}}<br>Source after: {{receipt.after.fingerprint}}</p>
+<pre>{{receipt.process.executable}}
+argv: {{formatArgs(receipt.process.args)}}
+cwd: {{receipt.process.cwd}}
+Policy: {{receipt.process.policyId}} · approval r{{receipt.process.approvalRevision}}
+Started: {{receipt.process.startedAt}}
+Completed: {{receipt.process.completedAt}}
+Reason: {{receipt.process.reason}} · exit: {{receipt.process.exitCode}} · signal: {{receipt.process.signal}}
+Cleanup: {{receipt.process.cleanup}}
+stdout bytes: {{receipt.process.stdoutBytes}} · stderr bytes: {{receipt.process.stderrBytes}}</pre>
+<h3>stdout</h3><pre>{{receipt.process.stdout || '(empty)'}}</pre><h3>stderr</h3><pre>{{receipt.process.stderr || '(empty)'}}</pre>@if(receipt.process.error){<pre>{{receipt.process.error}}</pre>}</details>}
+}
+@default{
+<span class="pill">Local supporting artifacts · not in PR</span>
+@for(a of documentArtifacts();track a.id){<button class="artifact" [class.selected]="artifact()?.record?.id===a.id" (click)="readArtifact(a.id)">{{a.fileName}}<small>{{a.id}} · {{a.kind}} · {{a.bytes}} bytes</small></button>}
+@if(tab()==='all artifacts'){<details><summary>All immutable artifact IDs</summary>@for(id of view.revision.artifactIds;track id){<button class="artifact" (click)="readArtifact(id)">{{id}}</button>}</details>}
+@if(artifact();as a){<p class="mono">{{a.record.id}} · {{a.record.sha256}}</p><rift-factory-documents [content]="a.content" [kind]="a.record.kind" />}
+}
+}
+@if(artifactLoading()){<p role="status">Loading saved artifact…</p>}
+<label>Review comment<textarea class="feedback" [value]="comment()" (input)="comment.set(text($event))" [disabled]="!!pending()"></textarea></label>
+}@else{<p class="muted">Select a queued revision. Execution does not pause while you review.</p>}
+</section></div>
+}
+}
+}@else{<h1>Opening factory workspace</h1><p class="muted">Loading saved state; existing runs are not restarted or interrupted.</p>}</main>
+<aside>
+@if(state() && ['requirements','architecture','plan'].includes(step())){
+<h2>Provider &amp; permissions</h2><label>Planning / execution provider<select [value]="provider()" (change)="chooseProvider($event)" [disabled]="!!pending() || running()"><option value="claude">Claude Code</option><option value="codex">Codex</option><option value="opencode">OpenCode</option></select></label>
+@for(p of state()!.providers;track p.provider){@if(p.provider===provider()){<p class="muted">{{p.reason}}<small> {{p.version || 'Version unavailable'}}</small></p>}}
+@if(!providerReady()){<p>Provider blocked or unavailable, or not yet probed. Manual planning remains available. Consented Generate / Approve asks the native service to check or retry; missing or unsupported providers remain explicitly blocked.</p>}
+<p class="muted">Provider execution may incur model usage charges, run installed provider configuration, and use native tools, the OS and network. No blanket tool approval. Native trust and permission prompts remain yours to answer.</p>
+@for(consent of requiredConsents();track consent){<label class="check"><input type="checkbox" [checked]="consents().includes(consent)" (change)="toggleConsent(consent,$event)" [disabled]="!!pending() || running()">{{consentLabels[consent]}}</label>}
+<label class="check"><input type="checkbox" [checked]="contextConsent()" (change)="contextConsent.set(check($event))" [disabled]="!!pending() || running()">Execution context and exact commands</label><small>I authorize this repository, scope and exact saved command definitions. Commands are native OS execution, not a sandbox; network and dependency changes are not silently approved by Rift.</small>
+<label>Generation instruction<textarea [value]="instruction()" (input)="instruction.set(text($event))" [disabled]="!!pending() || running()"></textarea></label><button [disabled]="!consentReady() || dirty() || !!pending() || running()" (click)="generate()">Generate {{step()}}</button><small> Save manual edits before generation. Native provider failures remain explicit.</small>
+}@else{<h2>Factory workspace</h2><p class="muted">Plan, implement and test sequentially. Review each saved revision when you choose.</p>}
+<hr><span class="pill">Local documents · not in PR</span><p class="muted">Supporting artifacts are stored by the native service outside the checkout.</p>
+@if(step()!=='review'){@for(a of state()?.artifacts || [];track a.id){<button class="artifact" (click)="openWorkspaceArtifact(a.id)">{{a.fileName}}<small>{{a.id}} · {{a.kind}}</small></button>}@if(!selectedId() && artifact();as a){<rift-factory-documents [content]="a.content" [kind]="a.record.kind" />}}
+
+</aside></div>
+<footer><small>{{pending() || (dirty()?'Unsaved draft':state()?'Draft r'+state()!.draftRevision:'Waiting for workspace')}}</small><span class="grow"></span>
+@if(['requirements','architecture','plan'].includes(step())){<button [disabled]="!state() || !!pending() || running() || !dirty() || !!invalidArguments().length" (click)="save()">Save draft</button>}
+@if(step()==='plan'){<button class="primary" [disabled]="!approvalReady()" (click)="approve()">Approve plan</button>}
+@if(step()==='run'){<button [disabled]="!running() || !!pending()" (click)="stop()">Stop run</button><button class="primary" [disabled]="!startReady()" (click)="start()">Start run</button>}
+@if(step()==='review' && selectedReview()){<small>Review only · no commit or merge</small><button [disabled]="!!pending() || running()" (click)="rework()">Queue rework</button><button [disabled]="!!pending()" (click)="decide('changesrequested')">Request changes</button><button class="primary" [disabled]="!!pending()" (click)="decide('accepted')">Accept revision</button>}
+</footer>

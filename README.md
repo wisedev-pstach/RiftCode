@@ -2,7 +2,7 @@
 
 > A visual, AI-native workspace for understanding, reviewing, and refining code changes.
 
-[![Version](https://img.shields.io/badge/version-0.8.0-c8ff63?style=flat-square&labelColor=171b21)](./version.json)
+[![Version](https://img.shields.io/badge/version-0.9.1-c8ff63?style=flat-square&labelColor=171b21)](./version.json)
 [![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-8ea0b2?style=flat-square&labelColor=171b21)](#getting-started)
 [![License](https://img.shields.io/badge/license-MIT-8ea0b2?style=flat-square&labelColor=171b21)](./LICENSE)
 
@@ -13,6 +13,8 @@ AI can produce code faster than developers can responsibly review it. Rift is bu
 ## Getting Started
 
 Rift currently supports Windows and macOS. The installer builds the desktop application locally, so **Node.js 24 or newer** and Git are required.
+
+These are **source-build installers**, not downloads of signed application releases. The commands below follow `main`; an unmerged feature candidate requires the exact pinned source commands in its pull request. The software-factory execution support limits below are narrower than desktop Review support.
 
 ### Windows
 
@@ -56,9 +58,35 @@ Rift discovers supported coding agents installed on your machine. Install and au
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview)
 - [Codex CLI](https://developers.openai.com/codex/cli/) (interactive terminal)
 
-Use **AI terminal** to choose a provider, **New session** or **Resume existing**, and Review/plan or Edit intent. **Review changes** prepares the current comparison as context, without starting a provider or submitting a prompt. Notes stay in a horizontal **Notes** drawer; secondary paste/copy actions live in **Context & info**. Press Enter yourself inside the CLI. Ctrl/Cmd-click `file:line` output to open source. Sessions survive view switches, not repository changes or app shutdown. Saved Rift notes/history are preserved; native resume uses provider-owned sessions scoped to this repository. See [terminal setup, safety and verification](docs/TERMINAL-AI.md).
+Use the compact **Notes / Agent / Review** rail to open either native provider workspace. Agent supports new or resumed sessions; Review has its own retained session and scoped review brief. Notes and source insertion are **Enter-free**: they do not start a provider, execute a prompt or answer native approvals. **Run review** and **Send & track** are separate explicit submissions; follow-up questions belong in the provider's native prompt. Ctrl/Cmd-click `file:line` output to open source. Sessions survive workflow/view switches, not repository changes or app shutdown. Saved Rift notes/history are preserved; native resume uses provider-owned sessions scoped to this repository. See [terminal setup, safety and verification](docs/TERMINAL-AI.md).
 
 Repository browsing, diffs, notes, review tracking, and editing work without an AI agent.
+
+## Software factory (0.9.1)
+
+When Rift starts outside a Git checkout, choose **Create repository** or **Choose repository**. Create takes a literal project name and a native parent-folder choice, creates a new local Git repository on `main`, and opens **Creation** directly. Existing folders are never reused or overwritten. Cancel keeps the name for retry; a failed Git initialization keeps the new folder with a recovery message. No remote, login, scaffold, initial commit or provider run is automatic. See [first-launch creation acceptance](docs/FIRST-LAUNCH-CREATION.md).
+
+Opening a repository offers **Creation** or **Review**. Review keeps the existing Notes / Agent / Review rail and native provider terminals. Switching workflows retains mounted terminal sessions and drafts; it does not submit a prompt, approve a plan or stop a running factory.
+
+Creation separates the work into explicit stages:
+
+1. Write requirements, or explicitly request provider-generated questions and requirements.
+2. Edit an architecture, supporting diagram and dependency-ordered task plan. Diagram preview supports a bounded flowchart subset; unsupported syntax remains visible as source.
+3. Define exact native verification commands and approve the saved plan, provider configuration/execution permissions and bounded attempt/time budget. **Approve does not Start.**
+4. Start a sequential implementation → native verification → bounded repair loop. Model output is never a passing test receipt.
+5. Review each queued task when ready. Saved patches, prior source, command receipts and supporting documents remain tied to that immutable revision, even when later tasks edit the same file. Accepting a review does not commit or merge anything.
+
+Planning documents, diagrams, receipts and review evidence live in app-owned local storage **outside the checkout**, not as PR files. Five canonical portable skills are bundled as ordinary `SKILL.md` files; adapters embed their instructions rather than modifying provider homes. Manual planning remains available without a provider. Stop waits for native execution cleanup; interrupted runs are not automatically resumed.
+
+**Factory execution is capability-gated, not universal CLI support:**
+
+- Claude uses a supported native executable/version and explicit startup/configuration consent. Codex additionally requires main-owned, exact-version capability evidence from bounded consented probes.
+- OpenCode execution remains Blocked/manual without trusted exact-version evidence; its read-only planning transport is not supported. This does not remove the existing interactive OpenCode terminal.
+- Default factory discovery accepts native binaries, not npm shell/JavaScript shims. Such launchers require a separately validated native Node/entrypoint locator; otherwise use the existing interactive terminal.
+- Windows factory execution is currently Blocked because process-tree cleanup is not verified. Existing desktop Review/Agent functionality remains separate. macOS authenticated factory acceptance has not been exercised by the Linux fixture tests.
+- Provider configuration and approved commands run under the native OS account and may access the network. Filtered environment variables and read-only planning intent are **not an OS sandbox**. Model calls may incur charges under the selected provider's account.
+
+See [runtime and support boundaries](docs/FACTORY-RUNTIME.md), [native IPC/lifecycle](docs/FACTORY-NATIVE.md), [workbench and evidence UI](docs/FACTORY-UI.md), and [retained workflow entry](docs/FACTORY-ENTRY.md). Synthetic UI/provider fixtures establish the behaviors described in their evidence, not authenticated-provider or native-platform acceptance.
 
 ## Why Rift
 
