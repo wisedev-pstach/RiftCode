@@ -1,6 +1,8 @@
 {
-  "version": "0.9.0",
+  "version": "0.9.1",
   "releaseNotes": [
+    "First launch: create a new local Git repository with a project name and native parent-folder picker, or open an existing checkout.",
+    "New repositories open directly in Creation without a remote, scaffold, initial commit or automatic provider execution.",
     "Software factory candidate: choose Creation or the existing Review workspace.",
     "Plan requirements, architecture and tasks with local-only supporting artifacts outside the checkout.",
     "Queue immutable task-by-task code reviews with app-owned verification evidence and bounded execution loops.",

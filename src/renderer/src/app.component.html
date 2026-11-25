@@ -8,16 +8,33 @@
   <main class="center-state">
     <section class="repository-welcome" aria-labelledby="repository-welcome-title">
       <span class="welcome-wordmark" aria-label="RIFTcode"><strong>RIFT</strong><small>/code</small><em>v{{ appVersion }}</em></span>
-      <h1 id="repository-welcome-title">Open a Git repository</h1>
+      <h1 id="repository-welcome-title">{{ canCreateRepository ? 'Start with a repository' : 'Open a Git repository' }}</h1>
+      @if (repositoryCreateForm()) {
+        <p>Create a new local Git repository, then shape your project in Creation.</p>
+        <form class="repository-create-form" (submit)="$event.preventDefault(); createRepository()">
+          <label for="project-name">Project name</label>
+          <input id="project-name" name="project-name" autocomplete="off" maxlength="128" [value]="repositoryProjectName()" (input)="repositoryProjectName.set($any($event.target).value)" [disabled]="repositoryCreating()" aria-describedby="creation-hint" [attr.aria-invalid]="repositoryProjectName() && projectNameError() ? 'true' : null">
+          <p id="creation-hint">Choose a parent folder next. Rift creates a new folder with this exact name. No remote, scaffold or initial commit.</p>
+          @if (repositoryCreationError()) { <p class="creation-error" role="alert">{{ repositoryCreationError() }}</p> }
+          @else if (repositoryProjectName() && projectNameError()) { <p class="creation-error" role="alert">{{ projectNameError() }}</p> }
+          <div class="repository-welcome-actions">
+            <button type="submit" class="primary-button" [disabled]="repositoryCreating() || !!projectNameError()">{{ repositoryCreating() ? 'Creating…' : 'Choose parent and create' }}</button>
+            <button type="button" class="welcome-retry" [disabled]="repositoryCreating()" (click)="showRepositoryCreation(false)">Cancel</button>
+          </div>
+          @if (repositoryCreating()) { <p class="creation-progress" role="status">Choose a parent folder in the native dialog. Initialization stays local.</p> }
+        </form>
+      } @else {
       @if (error()) {
         <p role="alert">{{ repositoryErrorMessage() }}</p>
-      } @else { <p>Choose an existing checkout to start reviewing code.</p> }
+      } @else { <p>{{ canCreateRepository ? 'Create something new, or open an existing checkout.' : 'Choose an existing checkout to start reviewing code.' }}</p> }
       <div class="repository-welcome-actions">
-        <button class="primary-button" [disabled]="repositoryChoosing()" (click)="chooseRepository()">{{ repositoryChoosing() ? 'Choosing…' : 'Choose repository' }}</button>
+        @if (canCreateRepository) { <button class="primary-button" [disabled]="repositoryChoosing()" (click)="showRepositoryCreation()">Create repository</button> }
+        <button [class.primary-button]="!canCreateRepository" [class.welcome-retry]="canCreateRepository" [disabled]="repositoryChoosing()" (click)="chooseRepository()">{{ repositoryChoosing() ? 'Choosing…' : 'Choose repository' }}</button>
         @if (error()) { <button class="welcome-retry" [disabled]="repositoryChoosing()" (click)="retryRepository()">Retry</button> }
       </div>
       @if (error()) {
         <details class="repository-error-details"><summary>Technical details</summary><pre>{{ error() }}</pre></details>
+      }
       }
     </section>
   </main>

@@ -33,6 +33,7 @@ const api: RiftApi = {
   readRepositoryFile: (path) => ipcRenderer.invoke("repository:read-file", path),
   writeRepositoryFile: (path, content, repositoryRoot) => ipcRenderer.invoke("repository:write-file", path, content, repositoryRoot),
   openRepository: (path) => ipcRenderer.invoke("repository:open", path),
+  createRepository: (name) => ipcRenderer.invoke('repository:create', name),
   refreshRepository: () => ipcRenderer.invoke("repository:refresh"),
   getFilePatch: (path, fullFile) => ipcRenderer.invoke("repository:patch", path, fullFile),
   listRepositoryFiles: () => ipcRenderer.invoke("repository:list-files"),

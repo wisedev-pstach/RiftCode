@@ -1,3 +1,4 @@
+import {repositoryGitEnvironment} from './git-environment';
 import { execFile } from "node:child_process";
 import { readFile, realpath, stat } from "node:fs/promises";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -40,7 +41,7 @@ function run(
   signal?: AbortSignal
 ): Promise<GitResult> {
   return new Promise((resolvePromise, reject) => {
-    execFile(command, args, { cwd, maxBuffer: 50 * 1024 * 1024, timeout: 30_000, signal }, (error, stdout, stderr) => {
+    execFile(command, args, { cwd, env:repositoryGitEnvironment(), maxBuffer: 50 * 1024 * 1024, timeout: 30_000, signal }, (error, stdout, stderr) => {
       const code = error && "code" in error && typeof error.code === "number" ? error.code : 0;
       if (error && (typeof error.code !== "number" || !acceptedCodes.includes(code))) {
         reject(new Error(stderr.trim() || error.message));
@@ -52,7 +53,7 @@ function run(
 }
 
 function git(cwd: string, args: string[], acceptedCodes = [0], signal?: AbortSignal): Promise<GitResult> {
-  return run("git", ["-c", "core.quotepath=false", ...args], cwd, acceptedCodes, signal);
+  return run("git", ["-c", "core.quotepath=false", '-c', 'core.hooksPath=', '-c', 'core.fsmonitor=false', ...args], cwd, acceptedCodes, signal);
 }
 
 export async function safeRepositoryFile(root: string, path: string): Promise<string> {
@@ -245,6 +246,10 @@ async function comparisonDefinitions(
     });
   }
 
+  if (!(await refExists(root, 'HEAD'))) {
+    comparisons[0].startRevision = EMPTY_TREE;
+    return comparisons;
+  }
   const log = await git(root, ["log", "-40", "--format=%H%x09%h%x09%P%x09%s"]);
   for (const line of log.stdout.split("\n").filter(Boolean)) {
     const [sha, shortSha, parents, ...subjectParts] = line.split("\t");

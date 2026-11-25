@@ -14,6 +14,7 @@ import { marked } from "marked";
 import {ReviewTerminalComponent} from './review-terminal.component';
 import type {ReviewContext} from '../../shared/review-request';
 import { AiTerminalComponent } from './ai-terminal.component';
+import { repositoryNameError } from '../../shared/repository-name';
 import { FactoryWorkbench } from './factory-workbench.component';
 import { SearchableSelectComponent } from './searchable-select.component';
 import type { SourceLocation } from '../../shared/terminal';
@@ -577,6 +578,7 @@ export class AppComponent implements OnInit, OnDestroy {
   @ViewChild(FactoryWorkbench) factoryWorkbench?: FactoryWorkbench;
   selectWorkflow(mode: 'home' | 'creation' | 'review'): void {
     if (!this.factoryApi && mode !== 'review') return;
+    if(mode!==this.workflow())this.invalidateRepositoryCreation();
     if (mode === 'creation') this.factoryVisited.set(true);
     this.workflow.set(mode);
   }
@@ -636,6 +638,44 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly allChangesSelected = signal(false);
   readonly loading = signal(true);
   readonly repositoryChoosing = signal(false);
+  readonly canCreateRepository = typeof window.rift.createRepository === 'function';
+  readonly repositoryCreateForm = signal(false);
+  readonly repositoryCreating = signal(false);
+  readonly repositoryProjectName = signal('');
+  readonly repositoryCreationError = signal<string|null>(null);
+  readonly projectNameError = computed(()=>repositoryNameError(this.repositoryProjectName()));
+  private creationRequest = 0;
+  private disposed = false;
+  private invalidateRepositoryCreation():void {
+    this.creationRequest++;
+    this.repositoryCreating.set(false);
+    this.repositoryCreationError.set(null);
+  }
+
+  showRepositoryCreation(show=true):void {
+    if(this.repositoryCreating())return;
+    this.creationRequest++;
+    this.repositoryCreationError.set(null);
+    this.repositoryCreateForm.set(show);
+  }
+  async createRepository():Promise<void> {
+    if(!this.canCreateRepository||this.repositoryCreating()||this.loading()||this.repositoryChoosing()||this.repository()||!this.repositoryCreateForm())return;
+    const validation=this.projectNameError();
+    if(validation){this.repositoryCreationError.set(validation);return;}
+    const request=++this.creationRequest, repositoryRequest=this.repositoryRequest, token=this.repositoryToken, mode=this.workflow();
+    const current=()=>!this.disposed&&request===this.creationRequest&&repositoryRequest===this.repositoryRequest&&token===this.repositoryToken&&!this.repository()&&this.repositoryCreateForm()&&this.workflow()===mode;
+    this.repositoryCreating.set(true);this.repositoryCreationError.set(null);
+    try {
+      const repository=await window.rift.createRepository!(this.repositoryProjectName());
+      if(!current())return;
+      if(repository){
+        this.acceptRepository(repository);
+        this.repositoryCreateForm.set(false);
+        this.selectWorkflow(this.factoryApi?'creation':'review');
+      }
+    }catch(reason){if(current())this.repositoryCreationError.set(reason instanceof Error?reason.message:String(reason));}
+    finally{if(request===this.creationRequest)this.repositoryCreating.set(false);}
+  }
   readonly comparisonChanging = signal(false);
   readonly error = signal<string | null>(null);
   readonly repositoryErrorMessage = computed(() => /\bnot a git repository\b/i.test(this.error() ?? "")
@@ -1177,6 +1217,7 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   ngOnDestroy(): void {
+    this.disposed=true;this.creationRequest++;this.repositoryRequest++;
     this.repositoryViewRequest++;this.patchRequest++;this.highlightRequest++;this.repositoryToken++;
     this.dockObserver?.disconnect();
     this.removeRepositoryListener?.();
@@ -3250,6 +3291,7 @@ export class AppComponent implements OnInit, OnDestroy {
     if(comparisonChanged){this.pendingOrdinarySource=null;this.sourceTarget.set(null);this.sourceOrigin.set(null);this.highlightRequest++;this.patchRequest++;}
     this.repository.set(repository);
     if (previousRoot !== repository.root) {
+      this.invalidateRepositoryCreation();
       this.repositoryToken += 1;
       this.expandedExplorerFolders.set(this.loadExpandedExplorerFolders(repository.root));
       this.fileContents.set(new Map());

@@ -165,6 +165,7 @@ export interface RiftApi {
   readRepositoryFile(path: string): Promise<string>;
   writeRepositoryFile(path: string, content: string, repositoryRoot: string): Promise<void>;
   openRepository(path?: string): Promise<RepositorySnapshot>;
+  createRepository?(name: string): Promise<RepositorySnapshot | null>;
   refreshRepository(): Promise<RepositorySnapshot>;
   getFilePatch(path: string, fullFile: boolean): Promise<FilePatch>;
   listRepositoryFiles(): Promise<string[]>;

@@ -2,7 +2,7 @@
 
 > A visual, AI-native workspace for understanding, reviewing, and refining code changes.
 
-[![Version](https://img.shields.io/badge/version-0.9.0-c8ff63?style=flat-square&labelColor=171b21)](./version.json)
+[![Version](https://img.shields.io/badge/version-0.9.1-c8ff63?style=flat-square&labelColor=171b21)](./version.json)
 [![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-8ea0b2?style=flat-square&labelColor=171b21)](#getting-started)
 [![License](https://img.shields.io/badge/license-MIT-8ea0b2?style=flat-square&labelColor=171b21)](./LICENSE)
 
@@ -62,7 +62,9 @@ Use the compact **Notes / Agent / Review** rail to open either native provider w
 
 Repository browsing, diffs, notes, review tracking, and editing work without an AI agent.
 
-## Software factory (0.9.0)
+## Software factory (0.9.1)
+
+When Rift starts outside a Git checkout, choose **Create repository** or **Choose repository**. Create takes a literal project name and a native parent-folder choice, creates a new local Git repository on `main`, and opens **Creation** directly. Existing folders are never reused or overwritten. Cancel keeps the name for retry; a failed Git initialization keeps the new folder with a recovery message. No remote, login, scaffold, initial commit or provider run is automatic. See [first-launch creation acceptance](docs/FIRST-LAUNCH-CREATION.md).
 
 Opening a repository offers **Creation** or **Review**. Review keeps the existing Notes / Agent / Review rail and native provider terminals. Switching workflows retains mounted terminal sessions and drafts; it does not submit a prompt, approve a plan or stop a running factory.
 

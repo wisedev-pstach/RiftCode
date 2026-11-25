@@ -104,6 +104,16 @@ test('bootstrap checks out exact requested commit, builds safely, installs and c
   assert.ok(!calls.some(a=>a.includes('main')));
 });
 
+test('0.9.1 first-launch candidate deploy and pinned bootstrap report the exact version',async t=>{
+  const f=await fixture(t,'0.9.1');const messages=[];
+  require(helper).deploy(f.source,f.home,runtime({log:line=>messages.push(line)}));
+  assert.ok(fs.existsSync(f.destination));
+  assert.ok(messages.some(line=>line.includes('Installed Rift 0.9.1 preview:')));
+  const b=await bootstrapFixture(t,'0.9.1');
+  const result=spawnSync('/bin/bash',[script,'--ref',b.sha],{encoding:'utf8',env:b.env});
+  assert.equal(result.status,0,result.stderr);assert.match(result.stdout,/Installed Rift 0\.9\.1 preview:/);
+});
+
 test('0.9 factory preview installs and reports the actual bundle version',async t=>{
   const f=await fixture(t,'0.9.0');const messages=[];
   require(helper).deploy(f.source,f.home,runtime({log:line=>messages.push(line)}));
