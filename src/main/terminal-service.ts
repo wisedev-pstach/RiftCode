@@ -1,5 +1,6 @@
 import * as pty from 'node-pty';
 import {release} from 'node:os';
+import {ReviewBriefStore,MAX_REVIEW_BYTES} from './review-brief-store';
 import {PromptCheckpoints} from './prompt-checkpoints';
 import type { IPty } from 'node-pty';
 import { randomUUID } from 'node:crypto';
@@ -15,6 +16,7 @@ export class TerminalService {
   private trackedSending=false; private submitting=false;
   private pasteReady=false; private controlTail='';
   async sendTracked(id:string,text:string):Promise<void>{
+    if(this.reviewPreparing)throw new Error('Review brief preparation in progress. Nothing sent.');
     if(this.trackedSending)throw new Error('Checkpoint capture in progress.');
     const child=this.active(id),generation=this.generation,root=this.state!.cwd;
     if(typeof text!=='string'||!text.trim()||Buffer.byteLength(text,'utf8')>32768)throw new Error('Prompt must be between 1 byte and 32 KiB.');
@@ -32,19 +34,39 @@ export class TerminalService {
     const child=this.active(id);
     if(typeof text!=='string'||!text.trim()||Buffer.byteLength(text,'utf8')>32768)throw new Error('Request must be between 1 byte and 32 KiB.');
     if(!this.pasteReady)throw new Error('Wait for native CLI input readiness. Nothing sent.');
+    if(this.reviewPreparing)throw new Error('Review brief preparation in progress. Nothing sent.');
     if(this.trackedSending)throw new Error('Checkpoint capture in progress.');
     await this.deliver(id,text,child,this.generation);
   }
-  private async deliver(id:string,text:string,child:IPty,generation:number):Promise<void>{
+  private reviewPreparing=false;private reviewBriefs:ReviewBriefStore|null=null;
+  /** Full review brief transport; ordinary prompt and paste ceilings are unchanged. */
+  async submitReview(id:string,text:string,assertCurrent:()=>void=()=>{}):Promise<void>{
+    const child=this.active(id),generation=this.generation;
+    if(this.state!.mode!=='review')throw new Error('Review submission requires a review-mode session.');
+    if(typeof text!=='string'||!text.trim())throw new Error('Review request is empty. Nothing sent.');
+    if(Buffer.byteLength(text,'utf8')>MAX_REVIEW_BYTES)throw new Error('Complete review brief exceeds 8 MiB. Nothing sent; reduce context or split the review explicitly.');
+    const check=()=>{assertCurrent();if(generation!==this.generation||this.active(id)!==child||!this.pasteReady)throw new Error('Session or input readiness changed. Nothing sent.');};
+    check();
+    if(this.reviewPreparing||this.submitting||this.trackedSending)throw new Error('Request delivery in progress. Nothing sent.');
+    this.reviewPreparing=true;
+    try{
+      const brief=this.reviewBriefs!;
+      const transport=Buffer.byteLength(text,'utf8')<=32768?text:await brief.write(text);
+      check();
+      if(Buffer.byteLength(transport,'utf8')>32768)throw new Error('Review handoff path is too large. Nothing sent.');
+      await this.deliver(id,transport,child,generation,check);
+    }finally{this.reviewPreparing=false;}
+  }
+  private async deliver(id:string,text:string,child:IPty,generation:number,assertCurrent:()=>void=()=>{}):Promise<void>{
     if(this.submitting)throw new Error('Request delivery in progress. Nothing sent.');
     this.submitting=true;
     try{
-      child.write(contextPaste(text));
+      assertCurrent();child.write(contextPaste(text));
       // A paste and Enter in one stdin event can be consumed as one paste by TUIs.
       // Separate the keypress from the paste burst; never add a second Enter/retry.
       await this.settleInput();
       if(generation!==this.generation||this.active(id)!==child||!this.pasteReady)throw new Error('Session or readiness changed after paste.');
-      child.write('\r');
+      assertCurrent();child.write('\r');
     }catch{throw new Error('PTY submission is uncertain. Inspect the CLI before retrying.');}
     finally{this.submitting=false;}
   }
@@ -84,6 +106,7 @@ export class TerminalService {
       this.state = {id: randomUUID(), provider, mode, cwd, status: 'running', ...(process.platform==='win32'?{windowsPty:terminalWindowsPty(process.platform,release())}:{})};
       this.output = ''; this.offset = 0;this.pasteReady=false;this.controlTail='';this.checkpoints.clear();
       const id = this.state.id;
+      const briefs=new ReviewBriefStore(cwd);this.reviewBriefs=briefs;
       child.onData(data => {
         if (this.state?.id !== id) return;
         this.controlTail+=data;
@@ -96,6 +119,8 @@ export class TerminalService {
         }
       });
       child.onExit(({exitCode}) => {
+        // Exit belongs to this child even after reset/replacement; never remove live briefs on Stop intent.
+        void briefs.processStopped().catch(()=>console.warn('Review brief cleanup failed; temporary files remain until OS cleanup.'));
         if (this.state?.id !== id) return;
         if (process.platform !== 'win32') { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* Group already gone. */ } }
         this.state = {...this.state, status:'exited',exitCode};
@@ -112,6 +137,7 @@ export class TerminalService {
     return {state: this.state ? {...this.state} : null, data: this.output.slice(start-this.offset,end-this.offset),cursor:end,truncated: id !== null && cursor < this.offset};
   }
   input(id: string, data: string, paste = false): void {
+    if(this.reviewPreparing)throw new Error('Review brief preparation in progress. Wait before typing.');
     if(this.trackedSending)throw new Error('Checkpoint capture in progress. Wait before typing.');
     if(this.submitting)throw new Error('Request delivery in progress. Wait before typing.');
     const child = this.active(id);

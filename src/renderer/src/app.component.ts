@@ -16,6 +16,7 @@ import type {ReviewContext} from '../../shared/review-request';
 import { AiTerminalComponent } from './ai-terminal.component';
 import { SearchableSelectComponent } from './searchable-select.component';
 import type { SourceLocation } from '../../shared/terminal';
+import { aggregateFolderStatuses } from "./folder-status";
 import type { AgentConversationHistory, AgentId, AgentMode, AgentOption, AgentRunResult, AgentSession, AgentStreamEvent, AgentToolEvent, ChangedFile, ContextResourcePath, FilePatch, GitHubAuthStatus, RepositoryFileView, RepositorySearchResult, RepositorySnapshot, UpdateStatus } from "../../shared/contracts";
 import type {PromptSummary} from '../../shared/contracts';
 import versionManifest from "../../../version.json";
@@ -806,6 +807,8 @@ export class AppComponent implements OnInit, OnDestroy {
       && !patterns.some((pattern) => pattern.test(file.path))
     ));
   });
+  readonly explorerFolderStatuses = computed(() => aggregateFolderStatuses(this.comparisonFiles().filter(file =>
+    this.explorerFilterPatterns().length === 0 || this.explorerFilterPatterns().some(pattern => pattern.test(file.path)))));
   readonly repositoryPaths = signal<string[]>([]);
   readonly repositoryPathsLoading = signal(false);
   readonly repositoryPathsError = signal<string | null>(null);

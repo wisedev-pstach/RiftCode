@@ -1,5 +1,5 @@
 {
-  "version": "0.8.2",
+  "version": "0.8.3",
   "releaseNotes": [
     "Review now uses the full workspace; Agent alone retains bottom docking and its live session.",
     "Compact review brief with aligned Run/Rerun controls, expandable instructions and inspectable sent requests.",

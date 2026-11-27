@@ -220,13 +220,15 @@ async function comparisonDefinitions(
   branch: string,
   base: { label: string | null; ref: string }
 ): Promise<ComparisonDefinition[]> {
+  // Capture before reading the file list; patches and review briefs share this fixed base.
+  const headCommit = (await git(root, ["rev-parse", "--verify", "HEAD^{commit}"])).stdout.trim();
   const comparisons: ComparisonDefinition[] = [
     {
       id: "working-tree",
       kind: "working-tree",
       label: "Uncommitted changes",
       detail: `Working tree against ${branch}`,
-      startRevision: "HEAD",
+      startRevision: headCommit,
       endRevision: null,
       includeUntracked: true
     }

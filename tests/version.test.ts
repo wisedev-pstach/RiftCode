@@ -4,11 +4,11 @@ import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 import ts from 'typescript';
 const read=(path:string)=>JSON.parse(readFileSync(new URL('../'+path,import.meta.url),'utf8'));
-test('candidate version is 0.8.2 across package, lock and display manifest',()=>{
- assert.equal(read('package.json').version,'0.8.2');
- assert.equal(read('package-lock.json').version,'0.8.2');
- assert.equal(read('package-lock.json').packages[''].version,'0.8.2');
- assert.equal(read('version.json').version,'0.8.2');
+test('candidate version is 0.8.3 across package, lock and display manifest',()=>{
+ assert.equal(read('package.json').version,'0.8.3');
+ assert.equal(read('package-lock.json').version,'0.8.3');
+ assert.equal(read('package-lock.json').packages[''].version,'0.8.3');
+ assert.equal(read('version.json').version,'0.8.3');
 });
 test('production updater recognizes the candidate above old release and preview',()=>{
  const source=readFileSync(new URL('../src/main/index.ts',import.meta.url),'utf8');
@@ -22,6 +22,8 @@ test('production updater recognizes the candidate above old release and preview'
  assert.equal(newer(version,'0.7.3'),true);
  assert.equal(newer(version,'0.8.0'),true);
  assert.equal(newer(version,'0.8.1'),true);
+ assert.equal(newer(version,'0.8.2'),true);
+ assert.ok(readFileSync(new URL('../README.md',import.meta.url),'utf8').includes('version-0.8.3-'));
  assert.equal(newer(version,version),false);
  assert.equal(newer('0.7.3',version),false);
  assert.ok(source.includes('https://raw.githubusercontent.com/wisedev-pstach/RiftCode/main/version.json'));
