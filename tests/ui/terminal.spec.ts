@@ -259,6 +259,19 @@ test('docking preserves scrolled terminal output and a pending tracked draft wit
  expect(await page.evaluate(()=>(window as any).fixtureCalls.filter((c:any)=>c.start||c.stop||c.input))).toEqual([{start:'claude',mode:'edit'}]);
 });
 
+test('explorer review checkbox sits left of the file and keeps the status visible',async({page})=>{
+ await page.getByRole('button',{name:'Explorer',exact:true}).click();
+ const row=page.locator('.explorer-file-row').filter({hasText:'changed.ts'});
+ const checkbox=row.getByRole('button',{name:'Mark changed.ts reviewed',exact:true});
+ const [box,name]=await Promise.all([checkbox.boundingBox(),row.locator('.explorer-entry-name').boundingBox()]);
+ expect(box!.x+box!.width).toBeLessThan(name!.x);
+ await checkbox.click();
+ await expect(row).toHaveClass(/reviewed/);
+ await expect(row.locator('.explorer-status')).toBeVisible();
+ await expect(row.getByRole('button',{name:'Mark changed.ts unreviewed',exact:true})).toHaveText('✓');
+ if(process.env.RIFT_SHOT)await page.locator('.explorer-tree').screenshot({path:process.env.RIFT_SHOT});
+});
+
 test('choosing changed and explorer files keeps the docked session visible',async({page})=>{
  await page.getByRole('button',{name:'Start session',exact:true}).click();await page.getByRole('button',{name:'Dock to bottom',exact:true}).click();await page.locator('.file-row').first().click();await expect(page.locator('rift-ai-terminal')).toBeVisible();
  await page.getByRole('button',{name:'Explorer',exact:true}).click();await page.locator('[data-explorer-kind="file"]').first().click();await expect(page.locator('rift-ai-terminal')).toBeVisible();await expect(page.locator('.diff-panel')).toBeVisible();
