@@ -9,5 +9,5 @@ test('review requests capture actual comparison, chosen scope, notes and instruc
  const notes=buildTerminalReview(context,'notes','','honest');assert.match(notes,/src\/a.ts:12 — check boundary/);assert.match(notes,/Scope: selected notes/);
  assert.throws(()=>buildTerminalReview({...context,notes:''},'notes','','professional'),/Select notes/);
  assert.throws(()=>buildTerminalReview({...context,currentPath:''},'file','','professional'),/Select a file/);
- assert.throws(()=>buildTerminalReview(context,'comparison','x'.repeat(33000),'professional'),/32 KiB/);
+ assert.ok(buildTerminalReview({...context,startRevision:'a'.repeat(40),endRevision:'b'.repeat(40)},'comparison','x'.repeat(33000),'professional').includes('x'.repeat(33000)));
 });

@@ -884,7 +884,15 @@ function registerIpc(): void {
   ipcMain.handle('prompt:summaries',event=>{assertTrustedSender(event);return terminal.checkpoints.list(currentRepositoryPath ?? '');});
   ipcMain.handle('prompt:patch',(event,id,path,viewId)=>{assertTrustedSender(event);if(typeof id!=='string'||typeof viewId!=='string'||viewId.length>100||typeof path!=='string'||id.length>200||path.length>4096)throw new Error('Invalid checkpoint.');return terminal.checkpoints.patch(currentRepositoryPath ?? '',id,path,viewId);});
   ipcMain.handle('prompt:finish',event=>{assertTrustedSender(event);return terminal.checkpoints.finish(currentRepositoryPath ?? '');});
-  ipcMain.handle('terminal:submit-review',(event,id,text)=>{assertTrustedSender(event);return terminals.review.submit(id,text);});
+  ipcMain.handle('terminal:submit-review',(event,id,text)=>{
+    assertTrustedSender(event);
+    const generation=repositoryGeneration,root=currentRepositoryPath;
+    const assertCurrent=()=>{
+      assertTrustedSender(event);
+      if(event.sender.isDestroyed()||generation!==repositoryGeneration||root!==currentRepositoryPath||!root||terminals.review.read(id,0).state?.cwd!==root)throw new Error('Review repository or renderer changed. Nothing sent.');
+    };
+    assertCurrent();return terminals.review.submitReview(id,text,assertCurrent);
+  });
   ipcMain.handle('terminal:stop', async (event,slot) => {
     assertTrustedSender(event);terminals.slot(slot).reset();
     if(slot==='review')return {checkpointError:null};

@@ -223,7 +223,26 @@ button { color: inherit; font: inherit; }
 .explorer-folder-icon { width: 17px; height: 15px; flex: none; overflow: visible; fill: #b58a43; stroke: #d4ad67; stroke-linejoin: round; stroke-width: 1; }
 .explorer-folder-toggle { min-width: 0; flex: 1; display: flex; align-items: center; gap: 6px; border: 0; padding: 0; color: inherit; background: transparent; text-align: left; cursor: pointer; }
 .explorer-folder-toggle:focus-visible { outline: 1px solid #71804f; outline-offset: 1px; }
-.explorer-folder-count { flex: none; min-width: 16px; padding: 1px 4px; border-radius: 8px; color: #8d98a4; background: #1f252c; font: 650 8px/1.4 ui-monospace, monospace; text-align: center; }
+.folder-status { flex: none; min-width: 3ch; border: 0; padding: 0; color: #c4ced9; background: transparent; font: 650 10px/1.4 ui-monospace, monospace; text-align: right; white-space: nowrap; }
+/* Share compact metadata columns across all depths; long status combinations
+   grow the column only when present, rather than reserving nine letters. */
+.explorer-tree { display: grid; grid-template-columns: 19px minmax(0, 1fr) max-content max-content; align-content: start; column-gap: 6px; }
+.explorer-tree > .explorer-folder-row { grid-column: 1 / -1; display: grid; grid-template-columns: subgrid; }
+.explorer-tree > .explorer-folder-row > .explorer-review-slot { grid-column: 1; }
+.explorer-tree > .explorer-folder-row > .explorer-folder-toggle { grid-column: 2; }
+.explorer-tree > .explorer-folder-row > .folder-status { grid-column: 3; }
+.explorer-tree > .explorer-folder-row > .explorer-folder-count { grid-column: 4; }
+.explorer-tree > .explorer-file-row, .explorer-tree > .empty-copy { grid-column: 1 / -1; }
+.folder-status[data-status="A"], .folder-status[data-status="U"] { color: #74d9a2; }
+.folder-status[data-status="M"] { color: #e9be69; }
+.folder-status[data-status="D"] { color: #f28b82; }
+.folder-status[data-status="R"] { color: #c5a7ff; }
+:root[data-theme="light"] .folder-status { color: #435366; }
+:root[data-theme="light"] .folder-status[data-status="A"], :root[data-theme="light"] .folder-status[data-status="U"] { color: #17653c; }
+:root[data-theme="light"] .folder-status[data-status="M"] { color: #78500d; }
+:root[data-theme="light"] .folder-status[data-status="D"] { color: #a22f28; }
+:root[data-theme="light"] .folder-status[data-status="R"] { color: #624193; }
+.explorer-folder-count { flex: 0 0 3ch; width: 3ch; padding: 0; color: #8d98a4; background: transparent; font: 500 9px/1.4 ui-monospace, monospace; text-align: right; }
 .explorer-review-slot { width: 15px; height: 15px; flex: none; display: grid; place-items: center; }
 .explorer-review { width: 15px; height: 15px; display: grid; place-items: center; border: 1px solid #4a5560; border-radius: 4px; padding: 0; color: #66727e; background: transparent; font: 750 9px ui-monospace, monospace; cursor: pointer; }
 .explorer-review:hover { color: #c8ff63; border-color: #607b3f; background: rgba(200, 255, 99, .07); }
@@ -1123,7 +1142,7 @@ button { color: inherit; font: inherit; }
 :root[data-theme="light"] .explorer-scope-button.active { color: #496b18; border-color: #86a55c; background: #eef6e5; }
 :root[data-theme="light"] .explorer-tool-button { color: #65717c; border-color: #bdc6ce; }
 :root[data-theme="light"] .explorer-tool-button:hover:not(:disabled) { color: #303a44; border-color: #8e9aa5; background: #edf1f4; }
-:root[data-theme="light"] .explorer-folder-count { color: #66727e; background: #e2e6ea; }
+:root[data-theme="light"] .explorer-folder-count { color: #66727e; }
 :root[data-theme="light"] .explorer-review { color: #77828c; border-color: #b4bcc4; }
 :root[data-theme="light"] .explorer-review:hover { color: #496b18; border-color: #86a55c; background: #eef6e5; }
 :root[data-theme="light"] .explorer-review.partial { color: #8a672c; border-color: #cfb67f; }
